@@ -1,0 +1,659 @@
+{# Author: Ugur Ates #}
+{# Settings - Application configuration #}
+{% extends "base.html" %}
+
+{% block title %}Settings - AISA{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block page_subtitle %}<span class="page-subtitle">Application Configuration</span>{% endblock %}
+
+{% block extra_head %}
+<style>
+    .settings-section {
+        margin-bottom: 1.5rem;
+    }
+    .settings-section .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .provider-toggle {
+        display: flex;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .provider-toggle .toggle-option {
+        padding: 0.4rem 1rem;
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 600;
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        border: none;
+        transition: background 0.2s, color 0.2s;
+    }
+    .provider-toggle .toggle-option.active {
+        background: var(--color-accent);
+        color: #fff;
+    }
+    .provider-toggle .toggle-option:not(:last-child) {
+        border-right: 1px solid var(--border-color);
+    }
+    .range-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .range-label .range-value {
+        font-weight: 700;
+        color: var(--color-accent);
+        min-width: 3ch;
+        text-align: right;
+    }
+    .api-key-field {
+        position: relative;
+    }
+    .api-key-field .toggle-visibility {
+        position: absolute;
+        right: 0.5rem;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        padding: 0.2rem;
+    }
+    .api-key-field .toggle-visibility:hover {
+        color: var(--text-primary);
+    }
+    .save-indicator {
+        font-size: 0.8rem;
+        color: var(--color-success);
+        display: none;
+    }
+    .save-indicator.show {
+        display: inline;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+    <!-- LLM Configuration -->
+    <div class="col-lg-6">
+        <div class="card settings-section">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-cpu me-2 text-accent"></i>LLM Configuration</h6>
+                <span class="save-indicator" id="llmSaveIndicator"><i class="bi bi-check-circle-fill me-1"></i>Saved</span>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Provider</label>
+                    <div class="provider-toggle" id="providerToggle">
+                        <button type="button" class="toggle-option active" data-value="ollama" onclick="Settings.setProvider('ollama')">
+                            <i class="bi bi-pc-display me-1"></i>Ollama
+                        </button>
+                        <button type="button" class="toggle-option" data-value="groq" onclick="Settings.setProvider('groq')">
+                            <i class="bi bi-lightning-charge me-1"></i>Groq
+                        </button>
+                        <button type="button" class="toggle-option" data-value="anthropic" onclick="Settings.setProvider('anthropic')">
+                            <i class="bi bi-cloud me-1"></i>Anthropic
+                        </button>
+                    </div>
+                </div>
+
+                <div id="ollamaFields">
+                    <div class="mb-3">
+                        <label class="form-label">Ollama Endpoint URL</label>
+                        <input type="url" id="ollamaEndpoint" class="form-control" value="http://localhost:11434"
+                            placeholder="http://localhost:11434"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label d-flex justify-content-between align-items-center">
+                            <span>Model Name</span>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.72rem;" onclick="Settings.refreshOllamaModels()" title="Refresh model list from Ollama">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </label>
+                        <select id="ollamaModel" class="form-select"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <option value="llama3.1:8b">llama3.1:8b (default)</option>
+                        </select>
+                        <div id="ollamaModelStatus" class="mt-1" style="font-size:0.72rem;"></div>
+                    </div>
+                </div>
+
+                <div id="groqFields" style="display:none;">
+                    <div class="mb-3">
+                        <label class="form-label">Groq API Key</label>
+                        <div class="api-key-field">
+                            <input type="password" id="groqApiKey" class="form-control pe-5"
+                                placeholder="gsk_..."
+                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('groqApiKey', this)">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Groq Endpoint</label>
+                        <input type="url" id="groqEndpoint" class="form-control" value="https://api.groq.com/openai/v1"
+                            placeholder="https://api.groq.com/openai/v1"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model Name</label>
+                        <input type="text" id="groqModel" class="form-control" value="openai/gpt-oss-20b"
+                            list="groqModelOptions"
+                            placeholder="e.g. openai/gpt-oss-20b"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                        <datalist id="groqModelOptions">
+                            <option value="openai/gpt-oss-20b"></option>
+                            <option value="openai/gpt-oss-120b"></option>
+                            <option value="meta-llama/llama-4-scout-17b-16e-instruct"></option>
+                            <option value="moonshotai/kimi-k2-instruct-0905"></option>
+                        </datalist>
+                        <div class="small text-muted mt-2">
+                            Groq uses a hosted OpenAI-compatible API. Recommended open-weight defaults are <code>openai/gpt-oss-20b</code> or <code>openai/gpt-oss-120b</code>.
+                        </div>
+                    </div>
+                </div>
+
+                <div id="anthropicFields" style="display:none;">
+                    <div class="mb-3">
+                        <label class="form-label">Anthropic API Key</label>
+                        <div class="api-key-field">
+                            <input type="password" id="anthropicApiKey" class="form-control pe-5"
+                                placeholder="sk-ant-..."
+                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('anthropicApiKey', this)">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model Name</label>
+                        <input type="text" id="anthropicModel" class="form-control" value="claude-sonnet-4-20250514"
+                            placeholder="e.g. claude-sonnet-4-20250514"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                    </div>
+                </div>
+
+                <button class="btn btn-accent btn-sm" onclick="Settings.saveLLM()">
+                    <i class="bi bi-check-lg me-1"></i>Save LLM Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agent Configuration -->
+    <div class="col-lg-6">
+        <div class="card settings-section">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-robot me-2 text-accent"></i>Agent Configuration</h6>
+                <span class="save-indicator" id="agentSaveIndicator"><i class="bi bi-check-circle-fill me-1"></i>Saved</span>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="range-label">
+                        <label class="form-label mb-0">Max Steps</label>
+                        <span class="range-value" id="maxStepsValue">25</span>
+                    </div>
+                    <input type="range" class="form-range" id="maxSteps" min="1" max="100" value="25"
+                        oninput="document.getElementById('maxStepsValue').textContent=this.value">
+                    <div class="d-flex justify-content-between">
+                        <small class="text-muted">1</small>
+                        <small class="text-muted">100</small>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Default Sandbox Type</label>
+                    <select id="sandboxType" class="form-select"
+                        style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                        <option value="docker">Docker</option>
+                        <option value="vm">VM Staging</option>
+                        <option value="local_static">Local Static Only</option>
+                        <option value="cloud_api">Cloud API Adapter</option>
+                        <option value="none">None (Disabled)</option>
+                    </select>
+                    <div class="small text-muted mt-2">
+                        These choices map directly to AISA backend modes. Legacy <code>subprocess</code> is normalized to <code>vm</code>.
+                    </div>
+                </div>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="requireApproval" checked>
+                    <label class="form-check-label" for="requireApproval">Require human approval for high-risk actions</label>
+                </div>
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="enableSandbox" checked>
+                    <label class="form-check-label" for="enableSandbox">Enable sandbox for file analysis</label>
+                </div>
+
+                <button class="btn btn-accent btn-sm" onclick="Settings.saveAgent()">
+                    <i class="bi bi-check-lg me-1"></i>Save Agent Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Web Demo Mode -->
+    <div class="col-lg-6">
+        <div class="card settings-section">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-window-stack me-2 text-accent"></i>Web Demo Mode</h6>
+                <span class="save-indicator" id="webSaveIndicator"><i class="bi bi-check-circle-fill me-1"></i>Saved</span>
+            </div>
+            <div class="card-body">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="demoModeEnabled">
+                    <label class="form-check-label" for="demoModeEnabled">Enable seeded localhost demo mode</label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Dataset</label>
+                    <input type="text" id="demoDataset" class="form-control" placeholder="default"
+                        style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                </div>
+                <div class="small text-muted mb-3">
+                    Demo mode keeps job lifecycle real while using deterministic fixture-backed results for dashboard, IOC, file, email, history, cases, and reports.
+                </div>
+                <button class="btn btn-accent btn-sm" onclick="Settings.saveWeb()">
+                    <i class="bi bi-check-lg me-1"></i>Save Web Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Keys -->
+    <div class="col-12">
+        <div class="card settings-section">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-key me-2 text-accent"></i>API Keys</h6>
+                <span class="save-indicator" id="apiKeysSaveIndicator"><i class="bi bi-check-circle-fill me-1"></i>Saved</span>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    {% for item in api_key_catalog %}
+                    <div class="col-md-6 col-lg-4">
+                        <label class="form-label">{{ item.label }}</label>
+                        <div class="api-key-field">
+                            <input type="password" id="apiKey_{{ item.key }}" class="form-control pe-5" placeholder="{{ item.placeholder }}"
+                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('apiKey_{{ item.key }}', this)">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="mt-3 d-flex align-items-center gap-3">
+                    <button class="btn btn-accent btn-sm" onclick="Settings.saveApiKeys()">
+                        <i class="bi bi-check-lg me-1"></i>Save API Keys
+                    </button>
+                    <p class="text-muted small mb-0">
+                        <i class="bi bi-info-circle me-1"></i>API keys are stored in <code>config.yaml</code>. Update the file directly for persistent changes.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- System Info -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-info-circle me-2 text-accent"></i>System Information</h6>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <small class="text-muted">Version</small>
+                        <div>AISA v2.0</div>
+                    </div>
+                    <div class="col-md-4">
+                        <small class="text-muted">Configuration</small>
+                        <div><code>config.yaml</code></div>
+                    </div>
+                    <div class="col-md-4">
+                        <small class="text-muted">Data Directory</small>
+                        <div><code>data/</code></div>
+                    </div>
+                    <div class="col-md-4 mt-3">
+                        <small class="text-muted">Current Mode</small>
+                        <div>{{ app_mode | upper }}</div>
+                    </div>
+                    <div class="col-md-8 mt-3">
+                        <small class="text-muted">Feature Availability</small>
+                        <div class="d-flex flex-wrap gap-2 mt-1">
+                            {% for name, meta in feature_status.items() %}
+                            <span class="badge bg-secondary-subtle text-light">{{ name | upper }}: {{ meta.label }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var Settings = (function() {
+    var currentProvider = 'ollama';
+    var apiKeyCatalog = [
+        {% for item in api_key_catalog %}
+        { key: '{{ item.key }}', label: '{{ item.label }}', fieldId: 'apiKey_{{ item.key }}' }{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ];
+
+    function normalizeSandboxType(value) {
+        var raw = String(value || '').trim().toLowerCase();
+        if (!raw) return 'none';
+        if (raw === 'subprocess') return 'vm';
+        if (raw === 'disabled') return 'none';
+        return raw;
+    }
+
+    function approvalEnabled(agent) {
+        if (!agent) return true;
+        if (agent.require_approval_for !== undefined) {
+            return (agent.require_approval_for || []).length > 0;
+        }
+        if (agent.require_approval !== undefined) {
+            return !!agent.require_approval;
+        }
+        return true;
+    }
+
+    function init() {
+        loadConfig();
+    }
+
+    function loadConfig() {
+        fetch('/api/config/settings')
+            .then(function(r) { return r.json(); })
+            .then(function(cfg) {
+                // LLM settings
+                var llm = cfg.llm || {};
+                var provider = llm.provider || 'ollama';
+                setProvider(provider);
+
+                if (llm.ollama_endpoint || llm.base_url) {
+                    document.getElementById('ollamaEndpoint').value = llm.ollama_endpoint || llm.base_url || '';
+                }
+                var savedModel = llm.ollama_model || llm.model || 'llama3.1:8b';
+                if (provider === 'ollama') {
+                    refreshOllamaModels(savedModel);
+                } else {
+                    var ollamaSelect = document.getElementById('ollamaModel');
+                    if (ollamaSelect && ollamaSelect.options.length === 0) {
+                        var opt = document.createElement('option');
+                        opt.value = savedModel;
+                        opt.textContent = savedModel;
+                        opt.selected = true;
+                        ollamaSelect.appendChild(opt);
+                    }
+                    setStatusMsg(
+                        document.getElementById('ollamaModelStatus'),
+                        'Ollama model list is only needed when Ollama is the active provider.',
+                        'text-muted',
+                        'bi-info-circle'
+                    );
+                }
+                if (llm.anthropic_model) {
+                    document.getElementById('anthropicModel').value = llm.anthropic_model;
+                }
+                if (llm.groq_endpoint || (provider === 'groq' && llm.base_url)) {
+                    document.getElementById('groqEndpoint').value = llm.groq_endpoint || llm.base_url || '';
+                }
+                if (llm.groq_model || (provider === 'groq' && llm.model)) {
+                    document.getElementById('groqModel').value = llm.groq_model || llm.model || 'openai/gpt-oss-20b';
+                }
+
+                // Agent settings
+                var agent = cfg.agent || {};
+                var maxSteps = agent.max_steps || 25;
+                document.getElementById('maxSteps').value = maxSteps;
+                document.getElementById('maxStepsValue').textContent = maxSteps;
+                document.getElementById('sandboxType').value = normalizeSandboxType(agent.default_sandbox || 'none');
+                document.getElementById('requireApproval').checked = approvalEnabled(agent);
+                if (cfg.analysis && cfg.analysis.enable_sandbox !== undefined) {
+                    document.getElementById('enableSandbox').checked = cfg.analysis.enable_sandbox;
+                }
+
+                var demoMode = (((cfg.web || {}).demo_mode) || {});
+                document.getElementById('demoModeEnabled').checked = !!demoMode.enabled;
+                document.getElementById('demoDataset').value = demoMode.dataset || 'default';
+
+                // API keys - show masked values if configured
+                var keys = cfg.api_keys || {};
+                if (keys.groq && keys.groq.length > 0) {
+                    document.getElementById('groqApiKey').placeholder = 'Configured (' + keys.groq + ')';
+                }
+                if (keys.anthropic && keys.anthropic.length > 0) {
+                    document.getElementById('anthropicApiKey').placeholder = 'Configured (' + keys.anthropic + ')';
+                }
+                apiKeyCatalog.forEach(function(item) {
+                    var field = document.getElementById(item.fieldId);
+                    if (!field) return;
+                    var k = item.key;
+                    if (keys[k] && keys[k].length > 0) {
+                        field.placeholder = 'Configured (' + keys[k] + ')';
+                    }
+                });
+            })
+            .catch(function(err) {
+                console.warn('Failed to load settings:', err);
+            });
+    }
+
+    function setProvider(provider) {
+        currentProvider = provider;
+        var buttons = document.querySelectorAll('#providerToggle .toggle-option');
+        buttons.forEach(function(btn) {
+            if (btn.getAttribute('data-value') === provider) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+        document.getElementById('ollamaFields').style.display = provider === 'ollama' ? '' : 'none';
+        document.getElementById('groqFields').style.display = provider === 'groq' ? '' : 'none';
+        document.getElementById('anthropicFields').style.display = provider === 'anthropic' ? '' : 'none';
+    }
+
+    function setStatusMsg(el, text, cls, icon) {
+        while (el.firstChild) el.removeChild(el.firstChild);
+        var span = document.createElement('span');
+        span.className = cls;
+        var i = document.createElement('i');
+        i.className = 'bi ' + icon + ' me-1';
+        span.appendChild(i);
+        span.appendChild(document.createTextNode(text));
+        el.appendChild(span);
+    }
+
+    function refreshOllamaModels(selectModel) {
+        var endpoint = (document.getElementById('ollamaEndpoint').value.trim() || 'http://localhost:11434').replace(/\/+$/, '');
+        var statusEl = document.getElementById('ollamaModelStatus');
+        setStatusMsg(statusEl, 'Loading models from Ollama...', 'text-muted', 'bi-hourglass-split');
+
+        fetch('/api/config/ollama-models?endpoint=' + encodeURIComponent(endpoint))
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                var models = data.models || [];
+                var sel = document.getElementById('ollamaModel');
+                var currentVal = selectModel || sel.value;
+
+                while (sel.options.length > 0) sel.remove(0);
+
+                if (models.length === 0) {
+                    var opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = 'No models found';
+                    sel.appendChild(opt);
+                    setStatusMsg(statusEl, 'No models found. Pull a model with: ollama pull llama3.1:8b', 'text-warning', 'bi-exclamation-triangle');
+                    return;
+                }
+
+                var found = false;
+                models.forEach(function(m) {
+                    var name = m.name || m.model || '';
+                    if (!name) return;
+                    var opt = document.createElement('option');
+                    opt.value = name;
+                    var sizeGB = m.size ? (m.size / (1024*1024*1024)).toFixed(1) + ' GB' : '';
+                    var family = m.details ? (m.details.family || '') : '';
+                    var params = m.details ? (m.details.parameter_size || '') : '';
+                    var label = name;
+                    var extras = [params, sizeGB, family].filter(function(x) { return x; });
+                    if (extras.length > 0) label += '  (' + extras.join(', ') + ')';
+                    opt.textContent = label;
+                    if (name === currentVal) { opt.selected = true; found = true; }
+                    sel.appendChild(opt);
+                });
+
+                if (!found && currentVal) {
+                    var fallback = document.createElement('option');
+                    fallback.value = currentVal;
+                    fallback.textContent = currentVal + ' (not found locally)';
+                    fallback.selected = true;
+                    sel.insertBefore(fallback, sel.firstChild);
+                }
+
+                setStatusMsg(statusEl, models.length + ' model' + (models.length > 1 ? 's' : '') + ' available', 'text-success', 'bi-check-circle');
+            })
+            .catch(function(err) {
+                setStatusMsg(statusEl, 'Cannot connect to Ollama: ' + err.message, 'text-danger', 'bi-x-circle');
+            });
+    }
+
+    function saveLLM() {
+        var llm = { provider: currentProvider };
+        if (currentProvider === 'ollama') {
+            llm.ollama_endpoint = document.getElementById('ollamaEndpoint').value.trim();
+            llm.ollama_model = document.getElementById('ollamaModel').value;
+        } else if (currentProvider === 'groq') {
+            llm.groq_endpoint = document.getElementById('groqEndpoint').value.trim() || 'https://api.groq.com/openai/v1';
+            llm.groq_model = document.getElementById('groqModel').value.trim() || 'openai/gpt-oss-20b';
+        } else {
+            llm.anthropic_model = document.getElementById('anthropicModel').value.trim();
+        }
+        var payload = { llm: llm };
+        // If Anthropic key provided, send it via api_keys
+        if (currentProvider === 'anthropic') {
+            var key = document.getElementById('anthropicApiKey').value.trim();
+            if (key) payload.api_keys = { anthropic: key };
+        } else if (currentProvider === 'groq') {
+            var groqKey = document.getElementById('groqApiKey').value.trim();
+            if (groqKey) payload.api_keys = { groq: groqKey };
+        }
+        saveConfig(payload, 'llmSaveIndicator');
+    }
+
+    function saveAgent() {
+        var requireApproval = document.getElementById('requireApproval').checked;
+        var payload = {
+            agent: {
+                max_steps: parseInt(document.getElementById('maxSteps').value) || 25,
+                default_sandbox: normalizeSandboxType(document.getElementById('sandboxType').value),
+                require_approval: requireApproval,
+                require_approval_for: requireApproval ? ['sandbox_submit'] : [],
+                enable_sandbox: document.getElementById('enableSandbox').checked
+            },
+            analysis: {
+                enable_sandbox: document.getElementById('enableSandbox').checked
+            }
+        };
+        saveConfig(payload, 'agentSaveIndicator');
+    }
+
+    function saveWeb() {
+        saveConfig({
+            web: {
+                demo_mode: {
+                    enabled: document.getElementById('demoModeEnabled').checked,
+                    dataset: document.getElementById('demoDataset').value.trim() || 'default'
+                }
+            }
+        }, 'webSaveIndicator');
+    }
+
+    function saveApiKeys() {
+        var keys = {};
+        apiKeyCatalog.forEach(function(item) {
+            var field = document.getElementById(item.fieldId);
+            if (!field) return;
+            var val = field.value.trim();
+            if (val) keys[item.key] = val;
+        });
+        if (Object.keys(keys).length === 0) {
+            alert('No API keys entered.');
+            return;
+        }
+        saveConfig({ api_keys: keys }, 'apiKeysSaveIndicator');
+    }
+
+    function saveConfig(payload, indicatorId) {
+        fetch('/api/config/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(function(data) {
+            var indicator = document.getElementById(indicatorId);
+            if (indicator) {
+                indicator.classList.add('show');
+                setTimeout(function() { indicator.classList.remove('show'); }, 3000);
+            }
+            if (data.message && window.BTADashboard && window.BTADashboard.showToast) {
+                window.BTADashboard.showToast(data.message, 'success');
+            }
+        })
+        .catch(function(err) {
+            if (window.BTADashboard && window.BTADashboard.showToast) {
+                window.BTADashboard.showToast('Save failed: ' + err.message, 'error');
+            } else {
+                alert('Save failed: ' + err.message);
+            }
+        });
+    }
+
+    function toggleVisibility(fieldId, btn) {
+        var input = document.getElementById(fieldId);
+        var icon = btn.querySelector('i');
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.className = 'bi bi-eye-slash';
+        } else {
+            input.type = 'password';
+            icon.className = 'bi bi-eye';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+
+    return {
+        setProvider: setProvider,
+        saveLLM: saveLLM,
+        saveAgent: saveAgent,
+        saveWeb: saveWeb,
+        saveApiKeys: saveApiKeys,
+        toggleVisibility: toggleVisibility,
+        refreshOllamaModels: refreshOllamaModels
+    };
+})();
+</script>
+{% endblock %}

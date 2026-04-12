@@ -1,0 +1,191 @@
+{
+  "stats": {
+    "total_analyses": 18,
+    "malicious_count": 7,
+    "suspicious_count": 6,
+    "clean_count": 5,
+    "average_score": 63.4,
+    "analyses_today": 4,
+    "daily_counts": [1, 3, 2, 4, 3, 2, 4]
+  },
+  "sources": [
+    {"name": "VirusTotal", "category": "premium", "status": "healthy", "mode": "demo"},
+    {"name": "AbuseIPDB", "category": "premium", "status": "healthy", "mode": "demo"},
+    {"name": "Shodan", "category": "premium", "status": "degraded", "mode": "demo"},
+    {"name": "AlienVault OTX", "category": "premium", "status": "healthy", "mode": "demo"},
+    {"name": "GreyNoise", "category": "premium", "status": "healthy", "mode": "demo"},
+    {"name": "Abuse.ch URLhaus", "category": "osint", "status": "healthy", "mode": "demo"},
+    {"name": "Abuse.ch MalwareBazaar", "category": "osint", "status": "healthy", "mode": "demo"},
+    {"name": "OpenPhish", "category": "osint", "status": "healthy", "mode": "demo"},
+    {"name": "Ransomwatch", "category": "osint", "status": "healthy", "mode": "demo"},
+    {"name": "Ollama LLM", "category": "optional", "status": "available", "mode": "demo"}
+  ],
+  "jobs": [
+    {
+      "id": "demo-email-001",
+      "analysis_type": "email",
+      "params": {"filename": "invoice_notice.eml", "mode": "demo"},
+      "status": "completed",
+      "progress": 100,
+      "current_step": "Demo result ready",
+      "verdict": "MALICIOUS",
+      "score": 91,
+      "created_at": "2026-03-30T09:20:00+00:00",
+      "completed_at": "2026-03-30T09:20:06+00:00",
+      "result": {
+        "verdict": "MALICIOUS",
+        "composite_score": 91,
+        "confidence": 0.93,
+        "summary": "Demo phishing email with spoofed sender, urgent tone, and malicious credential-harvesting link.",
+        "email_data": {
+          "subject": "Urgent: Verify your mailbox quota immediately",
+          "from": "IT Support <alerts@micr0soft-secure.com>",
+          "to": "analyst@example.com"
+        },
+        "forensics": {
+          "display_name_mismatch": true,
+          "reply_to_mismatch": true,
+          "shortened_urls": 1
+        },
+        "authentication_results": {"spf": "fail", "dkim": "fail", "dmarc": "fail"},
+        "recommendations": [
+          "Quarantine the message and block the sender domain.",
+          "Search for related URLs in proxy and email telemetry.",
+          "Notify affected users and reset any exposed credentials."
+        ],
+        "detection_rules": {
+          "sigma": "title: CABTA Demo Phishing Email\nlogsource:\n  product: email\nselection:\n  sender_domain: micr0soft-secure.com\ncondition: selection"
+        },
+        "llm_analysis": {
+          "analysis": "Language, auth failures, and URL patterns align with credential phishing.",
+          "recommendations": ["Escalate to phishing response workflow."],
+          "note": "Demo explanation"
+        },
+        "mitre_mapping": [
+          {"technique_id": "T1566.002", "name": "Spearphishing Link", "tactic": "Initial Access"}
+        ],
+        "url_findings": [{"url": "https://secure-mailbox-check.example/login", "verdict": "malicious"}]
+      }
+    },
+    {
+      "id": "demo-file-001",
+      "analysis_type": "file",
+      "params": {"filename": "invoice_payload.exe", "mode": "demo"},
+      "status": "completed",
+      "progress": 100,
+      "current_step": "Demo result ready",
+      "verdict": "MALICIOUS",
+      "score": 88,
+      "created_at": "2026-03-30T08:35:00+00:00",
+      "completed_at": "2026-03-30T08:35:12+00:00",
+      "result": {
+        "verdict": "MALICIOUS",
+        "composite_score": 88,
+        "summary": "Demo PE sample with suspicious strings, high entropy sections, and ransomware indicators.",
+        "confidence": 0.9,
+        "file_info": {"filename": "invoice_payload.exe", "size": 421888, "type": "PE32 executable"},
+        "hashes": {
+          "md5": "8b1a9953c4611296a827abf8c47804d7",
+          "sha1": "356a192b7913b04c54574d18c28d46e6395428ab",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "static_analysis": {
+          "threat_indicators": [
+            "Encrypted strings and service persistence pattern detected",
+            "Suspicious PowerShell launcher embedded in resources"
+          ]
+        },
+        "capabilities": [
+          {"technique_id": "T1059.001", "tactic": "Execution", "technique": "PowerShell", "description": "Embedded PowerShell execution path"},
+          {"technique_id": "T1547.001", "tactic": "Persistence", "technique": "Registry Run Keys", "description": "Startup persistence candidate"}
+        ],
+        "recommendations": [
+          "Block the sample hash in endpoint controls.",
+          "Hunt for related persistence artifacts in recent endpoints.",
+          "Review any network indicators extracted from the binary."
+        ],
+        "detection_rules": {
+          "yara": "rule CABTA_Demo_Suspicious_PE {\n  strings:\n    $a = \"vssadmin delete shadows\"\n  condition:\n    $a\n}"
+        },
+        "llm_analysis": {
+          "analysis": "The sample presents multiple overlapping indicators consistent with a staged malware dropper.",
+          "note": "Demo explanation"
+        },
+        "mitre_mapping": [
+          {"technique_id": "T1486", "name": "Data Encrypted for Impact", "tactic": "Impact"}
+        ],
+        "iocs": {
+          "domains": ["updates-check.example"],
+          "ips": ["185.220.101.12"]
+        }
+      }
+    },
+    {
+      "id": "demo-ioc-001",
+      "analysis_type": "ioc",
+      "params": {"value": "185.220.101.12", "ioc_type": "ip", "mode": "demo"},
+      "status": "completed",
+      "progress": 100,
+      "current_step": "Demo result ready",
+      "verdict": "SUSPICIOUS",
+      "score": 72,
+      "created_at": "2026-03-30T08:10:00+00:00",
+      "completed_at": "2026-03-30T08:10:04+00:00",
+      "result": {
+        "verdict": "SUSPICIOUS",
+        "threat_score": 72,
+        "confidence": 0.82,
+        "ioc": "185.220.101.12",
+        "ioc_type": "ip",
+        "sources_checked": 5,
+        "sources_flagged": 4,
+        "sources": {
+          "VirusTotal": {"status": "Flagged", "detections": 14, "score": 72, "message": "14/92 vendors flagged this IP"},
+          "AbuseIPDB": {"status": "Flagged", "confidence": 89, "score": 89, "message": "High abuse confidence"},
+          "GreyNoise": {"status": "Observed", "message": "Observed internet scanning activity"},
+          "AlienVault OTX": {"status": "Referenced", "message": "IOC appeared in multiple pulses"},
+          "Shodan": {"status": "Noisy", "message": "Service exposed to the internet"}
+        },
+        "recommendations": [
+          "Block the IP if no business justification exists.",
+          "Review recent egress connections to this address.",
+          "Pivot on related domains and ASNs."
+        ],
+        "detection_rules": {
+          "spl": "index=proxy dest_ip=185.220.101.12 | stats count by src_ip, user"
+        },
+        "llm_analysis": {
+          "analysis": "The indicator shows multi-source abuse signals and should be treated as suspicious pending internal validation.",
+          "note": "Demo explanation"
+        },
+        "mitre_mapping": [
+          {"technique_id": "T1071.001", "name": "Web Protocols", "tactic": "Command and Control"}
+        ]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "demo-case-001",
+      "title": "Credential Phishing Campaign Demo",
+      "description": "Seeded localhost demo case linking the email lure, dropped payload, and related IOC.",
+      "severity": "high",
+      "status": "Investigating",
+      "created_at": "2026-03-30T07:55:00+00:00",
+      "updated_at": "2026-03-30T09:20:10+00:00",
+      "analyses": [
+        {"analysis_id": "demo-email-001", "linked_at": "2026-03-30T09:20:08+00:00"},
+        {"analysis_id": "demo-file-001", "linked_at": "2026-03-30T08:35:20+00:00"},
+        {"analysis_id": "demo-ioc-001", "linked_at": "2026-03-30T08:10:08+00:00"}
+      ],
+      "notes": [
+        {
+          "id": "demo-note-01",
+          "content": "Campaign shows consistent lure language and shared infrastructure across all three demo artifacts.",
+          "author": "cabta-demo",
+          "created_at": "2026-03-30T09:21:00+00:00"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,401 @@
+/**
+ * Blue Team Assistant - Dashboard & Page-Specific Styles
+ * Author: Ugur Ates
+ *
+ * Additional styles not covered by themes.css.
+ * Mostly layout tweaks and page-specific components.
+ */
+
+/* =========================================================
+   Quick IOC Form (dashboard page)
+   ========================================================= */
+.quick-ioc-form {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+
+.quick-ioc-form input[type="text"] {
+    flex: 1;
+}
+
+.quick-ioc-form button {
+    white-space: nowrap;
+}
+
+/* =========================================================
+   Analysis Results Container (analysis.js render target)
+   ========================================================= */
+#analysis-results,
+.results-container {
+    display: none;
+}
+
+#analysis-results.visible,
+.results-container.visible {
+    display: block;
+}
+
+.results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.results-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+}
+
+.result-section {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.result-section h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+/* =========================================================
+   Score Gauge (report view)
+   ========================================================= */
+.score-gauge {
+    position: relative;
+    width: 160px;
+    height: 160px;
+    margin: 0 auto;
+}
+
+.score-gauge canvas {
+    width: 100%;
+    height: 100%;
+}
+
+.score-gauge .score-value {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 2.2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.score-gauge .score-label {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+/* =========================================================
+   Detail Section (report view)
+   ========================================================= */
+.detail-section {
+    border-left: 3px solid var(--color-primary);
+    padding-left: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* =========================================================
+   Analysis Progress (legacy analysis-progress container)
+   ========================================================= */
+#analysis-progress {
+    display: none;
+}
+
+#analysis-progress.visible {
+    display: block;
+}
+
+/* =========================================================
+   Chart containers
+   ========================================================= */
+.chart-container {
+    position: relative;
+}
+
+.chart-container canvas {
+    max-width: 100%;
+}
+
+/* =========================================================
+   Case detail note styles
+   ========================================================= */
+.case-meta dt {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.case-meta dd {
+    margin: 0 0 0.75rem;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+/* =========================================================
+   Drag-and-drop active state extra
+   ========================================================= */
+.drop-zone.drag-active {
+    border-color: var(--color-primary) !important;
+    background-color: rgba(88, 166, 255, 0.05) !important;
+}
+
+/* =========================================================
+   Code blocks in results
+   ========================================================= */
+.result-code {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.83rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* =========================================================
+   Table text truncation
+   ========================================================= */
+.table .text-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* =========================================================
+   Bootstrap overrides for themed inputs
+   ========================================================= */
+.form-control:disabled,
+.form-select:disabled {
+    opacity: 0.5;
+}
+
+/* =========================================================
+   UI Refresh - Dashboard and Analysis Workbench
+   ========================================================= */
+.page-hero-dashboard {
+    margin-bottom: 1.4rem;
+}
+
+.hero-inline-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.8rem;
+    margin-top: 1rem;
+}
+
+.hero-inline-card {
+    padding: 0.85rem 0.95rem;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.hero-inline-card .label {
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+}
+
+.hero-inline-card .value {
+    margin-top: 0.35rem;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+}
+
+.section-header-copy {
+    max-width: 62ch;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+
+.quick-action-tile {
+    position: relative;
+    overflow: hidden;
+    padding: 1.2rem 1.05rem;
+    border-radius: 18px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+        rgba(15, 23, 42, 0.72);
+    text-align: left;
+    box-shadow: 0 16px 34px rgba(2, 6, 23, 0.16);
+}
+
+.quick-action-tile::after {
+    content: '';
+    position: absolute;
+    inset: auto -30px -40px auto;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(14, 165, 233, 0.08);
+}
+
+.quick-action-tile .qa-icon {
+    width: 52px;
+    height: 52px;
+    margin: 0 0 0.9rem;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.45rem;
+    background: rgba(14, 165, 233, 0.12);
+    color: #7dd3fc;
+}
+
+.quick-action-tile .qa-title {
+    font-size: 1rem;
+    letter-spacing: -0.02em;
+}
+
+.quick-action-tile .qa-desc {
+    font-size: 0.82rem;
+    line-height: 1.55;
+    max-width: 24ch;
+}
+
+.source-list-scroll {
+    max-height: 420px;
+}
+
+.source-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.source-item:last-child {
+    border-bottom: none;
+}
+
+.source-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+}
+
+.source-status {
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.analysis-workbench {
+    align-items: start;
+}
+
+.analysis-progress-surface,
+.analysis-results-surface {
+    margin-top: 1.35rem;
+}
+
+.analysis-progress-surface .card-header,
+.analysis-results-surface .card-header {
+    padding-top: 1.05rem;
+    padding-bottom: 1.05rem;
+}
+
+.analysis-progress-surface .progress,
+.analysis-results-surface .progress {
+    height: 18px;
+}
+
+#iocProgressArea .card,
+#fileProgressArea .card,
+#emailProgressArea .card {
+    border-color: rgba(14, 165, 233, 0.16);
+    background: linear-gradient(135deg, rgba(8, 145, 178, 0.08), rgba(15, 23, 42, 0.76));
+}
+
+#iocResults .card,
+#fileResults .card,
+#emailResults .card {
+    border-color: rgba(148, 163, 184, 0.14);
+}
+
+#iocResultsBody,
+#resultOverview,
+#resultStatic,
+#resultEntropy,
+#resultPacker,
+#resultStrings,
+#resultCapabilities,
+#resultYara,
+#resultShellcode,
+#resultIocs,
+#resultMitre,
+#resultSandbox,
+#resultScoring,
+#resultDetection,
+#resultLlm,
+#resultPipeline,
+#resultHeaders,
+#resultAuth,
+#resultLinks,
+#resultAttachments,
+#resultAdvanced,
+#resultForensics {
+    min-height: 220px;
+}
+
+.tab-placeholder {
+    gap: 0.5rem;
+    min-height: 220px;
+    border-radius: 16px;
+    border: 1px dashed rgba(148, 163, 184, 0.16);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tab-placeholder .ph-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.tab-placeholder .ph-desc {
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 991.98px) {
+    .hero-inline-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .section-header-bar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .quick-action-tile .qa-desc {
+        max-width: none;
+    }
+}
