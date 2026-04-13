@@ -92,7 +92,7 @@ function createEmbed(release) {
   const isBeta = releaseType === 'beta';
   const color = isBeta ? 0xF59E0B : 0x10B981;
   const title = isBeta ? `🧪 Beta Release ${release.version}` : `🚀 Release ${release.version}`;
-  const url = `https://github.com/claudekit/claudekit-engineer/releases/tag/v${release.version}`;
+  const url = `https://github.com/conglambaomat/hihi/releases/tag/v${release.version}`;
 
   const sectionEmojis = {
     'Features': '🚀',

@@ -89,12 +89,12 @@
     "skills/agent-teams/**"
   ],
   "version": "2.13.0",
-  "name": "claudekit-engineer",
-  "description": "A comprehensive boilerplate template for building professional software projects with CLI Coding Agents (Claude Code and Open Code).",
+  "name": "hihi-workspace",
+  "description": "Workspace metadata for the hihi repository, with CABTA as the primary product and shared agent tooling at the root.",
   "buildDate": "2026-02-25T15:14:15.765Z",
   "repository": {
     "type": "git",
-    "url": "https://github.com/claudekit/claudekit-engineer.git"
+    "url": "https://github.com/conglambaomat/hihi.git"
   },
   "download": {
     "lastDownloadedAt": null,

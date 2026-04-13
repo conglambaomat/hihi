@@ -2,332 +2,213 @@
 
 ## Purpose
 
-This document is the operational, AI-friendly source of truth for CABTA as a web-first localhost SOC triage and investigation platform.
+This is the primary system-design document for CABTA.
 
-Use this document when vibe coding to decide:
+Use it to answer:
 
-- where a feature belongs
+- what CABTA is trying to optimize for
 - which layer owns a change
-- how to extend CABTA without breaking verdict accuracy
-- what must stay deterministic
-- how the localhost demo should behave
-- what tests, docs, and UI states must move with a change
+- which files are the best entrypoints for a task
+- what must not break when moving fast with AI assistance
+- what "done" means for localhost web delivery
 
-This document is intentionally more product-operational than `docs/ARCHITECTURE.md`.
+This file is intentionally shorter and sharper than older design docs.
+If a detail belongs in deep technical reference, it should live in code, tests, or focused docs instead of bloating this file.
+
+## Canonical Read Order
+
+For most non-trivial tasks, read in this order:
+
+1. `README.md`
+2. `docs/project-overview-pdr.md`
+3. this `docs/system-design.md`
+4. `docs/codebase-summary.md`
+5. `docs/code-standards.md`
+6. `docs/feature-truth-matrix.md` for runtime-sensitive or demo-sensitive work
+7. `TEST-MANIFEST.md`
+8. relevant plan under `plans/` if one exists
 
 ## System Identity
 
-- Product name: `CABTA`
+- Canonical product name: `CABTA`
 - Expanded name: `Cyan Agent Blue Team Assistant`
-- Current product direction: local-first SOC analysis platform
-- Primary operating mode for this design: localhost web application for demo and analyst workflows
+- Primary product mode: localhost web application
 - Secondary interfaces:
   - CLI
   - MCP server
-  - internal Python import
+  - Python import
 
-New work should standardize on `CABTA` in UI, docs, and new code unless preserving backward compatibility.
+New docs, UI text, and newly touched code should prefer `CABTA`.
+Legacy names may remain in older code paths until intentionally migrated, but new work should not add fresh naming drift.
 
 ## Product Goal
 
-CABTA helps analysts make faster, safer triage and investigation decisions by turning raw security artifacts into:
+CABTA is a local-first analyst platform for SOC and DFIR work.
 
-- normalized evidence
-- multi-source enrichment
+Its job is to turn raw security inputs into:
+
+- visible evidence
+- optional enrichment
 - deterministic scores
 - explainable verdicts
-- analyst-ready recommendations
-- optional detection content
-- exportable case and report artifacts
+- actionable analyst recommendations
+- reusable reports, cases, and exports
 
-CABTA is not just an analyzer collection.
-
-It is a decision-support workbench.
-
-## Current Reality vs Target Direction
-
-### Current reality
-
-The current repo already includes:
-
-- a FastAPI web dashboard
-- REST APIs
-- HTML templates
-- job tracking and history
-- case workflows
-- agent chat and playbooks
-- MCP management
-- CLI and MCP entrypoints
-- local-first and optional-Ollama positioning
-
-### Target direction
-
-The system should now be designed and evolved as a web-first localhost product where the browser experience is the main demo and analyst path.
-
-CLI and MCP remain important, but they are secondary interfaces into the same core.
+The main product is not "a pile of analyzers."
+The main product is a decision-support workflow that remains trustworthy under partial configuration.
 
 ## Primary Product Mode
 
-### Web-first localhost mode
+CABTA should be evolved as a web-first localhost product.
 
-The default CABTA product experience is a browser-based application running on localhost.
+The browser path is the default demo and analyst experience:
 
-This mode should provide a complete demo and analyst workflow without requiring the user to understand internal modules or CLI syntax.
+- open app locally
+- choose investigation path
+- submit IOC, file, or email
+- inspect evidence and verdict
+- review history, cases, and reports
 
-### CLI and MCP remain supported
-
-CLI and MCP should continue to use the same core orchestration and analysis engines.
-
+CLI and MCP still matter, but they are alternate interfaces into the same core analysis engine.
 They are not separate products.
 
-They are alternate interfaces into the same analysis core.
-
-## Demo Success Criteria
-
-A localhost demo is successful when all of the following are true:
-
-- a user can start CABTA locally with minimal setup
-- the browser UI exposes all major analysis paths clearly
-- IOC, file, and email workflows can be demonstrated end-to-end
-- the app remains useful with zero paid API keys
-- every verdict shows visible evidence and score reasoning
-- UI output is understandable to a security analyst in under 30 seconds
-- failures degrade gracefully and remain legible
-- demo mode can showcase realistic results even when external services are unavailable
-- reports, cases, and investigation history are viewable from the UI
-- agent and MCP features do not become required dependencies for the main demo path
-
-## Core Design Principles
+## Non-Negotiable Design Rules
 
 ### 1. Evidence first
 
-CABTA is an analyst system.
-
-Evidence must always remain visible and must never be hidden behind a narrative summary.
+Evidence must remain visible in analyst-facing results.
+Do not hide core findings behind summary prose.
 
 ### 2. Deterministic verdict path
 
-Threat verdicts come from deterministic scoring, source evidence, heuristics, and explicit rules.
+Final verdict authority belongs to deterministic logic:
 
-LLM output may explain findings but must not become the final authority.
+- heuristics
+- evidence extraction
+- enrichment signals
+- scoring
+- explicit mapping rules
+
+LLM output may interpret. It must not become the source of truth for verdicts.
 
 ### 3. Local-first by default
 
-Core workflows must remain usable on localhost with no mandatory cloud dependency.
+Core workflows must remain useful on localhost:
 
-Optional enrichments may improve results but must not be required to demonstrate the product.
+- without paid API keys
+- without cloud-only dependencies
+- with optional LLM support, not mandatory LLM support
 
 ### 4. Graceful degradation
 
-Missing API keys, offline sources, sandbox failures, LLM unavailability, and unsupported artifact types must reduce enrichment quality, not collapse the workflow.
+Missing keys, offline services, or unavailable sandboxes should degrade results honestly, not fake success and not crash the main path.
 
-### 5. Web-first product, shared core engines
+### 5. Web-first, shared core
 
-The browser app is the main product surface for demos and analyst use.
+Web owns the main user journey.
+CLI and MCP should reuse the same orchestration and scoring core instead of forking logic.
 
-CLI and MCP must reuse the same orchestration and scoring core.
+### 6. Stable result contracts
 
-### 6. Explainability over theatrical AI
+Additive changes are preferred over silent result-shape rewrites.
+Reporting, web routes, and MCP surfaces depend on stable keys.
 
-CABTA should prefer:
+### 7. Narrow owning lane
 
-- evidence summaries
-- source attribution
-- score breakdowns
-- analyst recommendations
+Every change should clearly belong to one main lane:
 
-over vague AI confidence language.
+- IOC
+- File
+- Email
+- Dashboard/Web
+- Case/History/Reports
+- Agent/MCP
 
-### 7. Safe extensibility
-
-New analyzers, sources, playbooks, and reports must plug into stable contracts rather than inventing new result shapes ad hoc.
-
-## Product Scope
-
-CABTA supports the following primary investigation inputs:
-
-- IP
-- domain
-- URL
-- hash
-- email address
-- CVE identifier
-- suspicious file sample
-- suspicious email artifact
-- IOC extracted from an alert or prior investigation
-
-The platform should preserve these as first-class product capabilities:
-
-- multi-source threat intelligence
-- advanced malware analysis
-- email forensics
-- rule generation
-- case management
-- STIX export
-- local LLM support
-
-## Non-Goals
-
-CABTA is not:
-
-- a fully automated SOC decision engine
-- a replacement for malware sandboxes or SIEMs
-- a case management suite of record
-- a full EDR or XDR platform
-- a cloud-native multi-tenant SaaS in this design
-- a system where LLM output replaces evidence review
-
-## Primary User Personas
-
-### 1. SOC Analyst
-
-Needs fast triage, clear verdicts, visible evidence, and recommended next actions.
-
-### 2. Incident Responder
-
-Needs deeper artifact inspection, IOC pivoting, case notes, and exportable evidence.
-
-### 3. Demo User or Evaluator
-
-Needs a visually clear, low-friction walkthrough of CABTA's capabilities on localhost.
-
-### 4. Power User or Integrator
-
-Needs APIs, MCP, and reusable result contracts.
-
-## System Context
-
-CABTA exposes the same core logic through three interfaces:
-
-- Web
-  - primary interface for localhost demo and analyst workflows
-  - entrypoint: `src/web/app.py`
-- CLI
-  - scriptable analyst path
-  - entrypoint: `src/soc_agent.py`
-- MCP
-  - AI-tooling integration path
-  - entrypoint: `src/server.py`
-
-## System Architecture Summary
-
-CABTA should be treated as a web application with a shared analysis core.
-
-### Architecture layers
-
-- presentation layer
-- API and page routing layer
-- analysis job orchestration layer
-- core tool orchestration layer
-- analyzer layer
-- enrichment and integration layer
-- scoring and verdict governance layer
-- reporting and export layer
-- agent and MCP orchestration layer
-- local persistence and configuration layer
-
-### Design direction
-
-- Web owns user interaction.
-- API owns request normalization and response formatting.
-- Background jobs own long-running work.
-- Tool orchestrators own workflow composition.
-- Analyzers own artifact-specific extraction.
-- Integrations own external lookups.
-- Scoring owns verdict logic.
-- Reporting owns human-readable and exportable output.
-- Agent and MCP own AI-native workflows, not core verdict authority.
+Cross-lane work should be planned before implementation.
 
 ## Canonical Product Surfaces
 
-### 1. Dashboard
+### Dashboard
 
-Purpose:
+Owns:
 
-- show system status
-- show recent jobs
-- provide quick actions
-- provide demo-friendly overview
-- surface lightweight telemetry
+- system overview
+- source health
+- recent jobs
+- quick actions
+- demo-friendly orientation
 
-### 2. IOC Investigation
+### IOC Investigation
 
-Purpose:
+Owns:
 
-- single-input IOC triage
-- enrichment across sources
+- single IOC triage
+- multi-source enrichment
 - score breakdown
-- verdict and analyst guidance
+- verdict and recommendations
 - rule and export generation
 
-### 3. File Analysis
+### File Analysis
 
-Purpose:
+Owns:
 
-- upload or select file
-- route by type
+- upload/select file
+- route by file type
 - run static analysis and enrichment
-- show evidence, extracted IOCs, MITRE candidates, detections, and recommendations
+- show extracted indicators, detections, MITRE context, and verdict
 
-### 4. Email Analysis
+### Email Analysis
 
-Purpose:
+Owns:
 
-- parse mail artifact
+- parse email artifacts
+- inspect auth results and headers
 - detect phishing and BEC signals
-- analyze attachments and extracted URLs
-- pivot to IOC and file workflows
-- show composite verdict
+- pivot attachments and URLs into deeper analysis
 
-### 5. History
+### History
 
-Purpose:
+Owns:
 
-- browse prior jobs
-- reopen results
-- compare analyses
-- support demo replay
+- prior jobs
+- result reopening
+- demo replay
 
-### 6. Cases
+### Cases
 
-Purpose:
+Owns:
 
-- group related analyses
-- add notes
-- preserve analyst workflow context
+- grouping related analyses
+- notes
+- investigation context
 
-### 7. Reports
+### Reports
 
-Purpose:
+Owns:
 
-- render analyst-facing result views
-- support JSON, HTML, and structured export
+- analyst-facing presentation
+- exportable output
 
-### 8. Agent Workspace
+### Agent Workspace
 
-Purpose:
+Owns:
 
-- interactive AI-assisted investigation
-- tool-driven evidence gathering
-- playbook execution
-- MCP-connected workflows
+- AI-assisted investigation workflows
+- tool-driven playbook execution
+- evidence-linked agent activity
 
-### 9. Settings
+This is optional infrastructure, not the primary verdict authority.
 
-Purpose:
+### Settings and MCP Management
 
-- configure local behavior
-- configure APIs, LLM, demo mode, sources, and limits
+Own:
 
-### 10. MCP Management
+- local config
+- API/LLM/source toggles
+- optional integration visibility
+- honest health and capability state
 
-Purpose:
-
-- show server connectivity
-- enable or disable integrations
-- keep AI tooling optional and visible
-
-## Canonical Layer Ownership
+## Layer Ownership
 
 ### 1. Presentation Layer
 
@@ -338,19 +219,17 @@ Files:
 
 Responsibilities:
 
-- analyst-facing HTML pages
-- visual evidence rendering
-- forms, tables, filters, and result navigation
-- job progress visualization
-- charting and timeline presentation
+- render pages and components
+- show evidence, scores, and status
+- handle interaction and navigation
 
 Must not:
 
-- compute threat verdicts
-- perform enrichment directly
-- contain hidden business logic
+- compute verdicts
+- query integrations directly
+- hide important business logic in frontend code
 
-### 2. API and Page Routing Layer
+### 2. Web Routing Layer
 
 Files:
 
@@ -360,35 +239,30 @@ Files:
 Responsibilities:
 
 - receive requests
-- validate input shape
-- create jobs or invoke fast paths
-- expose APIs and page routes
-- convert internal data into API or template response models
+- validate input
+- start jobs or invoke fast paths
+- shape API/page responses
 
 Must not:
 
-- directly implement analysis logic
-- bypass orchestrators for convenience
+- own analysis logic
 - own scoring logic
+- bypass orchestrators for convenience
 
-### 3. Analysis Job Orchestration Layer
+### 3. Job and Case Orchestration Layer
 
 Files:
 
 - `src/web/analysis_manager.py`
-- web background task helpers
-- case and job linking utilities
+- `src/web/case_store.py`
+- `src/web/runtime_refresh.py`
 
 Responsibilities:
 
-- create analysis jobs
-- track status
-- persist progress
-- retry, cancel, and finalize work
-- preserve consistent job lifecycle
-- support history and report retrieval
-
-This layer is mandatory for a web-first CABTA because analysts and demo users need visible progress and resumable results.
+- create and track jobs
+- persist status
+- connect results to history and cases
+- keep the web workflow resumable and observable
 
 ### 4. Core Tool Orchestration Layer
 
@@ -400,12 +274,11 @@ Files:
 
 Responsibilities:
 
-- coordinate complete workflows
-- call analyzers, integrations, scoring, and reporting helpers
+- coordinate full analysis flows
+- call analyzers, integrations, scoring, and reporting
 - preserve stable output contracts
-- trigger pivots between artifact types
 
-This layer is the operational heart of CABTA.
+This is CABTA's operational heart.
 
 ### 5. Analyzer Layer
 
@@ -416,17 +289,16 @@ Files:
 
 Responsibilities:
 
-- artifact-specific parsing
-- file and format-specific evidence extraction
-- suspicious pattern detection
-- IOC extraction
-- MITRE candidate support
+- parse artifact-specific formats
+- extract evidence
+- detect suspicious patterns
+- surface structured findings
 
 Must not:
 
-- perform final verdict mapping
-- emit UI-oriented output
-- directly mutate case or job state
+- become the final verdict authority
+- return UI-only shapes
+- mutate job or case state
 
 ### 6. Enrichment and Integration Layer
 
@@ -436,11 +308,13 @@ Files:
 
 Responsibilities:
 
-- query external or local intel, sandbox, LLM, and export providers
-- normalize third-party responses
-- express source reliability and source status
-- return structured enrichment objects
-- never decide final verdict alone
+- call TI, LLM, sandbox, and export providers
+- normalize third-party output
+- report source quality and failure state honestly
+
+Must not:
+
+- silently define final verdict alone
 
 ### 7. Scoring and Verdict Governance Layer
 
@@ -450,15 +324,12 @@ Files:
 
 Responsibilities:
 
-- compute deterministic scores
-- combine evidence and source signals
-- apply false-positive reduction
-- map score to verdict and confidence
+- convert evidence into deterministic score
+- apply false-positive controls
+- map score into verdict
 - produce explainable breakdown
 
-This layer is product-critical.
-
-Changes here are behavior changes, not mere refactors.
+Changes here are product-behavior changes, not cosmetic refactors.
 
 ### 8. Reporting and Export Layer
 
@@ -469,17 +340,16 @@ Files:
 
 Responsibilities:
 
-- analyst-readable report generation
-- JSON, HTML, and export views
-- detection content generation
-- result packaging for download or case attachment
+- render analyst-readable output
+- generate HTML/markdown/export artifacts
+- produce detection content
 
 Must not:
 
-- change the underlying verdict
-- hide evidence that the core pipeline produced
+- rewrite the underlying verdict
+- hide evidence already produced upstream
 
-### 9. Agent and MCP Orchestration Layer
+### 9. Agent and MCP Layer
 
 Files:
 
@@ -489,939 +359,274 @@ Files:
 
 Responsibilities:
 
-- tool-driven investigations
-- session and memory management
-- playbook execution
-- MCP bridging
-- AI-assisted workflows
+- power tool-driven investigations
+- manage memory and playbooks
+- expose CABTA capabilities to external AI tooling
 
-This is strategic growth infrastructure, not the source of truth for verdict logic.
+This layer is strategic and useful, but still secondary to core analyst trust.
 
-### 10. Local Persistence and Configuration Layer
+### 10. Persistence and Configuration Layer
 
 Files:
 
 - `config.yaml`
 - `config.yaml.example`
-- local cache and state stores
 - `src/utils/config.py`
-- case and job stores
+- cache and local state stores
 
 Responsibilities:
 
-- local-first configuration
-- cache and replay
-- case persistence
-- job persistence
-- demo mode configuration
-- source toggling
-- local secrets handling
+- local-first config
+- job/case persistence
+- source toggles
+- demo mode behavior
 
-## Canonical Domain Model
+## High-Signal Entry Points By Lane
 
-CABTA should use a stable vocabulary.
+### IOC Lane
 
-### Observable
+Start with:
 
-A single atomic indicator-like value.
+- `src/tools/ioc_investigator.py`
+- `src/integrations/threat_intel.py`
+- `src/integrations/threat_intel_extended.py`
+- `src/scoring/intelligent_scoring.py`
+- `src/web/routes/analysis.py`
 
-Examples:
+### File Lane
 
-- IP
-- domain
-- URL
-- hash
-- email address
-- CVE
+Start with:
 
-Required fields:
+- `src/tools/malware_analyzer.py`
+- `src/analyzers/file_type_router.py`
+- relevant file analyzer in `src/analyzers/`
+- `src/scoring/tool_based_scoring.py`
+- `src/reporting/*`
 
-- `type`
-- `value`
-- `normalized_value`
+### Email Lane
 
-Optional:
+Start with:
 
-- `tags`
-- `source_context`
-- `first_seen`
-- `last_seen`
+- `src/tools/email_analyzer.py`
+- `src/analyzers/email_forensics.py`
+- `src/analyzers/email_threat_indicators.py`
+- `src/analyzers/bec_detector.py`
+- `src/scoring/intelligent_scoring.py`
 
-### Artifact
+### Dashboard/Web Lane
 
-A submitted analysis object.
+Start with:
 
-Examples:
+- `src/web/app.py`
+- `src/web/routes/dashboard.py`
+- relevant template in `templates/`
+- relevant asset in `static/`
 
-- file sample
-- email file
-- pasted email headers
-- uploaded document
+### Case and Report Lane
 
-Required:
+Start with:
 
-- `artifact_id`
-- `artifact_type`
-- `source`
-- `metadata`
+- `src/web/case_store.py`
+- `src/web/routes/cases.py`
+- `src/web/routes/reports.py`
+- `src/reporting/*`
 
-### AnalysisJob
+### Agent and MCP Lane
 
-A tracked execution unit.
+Start with:
 
-Required:
+- `src/agent/*`
+- `src/web/routes/agent.py`
+- `src/web/routes/chat.py`
+- `src/server.py`
+- `src/mcp_servers/*`
 
-- `job_id`
-- `job_type`
-- `status`
-- `created_at`
-- `updated_at`
-- `input_ref`
-- `result_ref`
+## Stable Domain Nouns
 
-Statuses:
+These nouns should stay conceptually stable across web, reporting, and MCP work:
 
-- `queued`
-- `running`
-- `partial`
-- `completed`
-- `failed`
-- `cancelled`
+- `Artifact`: thing being analyzed
+- `EvidenceItem`: structured finding worth showing to an analyst
+- `EnrichmentResult`: normalized third-party or local provider output
+- `ScoreBreakdown`: how evidence contributes to score
+- `Verdict`: deterministic classification derived from scoring rules
+- `AnalysisJob`: trackable work unit for web/history flows
+- `Case`: container linking related jobs, notes, and follow-up context
 
-### EvidenceItem
+If a new feature invents a new noun, justify it before spreading it across layers.
 
-The smallest analyst-consumable proof unit.
+## Result Contract Expectations
 
-Required:
+### IOC Results
 
-- `id`
-- `category`
-- `title`
-- `severity`
-- `summary`
-- `source`
-- `confidence`
+Should clearly include:
 
-Optional:
-
-- `raw_value`
-- `normalized_value`
-- `mitre_candidates`
-- `related_observables`
-
-### EnrichmentResult
-
-Normalized output from a source or provider.
-
-Required:
-
-- `source_name`
-- `status`
-- `latency_ms`
-- `summary`
-
-Optional:
-
-- `raw`
-- `normalized`
-- `flagged`
-- `reliability`
-- `error`
-
-### ScoreBreakdown
-
-Structured explanation of how score was built.
-
-Required:
-
-- `base_score`
-- `adjustments`
-- `caps`
-- `final_score`
-- `confidence`
-- `reasoning`
-
-### Verdict
-
-Final analyst-facing risk classification.
-
-Allowed values:
-
-- `benign`
-- `likely_benign`
-- `suspicious`
-- `malicious`
-- `unknown`
-- `error_partial`
-
-### Recommendation
-
-An analyst next-step suggestion.
-
-Required:
-
-- `priority`
-- `action`
-- `reason`
-
-### Case
-
-A container grouping related jobs, notes, and artifacts.
-
-### PlaybookRun
-
-A structured multi-step investigation run initiated by agent or user.
-
-## Canonical Result Contracts
-
-CABTA must treat result shapes as stable contracts.
-
-### IOC Investigation Result
-
-Required fields:
-
-- `analysis_type: "ioc"`
-- `input`
-- `ioc_type`
-- `normalized_value`
-- `verdict`
-- `score`
-- `confidence`
-- `score_breakdown`
-- `evidence`
-- `enrichment_sources`
-- `recommendations`
-- `detection_rules`
-- `errors`
-- `timings`
-
-Optional:
-
-- `llm_analysis`
-- `mitre_candidates`
-- `profiled_actor_candidates`
-- `stix_bundle`
-
-### File Analysis Result
-
-Required fields:
-
-- `analysis_type: "file"`
-- `input`
-- `file_metadata`
-- `hashes`
-- `file_type`
-- `router_decision`
-- `verdict`
-- `score`
-- `confidence`
-- `score_breakdown`
-- `evidence`
-- `static_analysis`
-- `extracted_iocs`
-- `mitre_candidates`
-- `recommendations`
-- `detection_rules`
-- `errors`
-- `timings`
-
-Optional:
-
-- `sandbox_results`
-- `llm_analysis`
-- `stix_bundle`
-
-### Email Analysis Result
-
-Required fields:
-
-- `analysis_type: "email"`
-- `input`
-- `email_metadata`
-- `authentication_results`
-- `header_findings`
-- `phishing_indicators`
-- `bec_indicators`
-- `url_findings`
-- `attachment_findings`
-- `extracted_iocs`
-- `verdict`
-- `score`
-- `confidence`
-- `score_breakdown`
-- `evidence`
-- `recommendations`
-- `detection_rules`
-- `errors`
-- `timings`
-
-Optional:
-
-- `llm_analysis`
-- `related_jobs`
-- `stix_bundle`
-
-### Job Result Wrapper
-
-Every web-visible result should be retrievable through a job wrapper:
-
-- `job_id`
-- `job_type`
-- `status`
-- `submitted_input`
-- `started_at`
-- `completed_at`
-- `result`
-- `warnings`
-- `errors`
-- `report_links`
-- `case_links`
-
-## Scoring and Verdict Governance
-
-This section is mandatory for accurate vibe coding.
-
-### Score authority
-
-Only the scoring layer owns the final numeric score and verdict mapping.
-
-No analyzer, integration, report generator, route, or LLM module may assign the final verdict as product truth.
-
-### Score inputs
-
-Allowed inputs to scoring:
-
-- TI source results
-- analyzer findings
-- behavioral indicators
-- false positive filters
-- trusted infrastructure rules
-- sandbox findings
-- explicit heuristics
-- correlation signals
-
-### Score output
-
-Every score calculation should return:
-
-- numeric score
-- confidence
-- breakdown
-- primary drivers
-- mitigating factors
+- normalized input
+- source findings
+- score or score breakdown
 - final verdict
+- recommendations
+- optional exports or rules
 
-### Score precedence rules
+### File Results
 
-- trusted infrastructure and known-good signals may reduce or suppress escalation
-- known high-confidence malicious evidence may raise severity rapidly
-- missing sources reduce confidence, not necessarily score
-- contradictory evidence must remain visible in breakdown
-- verdict must be reproducible without LLM help
+Should clearly include:
 
-### Confidence rules
+- file identity and hashes
+- analyzer findings
+- extracted IOCs or capabilities where relevant
+- score breakdown
+- final verdict
+- reporting/export payloads
 
-Confidence is not score.
+### Email Results
 
-- score = estimated risk or severity
-- confidence = certainty in result quality
+Should clearly include:
 
-Examples:
+- auth and header findings
+- phishing/BEC indicators
+- extracted URLs, attachments, and pivots
+- composite score or breakdown
+- final verdict
+- next analyst actions
 
-- high score plus low confidence is allowed
-- medium score plus high confidence is allowed
+### Cross-Surface Rule
 
-### Verdict mapping
+Routes, reports, and MCP tools may add wrappers, but they should not silently destroy these core meanings.
 
-Recommended mapping:
+## Verdict and LLM Policy
 
-- `0-19` -> `benign`
-- `20-39` -> `likely_benign`
-- `40-64` -> `suspicious`
-- `65-100` -> `malicious`
+### Final authority
 
-`unknown` is used when there is insufficient valid evidence.
+Final verdict authority belongs to deterministic logic in scoring/governance layers.
 
-`error_partial` is used when execution partially failed but produced usable output.
+### LLM is allowed to
 
-### Mandatory explainability
-
-Every non-benign verdict should show:
-
-- top positive drivers
-- top mitigating drivers
-- affected sources
-- analyst recommendation
-
-## LLM Usage Policy
-
-CABTA already positions LLM as interpretive, not authoritative.
-
-The design must make that operational.
-
-### LLM is allowed to:
-
+- explain evidence
 - summarize findings
-- explain score breakdown in human language
-- suggest next analyst actions
-- describe likely ATT&CK relevance
-- produce executive summaries
+- suggest next steps
+- improve analyst readability
 
-### LLM is not allowed to:
+### LLM is not allowed to
 
-- set final score
-- override deterministic verdict
-- suppress contradictory evidence
-- invent unsupported source findings
-- transform weak evidence into strong verdict claims
-- hide uncertainty
+- replace scoring
+- invent evidence
+- silently override deterministic verdicts
+- hide uncertainty behind polished language
 
 ### Fallback rule
 
-If LLM is unavailable:
+If LLM is unavailable, CABTA must still produce a useful result from deterministic components.
 
-- verdict flow still completes
-- UI still renders structured findings
-- explanation section shows a clear degraded-state message
+## Localhost Demo Contract
 
-## Localhost Demo Mode
+A localhost CABTA demo is successful when:
 
-Demo mode is a target capability and should become explicit in the product.
+- setup is reasonable
+- the browser path is understandable without CLI knowledge
+- IOC, file, and email flows are visible end to end
+- zero-key mode still works in a useful degraded form
+- evidence is visible
+- unavailable capabilities are reported honestly
 
-### Demo mode goals
-
-- make CABTA look complete on localhost
-- allow deterministic walkthroughs
-- prevent empty or broken screens when APIs are absent
-- simulate realistic analyst workflow
-
-### Demo mode capabilities
-
-- seeded example IOC analyses
-- seeded sample file and email jobs
-- replayable canned TI responses
-- fixture-backed timeline and history
-- fake but clearly marked case data
-- screenshot-friendly reports
-- preloaded demo playbooks
-- mock source health indicators
-
-### Demo mode rules
-
-- demo data must be clearly marked
-- demo verdicts must remain deterministic
-- demo mode must not be confused with live enrichment
-- settings page should expose whether demo mode is enabled
-
-### Demo mode architecture
-
-Introduce a provider abstraction:
-
-- live provider
-- replay provider
-- mock provider
-
-Every enrichment source should be invocable through the same normalized interface so localhost demos remain visually complete even when live APIs are disabled.
-
-## User Journey Flows
-
-### 1. Dashboard-first flow
-
-Flow:
-
-- user lands on dashboard
-- sees product health, source health, recent jobs, and quick actions
-- chooses IOC, file, email, case, or agent workflow
-
-Dashboard should show:
-
-- counts by verdict
-- recent analyses
-- source availability
-- demo or live mode banner
-- quick links to all major workflows
-
-### 2. IOC flow
-
-Flow:
-
-- user submits IOC
-- system normalizes type
-- job is created
-- enrichment runs in parallel where possible
-- score and verdict are computed
-- result page shows evidence, source panels, score breakdown, ATT&CK, recommendations, and export options
-- user may add job to a case
-
-### 3. File flow
-
-Flow:
-
-- user uploads file
-- metadata and hash calculation begin immediately
-- file router selects analyzers
-- enrichment and static analysis proceed
-
-Result page should show tabs or sections for:
-
-- summary
-- indicators
-- extracted IOCs
-- MITRE
-- detections
-- raw details
-- export
-
-### 4. Email flow
-
-Flow:
-
-- user uploads email artifact or pasted headers and body
-- parser extracts metadata, auth results, URLs, and attachments
-- BEC and phishing logic run
-- pivots to IOC and file workflows happen when enabled
-
-Result page should show:
-
-- summary
-- auth
-- indicators
-- URLs
-- attachments
-- BEC
-- evidence
-- export
-
-### 5. History and report flow
-
-Flow:
-
-- user opens history
-- selects prior job
-- opens report view
-- optionally exports or attaches to a case
-
-### 6. Case flow
-
-Flow:
-
-- user creates or opens case
-- links jobs
-- adds notes
-- exports summary
-
-### 7. Agent flow
-
-Flow:
-
-- user opens agent chat
-- agent gathers evidence via tools
-- agent may run playbooks
-- agent output must always link back to evidence and jobs
-
-## Web UX Rules
-
-### Page design rules
-
-- every analysis page must have a simple primary form
-- every result page must have a top summary card
-- evidence must be visible without opening raw JSON first
-- long outputs must be tabbed or sectioned
-- errors must be user-readable
-- empty states must teach the user what to do next
-
-### Result page structure
-
-Top section:
-
-- verdict
-- score
-- confidence
-- key recommendation
-- mode badge: live, demo, or partial
-
-Middle section:
-
-- evidence
-- source enrichment panels
-- score breakdown
-- ATT&CK mapping
-- detections
-
-Bottom section:
-
-- raw details
-- exports
-- debug metadata
-
-### Visual severity rules
-
-Severity color must be consistent across dashboard, tables, cards, reports, and case links.
-
-## Dependency Rules
-
-These rules prevent architecture drift.
-
-### Allowed dependency direction
-
-- Presentation -> API and view models only
-- Routes -> analysis manager and tool orchestrators
-- Analysis manager -> tools and persistence
-- Tools -> analyzers, integrations, scoring, and reporting
-- Analyzers -> parsing helpers only
-- Integrations -> external clients and normalization helpers
-- Scoring -> evidence inputs, source outputs, and policy constants
-- Reporting -> read-only result objects
-- Agent -> tool registry, playbooks, memory, MCP
-- MCP -> shared tool contracts
-
-### Forbidden shortcuts
-
-- routes calling analyzers directly
-- templates embedding verdict logic
-- integrations assigning final verdict
-- reporting mutating score
-- LLM code changing deterministic findings
-- agent workflow bypassing tool contracts
-
-## Error Taxonomy and Degradation Policy
-
-### Error classes
-
-- `configuration_error`
-- `source_unavailable`
-- `timeout`
-- `rate_limited`
-- `unsupported_artifact`
-- `analysis_partial`
-- `llm_unavailable`
-- `sandbox_unavailable`
-- `rendering_error`
-- `job_persistence_error`
-
-### Degradation rules
-
-- missing source -> mark source failed, lower confidence if needed, continue
-- timeout -> continue with partial result
-- unsupported artifact -> return limited analysis contract, not crash page
-- LLM unavailable -> remove narrative section, keep deterministic result
-- report rendering failure -> preserve raw result and download path
-- one pivot failure -> do not block parent workflow
-
-### UI behavior
-
-Every degraded result should show:
-
-- what failed
-- what still succeeded
-- whether verdict is partial
-- what action the user can take next
-
-## Security and Artifact Handling Rules
-
-### Secrets
-
-- store locally in config or env
-- never expose secret values in UI
-- never include secrets in reports
-
-### File safety
-
-- do not execute uploaded files directly
-- sandbox integrations remain optional and controlled
-- uploads must be size-limited
-- file path handling must prevent traversal
-
-### URL safety
-
-- do not auto-open suspicious URLs in the browser UI
-- present safe copy and defanged render options
-
-### Email safety
-
-- redact or mask sensitive fields where appropriate in shared reports
-- preserve raw data only where explicitly needed
-
-### HTML safety
-
-- all analyst-facing HTML must escape untrusted content
-
-### Prompt injection safety
-
-Treat email bodies, HTML, OCR text, URLs, and external source text as untrusted content.
-
-They may be shown to the analyst or passed to LLM only through controlled summarization and input policy.
-
-## Persistence Model
-
-### Local config
-
-- `config.yaml` is the primary project configuration
-- environment variables may override sensitive values
-
-### Local state
-
-Persist locally:
-
-- jobs
-- cases
-- report metadata
-- demo fixtures
-- agent sessions
-- MCP connection metadata
-- optional cache
-
-### Persistence requirements
-
-- UI should survive restart with recoverable job and case history
-- demo mode may ship with seed data
-- storage schema changes should use explicit migration notes
-
-## Performance Model
-
-### User-facing goal
-
-The web UI should feel responsive on localhost even when external enrichments are slow.
-
-### Performance strategy
-
-- create job immediately
-- render pending state quickly
-- run external calls concurrently where safe
-- stream status or poll job progress
-- cache expensive repeats where acceptable
-- separate blocking file work from request thread when needed
-
-### Time budget model
-
-- page render without job execution: near-instant
-- IOC lookup: progressive result acceptable
-- file analysis: async-first with visible progress
-- email analysis: async-first with visible pivot status
-
-## Observability Rules
-
-CABTA is a localhost demo app, but it still needs internal observability.
-
-### Log categories
-
-- startup
-- config
-- job lifecycle
-- source calls
-- analyzer steps
-- scoring
-- report generation
-- agent actions
-- MCP connections
-
-### Metrics to track
-
-- job counts by type
-- job counts by verdict
-- source success and failure counts
-- average latency by source
-- partial-result rate
-- LLM availability
-- cache hit rate
-- report generation success rate
-
-Dashboard should surface a simplified subset of these.
+The demo should prefer truthful partial capability over fake "all green" messaging.
 
 ## Safe Extension Recipes
 
-### Add a new TI source
+### Add a New TI Source
 
-- add integration module or method
-- define normalized source contract
-- define source health and error mapping
-- define score input semantics
-- wire into orchestrator
-- expose in source panels
-- add tests:
-  - success
-  - no key
-  - timeout
-  - malformed response
-- update settings UI and docs
+1. add integration under `src/integrations/`
+2. normalize its output
+3. wire it through the owning tool orchestrator
+4. decide how it contributes to score
+5. update tests
+6. update docs if user-visible
 
-### Add a new analyzer
+### Add a New Analyzer
 
-- create analyzer module
-- define evidence output schema
-- update router if needed
-- wire into file or email orchestrator
-- map findings into score inputs
-- expose findings in report view
-- add fixtures and tests
-- update system docs
+1. create analyzer with narrow responsibility
+2. register it through routing/orchestration
+3. expose structured findings
+4. ensure reporting can consume the output
+5. add focused tests
 
-### Add a new report or export
+### Add a New Report or Export
 
-- consume stable result contract
-- do not recompute verdict
-- expose from report page and API
-- test on IOC, file, and email results
+1. consume stable upstream result contracts
+2. do not alter verdict logic
+3. keep evidence visible
+4. add focused report tests if behavior matters
 
-### Add a new web workflow
+### Add a New Web Workflow
 
-- add page route
-- add API route
-- connect to job manager
-- define empty, loading, error, and result states
-- update dashboard navigation
-- add demo mode fixture if relevant
+1. decide the owning lane
+2. keep route thin
+3. reuse existing orchestration where possible
+4. verify templates, API shape, and history/case impact
 
-## Test Obligations Matrix
+## Test Obligations
 
-### Scoring change
+### Scoring Change
 
-Must include:
+Run focused scoring tests and any directly affected lane tests.
 
-- unit tests
-- regression fixtures
-- verdict mapping checks
-- docs update
+### Result Shape Change
 
-### Result shape change
+Run API/report/model tests for every affected consumer.
 
-Must include:
+### New TI Source
 
-- API response tests
-- report rendering tests
-- template compatibility tests
-- agent and MCP compatibility review
+Test integration normalization and lane behavior under success and failure.
 
-### New TI source
+### New Analyzer
 
-Must include:
+Test routing plus analyzer-specific behavior.
 
-- mocked source tests
-- timeout behavior
-- no-key behavior
-- normalization tests
+### UI Change
 
-### New analyzer
+Test route behavior and any templates or API payloads it depends on.
 
-Must include:
+### Agent or MCP Change
 
-- fixture-based parser tests
-- routing tests
-- evidence contract tests
-- report visibility tests
+Test tool registration, route behavior, and any changed payload contracts.
 
-### UI change
-
-Must include:
-
-- route test
-- template render test
-- empty, loading, and error state review
-- demo mode compatibility check
-
-### Agent or MCP change
-
-Must include:
-
-- tool contract tests
-- session behavior tests
-- graceful-failure tests
-
-## File Read Order for New Tasks
-
-For any meaningful implementation task, read in this order:
-
-1. `README.md`
-2. this `docs/system-design.md`
-3. `docs/ARCHITECTURE.md`
-4. `docs/project-overview-pdr.md`
-5. `docs/codebase-summary.md`
-6. `docs/code-standards.md`
-7. relevant tests
-8. relevant orchestrator file
-9. relevant UI route or template
+Use `TEST-MANIFEST.md` to choose the smallest meaningful test slice first.
 
 ## Planning Rules
 
 Create a plan before implementation if the task:
 
-- changes scoring
-- changes result contracts
-- introduces a new analyzer
-- introduces a new enrichment source
+- spans multiple lanes
+- changes scoring or verdict behavior
 - changes both backend and UI
-- changes case or history persistence
+- adds a new analyzer or enrichment source
+- changes persistence, cases, or history
 - affects agent or MCP behavior
-- affects demo mode
-- spans more than one product lane
+- lasts more than one session
 
-## Product Lanes for Vibe Coding
+Use `plans/templates/` instead of freehand planning when possible.
 
-### IOC lane
+## Definition of Done
 
-- IOC UI
-- IOC API
-- IOC orchestrator
-- TI enrichment
-- IOC scoring
-- IOC reports
+A CABTA change is done only if:
 
-### File lane
-
-- upload UI
-- job handling
-- file routing
-- analyzers
-- enrichment
-- file scoring
-- reports
-
-### Email lane
-
-- email UI
-- parser
-- phishing and BEC logic
-- URL and attachment pivots
-- composite scoring
-- report visibility
-
-### Dashboard lane
-
-- metrics
-- recent jobs
-- source health
-- navigation
-- demo polish
-
-### Case lane
-
-- case store
-- linking
-- notes
-- summary views
-- exports
-
-### Agent lane
-
-- chat
-- playbooks
-- memory
-- MCP
-- evidence-linked outputs
-
-## Definition of Done for Localhost Web CABTA
-
-A change is done only if:
-
-- it fits one owning layer
-- result contracts remain stable or are explicitly versioned
+- it has a clear owning lane
 - evidence remains visible
 - deterministic verdict still works without LLM
-- localhost demo mode remains usable
-- affected pages have sane loading, error, and result states
-- tests for the touched lane are added or updated
-- docs reflect behavior changes
-- no forbidden dependency shortcut was introduced
+- result contracts stay stable or are explicitly updated
+- relevant tests were run or explicitly deferred
+- docs impact was checked
+- localhost demo behavior stays honest
+- no forbidden shortcut was introduced across layers
+
+## Related Docs
+
+- `docs/project-overview-pdr.md` for product intent
+- `docs/codebase-summary.md` for file-level orientation
+- `docs/code-standards.md` for implementation rules
+- `docs/feature-truth-matrix.md` for current verified reality
+- `docs/future-system-roadmap.md` for longer-horizon direction
+- `docs/vibe-coding-operating-model.md` for workflow discipline
 
 ## Unresolved Questions
 

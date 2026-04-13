@@ -31,13 +31,17 @@ Always read these first:
 3. `docs/system-design.md`
 4. `docs/codebase-summary.md`
 5. `docs/code-standards.md`
-6. `TEST-MANIFEST.md`
-7. Relevant files under `plans/` if the task already has a plan
+6. `docs/feature-truth-matrix.md` for runtime-sensitive, demo-sensitive, or integration-sensitive work
+7. `TEST-MANIFEST.md`
+8. Relevant files under `plans/` if the task already has a plan
 
 If the task is architecture-heavy, also read:
 
-- `docs/ARCHITECTURE.md`
+- `docs/future-system-roadmap.md`
 - `docs/vibe-coding-operating-model.md`
+
+Unless the task is explicitly UI-visual, do not spend time reading `docs/screenshots/`.
+Treat screenshots as visual reference material, not architectural truth.
 
 ## Core Development Rules
 
@@ -140,6 +144,7 @@ Update docs when you change:
 At minimum, review:
 
 - `README.md`
+- `docs/system-design.md`
 - `docs/codebase-summary.md`
 - `TEST-MANIFEST.md`
 

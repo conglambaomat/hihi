@@ -111,7 +111,7 @@ Improve testing, packaging, performance, and operational reliability.
 
 #### Documentation repair
 
-- update install and usage docs that still reference `mcp-for-soc`
+- continue removing legacy-name drift from docs and touched code
 - align docs with current cache, web, and agent features
 - make roadmap and system-design docs part of normal dev workflow
 

@@ -123,7 +123,7 @@ CABTA produces:
 
 ## Current Repo Reality
 
-The repo has strong implementation breadth but mixed documentation identity. `CABTA`, `Blue Team Assistant`, and `mcp-for-soc` all appear in the codebase. New work should treat `CABTA` as the source-of-truth name while preserving legacy references only where needed for compatibility.
+The main prompt surface for this product now routes cleanly to `CABTA`, but older names still remain in some code paths, generated output text, and historical materials. New work should treat `CABTA` as the source-of-truth name and avoid reintroducing legacy identities into touched surfaces.
 
 ## What Vibe Coding Needs in This Repo
 

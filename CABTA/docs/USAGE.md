@@ -1,4 +1,6 @@
-# 📖 Usage Guide
+# CABTA Usage Guide
+
+Practical CLI and MCP usage examples for CABTA.
 
 ## Table of Contents
 - [IOC Investigation](#ioc-investigation)
@@ -348,7 +350,7 @@ python -m src.soc_agent ioc 8.8.8.8 --format json > result.json
 
 ## MCP Server Mode
 
-Blue Team Assistant can run as an MCP (Model Context Protocol) server for integration with Claude Desktop or other MCP clients.
+CABTA can run as an MCP (Model Context Protocol) server for integration with Claude Desktop or other MCP clients.
 
 ### Starting the Server
 

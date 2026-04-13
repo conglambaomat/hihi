@@ -21,7 +21,7 @@ const { execSync } = require('child_process');
   const claudeDir = path.join(projectRoot, '.claude');
   const metadataPath = path.join(claudeDir, 'metadata.json');
   const distDir = path.join(projectRoot, 'dist');
-  const archivePath = path.join(distDir, 'claudekit-engineer.zip');
+  const archivePath = path.join(distDir, 'hihi-workspace.zip');
   const manifestPath = path.join(projectRoot, 'release-manifest.json');
 
   // Critical files that MUST be present in release

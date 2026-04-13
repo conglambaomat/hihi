@@ -114,7 +114,7 @@ async function fetchAndCacheUsageLimits() {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${token}`,
 				"anthropic-beta": "oauth-2025-04-20",
-				"User-Agent": "claudekit-engineer/1.0",
+				"User-Agent": "hihi-workspace/1.0",
 			},
 		});
 

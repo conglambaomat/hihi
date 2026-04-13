@@ -1,12 +1,16 @@
-# CABTA - Cyan Agent Blue Team Assistant
+# CABTA
 
-AI-Powered SOC Platform for Threat Analysis, IOC Investigation & Email Forensics
+Cyan Agent Blue Team Assistant
+
+AI-powered SOC platform for threat analysis, IOC investigation, and email forensics.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/ugurrates/CABTA)
+[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/conglambaomat/hihi)
 
 CABTA is a comprehensive, local-first security analysis platform designed for SOC analysts, incident responders, and threat hunters. It features a modern web dashboard, 20+ threat intelligence sources, advanced malware analysis, email forensics, and AI-powered investigation with local LLM support via Ollama.
+
+CABTA currently lives inside the `hihi` workspace repository. Clone the workspace repo, then work from the `CABTA/` directory.
 
 ---
 
@@ -138,8 +142,8 @@ CABTA is a comprehensive, local-first security analysis platform designed for SO
 
 ```bash
 # Clone repository
-git clone https://github.com/ugurrates/CABTA.git
-cd CABTA
+git clone https://github.com/conglambaomat/hihi.git
+cd hihi/CABTA
 
 # Create virtual environment
 python -m venv venv
@@ -483,8 +487,8 @@ Available MCP servers: `remnux_tools`, `flare_tools`, `forensics_tools`, `threat
 ### Development Setup
 
 ```bash
-git clone https://github.com/ugurrates/CABTA.git
-cd CABTA
+git clone https://github.com/conglambaomat/hihi.git
+cd hihi/CABTA
 pip install -r requirements.txt
 pip install pytest black flake8
 pytest

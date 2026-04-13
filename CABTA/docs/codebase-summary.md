@@ -145,22 +145,19 @@ Changes here affect the dashboard, APIs, and system startup behavior.
 
 ## Current Context Risks
 
-### 1. Naming drift
+### 1. Legacy naming remains below the surface
 
-The repo still contains multiple identities:
-
-- `CABTA`
-- `Blue Team Assistant`
-- `mcp-for-soc`
+The primary prompt surface is now standardized on `CABTA`, but older names still exist in some code, comments, reports, and historical docs.
 
 When making new changes:
 
 - use `CABTA` in new docs and user-facing design decisions
-- preserve legacy names only where compatibility or historical references matter
+- treat `Blue Team Assistant` and `mcp-for-soc` as legacy references
+- normalize touched surfaces when safe, instead of spreading old names forward
 
 ### 2. Mixed maturity across docs
 
-README is rich, but repo-wide development memory is incomplete. Some docs still point to older names or outdated install paths.
+CABTA's main docs are now better aligned, but some deeper docs and historical strings still need cleanup when those areas are touched.
 
 ### 3. Cross-layer feature coupling
 
