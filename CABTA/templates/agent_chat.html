@@ -620,7 +620,7 @@
                 <div id="chatMessages" class="chat-messages">
                     <div class="chat-bubble chat-bubble-system">
                         <i class="bi bi-shield-lock me-1"></i>
-                        Blue Team Agent ready. Describe a security investigation goal, select a playbook, or use quick actions.
+                        Blue Team Agent ready. Describe a security investigation goal, select a playbook, or use quick actions. For multi-parameter playbooks, send a JSON object.
                     </div>
                 </div>
 
@@ -1252,9 +1252,9 @@ var AgentChat = (function() {
         var pbEl = document.getElementById('pb-' + id);
         if (pbEl) pbEl.classList.add('selected');
         var input = document.getElementById('chatInput');
-        input.placeholder = 'Playbook: ' + (name || id) + ' - Enter target or parameters...';
+        input.placeholder = 'Playbook: ' + (name || id) + ' - Enter target or JSON parameters...';
         input.focus();
-        addBubble('<i class="bi bi-journal-code me-1 text-accent"></i>Playbook selected: <strong>' + esc(name || id) + '</strong>. Enter your target and press Enter to execute.', 'system');
+        addBubble('<i class="bi bi-journal-code me-1 text-accent"></i>Playbook selected: <strong>' + esc(name || id) + '</strong>. Enter a target, or paste a JSON object for multi-parameter playbooks, then press Enter to execute.', 'system');
         scrollToBottom();
     }
 

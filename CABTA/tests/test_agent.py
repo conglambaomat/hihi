@@ -17,6 +17,7 @@ Author: Test Suite
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import time
 from email.message import EmailMessage
@@ -35,14 +36,24 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.agent.agent_state import AgentPhase, AgentState
 from src.agent.agent_store import AgentStore
 from src.agent.tool_registry import ToolDefinition, ToolRegistry
+from src.agent.profiles import AgentProfileRegistry
+from src.agent.capability_catalog import CapabilityCatalog
+from src.agent.governance_store import GovernanceStore
 from src.agent.correlation import CorrelationEngine
 from src.agent.memory import InvestigationMemory
 from src.agent.playbook_engine import PlaybookEngine, safe_evaluate_condition, PlaybookStep
 from src.agent.sandbox_orchestrator import SandboxOrchestrator, SandboxType
 from src.agent.mcp_client import MCPClientManager, MCPServerConfig, MCPConnection
+from src.workflows.registry import WorkflowRegistry
+from src.workflows.service import WorkflowService
+from src.case_intelligence.service import CaseIntelligenceService
+from src.daemon.service import HeadlessSOCDaemon
+from src.daemon.queue_store import DaemonQueueStore
 from src.integrations.sandbox_integration import SandboxIntegration
 from src.detection.llm_rule_generator import LLMRuleGenerator
 from src.tools.email_analyzer import EmailAnalyzer
+from src.web.case_store import CaseStore
+from src.web.analysis_manager import AnalysisManager
 
 
 # ====================================================================== #
@@ -100,6 +111,25 @@ def sandbox_orchestrator():
 def mcp_manager():
     """MCPClientManager with no store."""
     return MCPClientManager(agent_store=None)
+
+
+@pytest.fixture
+def agent_profiles():
+    """Default specialist agent profiles."""
+    return AgentProfileRegistry.default()
+
+
+@pytest.fixture
+def workflow_registry():
+    """Workflow registry backed by built-in markdown workflows."""
+    return WorkflowRegistry()
+
+
+@pytest.fixture
+def governance_store(tmp_path):
+    """Governance store backed by a temporary database."""
+    db = tmp_path / "governance.db"
+    return GovernanceStore(db_path=str(db))
 
 
 # ====================================================================== #
@@ -287,6 +317,44 @@ class TestAgentStore:
     def test_get_nonexistent_session(self, agent_store):
         assert agent_store.get_session("nonexistent") is None
 
+    def test_delete_session(self, agent_store):
+        sid = agent_store.create_session(goal="Delete me")
+        agent_store.add_step(sid, 1, "thinking", "Step content")
+        agent_store.upsert_specialist_task(
+            session_id=sid,
+            workflow_id="ioc-triage",
+            profile_id="triage",
+            phase_order=0,
+            status="active",
+            summary="Doing work",
+        )
+
+        deleted = agent_store.delete_session(sid)
+
+        assert deleted is True
+        assert agent_store.get_session(sid) is None
+        assert agent_store.get_steps(sid) == []
+        assert agent_store.list_specialist_tasks(sid) == []
+
+    def test_default_db_falls_back_when_home_cache_is_readonly(self, monkeypatch, tmp_path):
+        from src.agent.agent_store import AgentStore
+
+        init_calls = {"count": 0}
+
+        def fake_init_db(self):
+            init_calls["count"] += 1
+            if init_calls["count"] == 1:
+                raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        monkeypatch.setattr(AgentStore, "_init_db", fake_init_db)
+        monkeypatch.setattr(AgentStore, "_verify_writable", lambda self: None)
+        monkeypatch.chdir(tmp_path)
+
+        store = AgentStore()
+
+        assert init_calls["count"] == 2
+        assert store._db_path == tmp_path / ".cabta-runtime" / "agent.db"
+
     # ---- MCP Connections ---- #
 
     def test_save_and_list_mcp_connections(self, agent_store):
@@ -367,12 +435,45 @@ class TestAgentStore:
         agent_store.update_session_status(sid2, "completed")
         agent_store.add_step(sid1, 1, "think", "thinking")
         agent_store.add_step(sid1, 2, "act", "acting")
+        agent_store.upsert_specialist_task(
+            session_id=sid1,
+            workflow_id="full-investigation",
+            profile_id="triage",
+            phase_order=0,
+            status="active",
+        )
 
         stats = agent_store.get_agent_stats()
         assert stats["total_sessions"] == 2
         assert stats["active_sessions"] == 1
         assert stats["completed_sessions"] == 1
         assert stats["total_steps"] == 2
+        assert stats["total_specialist_tasks"] == 1
+
+    def test_upsert_and_list_specialist_tasks(self, agent_store):
+        session_id = agent_store.create_session(goal="Specialist task tracking")
+        task = agent_store.upsert_specialist_task(
+            session_id=session_id,
+            workflow_id="full-investigation",
+            profile_id="triage",
+            phase_order=0,
+            status="active",
+            summary="Triage owns the first phase.",
+        )
+        assert task["status"] == "active"
+
+        agent_store.upsert_specialist_task(
+            session_id=session_id,
+            workflow_id="full-investigation",
+            profile_id="triage",
+            phase_order=0,
+            status="completed",
+            summary="Triage phase completed.",
+        )
+        tasks = agent_store.list_specialist_tasks(session_id)
+        assert len(tasks) == 1
+        assert tasks[0]["status"] == "completed"
+        assert tasks[0]["completed_at"] is not None
 
 
 # ====================================================================== #
@@ -478,6 +579,509 @@ class TestToolRegistry:
         assert "error" in result
         assert "boom" in result["error"]
 
+    def test_tool_definition_extended_metadata(self, tool_registry):
+        async def noop(**kw):
+            return {}
+
+        tool_registry.register_local_tool(
+            "correlate_findings",
+            "Correlate findings",
+            {},
+            "analysis",
+            noop,
+            verdict_role="verdict_authority",
+            recommended_profiles=["investigator", "reporter"],
+        )
+        tool = tool_registry.get_tool("correlate_findings")
+        assert tool.verdict_role == "verdict_authority"
+        assert "investigator" in tool.recommended_profiles
+
+
+class TestAgentProfiles:
+    def test_default_profiles_are_available(self, agent_profiles):
+        profiles = agent_profiles.list_profiles()
+        assert len(profiles) >= 15
+        assert any(profile["id"] == "threat_hunter" for profile in profiles)
+        assert any(profile["id"] == "correlator" for profile in profiles)
+        assert any(profile["id"] == "mitre_analyst" for profile in profiles)
+
+    def test_profile_prompt_block_mentions_verdict_boundary(self, agent_profiles):
+        block = agent_profiles.get_prompt_block("responder")
+        assert "final verdict authority" in block
+        assert "approval" in block.lower()
+
+
+class TestWorkflowRegistry:
+    def test_builtin_workflows_load(self, workflow_registry):
+        workflows = workflow_registry.list_workflows()
+        ids = {item["id"] for item in workflows}
+        assert "incident-response" in ids
+        assert "threat-hunt" in ids
+        assert "full-investigation" in ids
+        assert "forensic-analysis" in ids
+
+    def test_workflow_detail_contains_linked_playbook(self, workflow_registry):
+        workflow = workflow_registry.get_workflow("ioc-triage")
+        assert workflow is not None
+        assert workflow["playbook_id"] == "ioc_triage"
+        assert workflow["default_agent_profile"] == "threat_intel_analyst"
+
+    def test_skill_backed_workflow_exposes_definition_kind(self, workflow_registry):
+        workflow = workflow_registry.get_workflow("full-investigation")
+        assert workflow is not None
+        assert workflow["definition_kind"] == "skill"
+        assert workflow["definition_file"] == "SKILL.md"
+
+    def test_build_goal_embeds_workflow_context(self, workflow_registry):
+        goal = workflow_registry.build_goal(
+            "threat-hunt",
+            goal="Investigate possible beaconing",
+            params={"known_indicators": {"ips": ["1.2.3.4"]}},
+        )
+        assert "Workflow: Threat Hunt" in goal
+        assert "known_indicators" in goal
+
+    def test_build_goal_includes_skill_sections(self, workflow_registry):
+        goal = workflow_registry.build_goal(
+            "full-investigation",
+            goal="Deep dive this intrusion",
+            params={"case_id": "CASE-1"},
+        )
+        assert "Operating model:" in goal
+        assert "Phase sequence:" in goal
+        assert "tool-backed workflow path" not in goal  # ensure this comes from workflow block, not goal builder
+
+
+class TestCapabilityCatalog:
+    def test_build_summary(self, tool_registry, agent_profiles, workflow_registry):
+        async def noop(**kw):
+            return {}
+
+        tool_registry.register_local_tool(
+            "investigate_ioc",
+            "Investigate IOC",
+            {},
+            "threat_intel",
+            noop,
+        )
+
+        catalog = CapabilityCatalog()
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=tool_registry,
+                agent_profiles=agent_profiles,
+                workflow_registry=workflow_registry,
+                playbook_engine=SimpleNamespace(list_playbooks=lambda: [{"id": "ioc_triage"}]),
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {"free-osint": {"connected": True}}),
+                ioc_investigator=True,
+                malware_analyzer=True,
+                email_analyzer=True,
+                case_store=True,
+                analysis_manager=True,
+                agent_loop=True,
+            )
+        )
+        summary = catalog.build_summary(app)
+        assert summary["verdict_authority_owner"] == "cabta_scoring"
+        assert summary["agent_profile_count"] >= 15
+        assert summary["workflow_count"] >= 6
+
+
+class TestGovernanceStore:
+    def test_create_and_review_approval(self, governance_store):
+        approval_id = governance_store.create_approval(
+            session_id="sess-1",
+            case_id="case-1",
+            workflow_id="incident-response",
+            action_type="tool_execution",
+            tool_name="sandbox_submit",
+            target={"file_path": "/tmp/sample.exe"},
+            rationale="Dynamic analysis requested",
+        )
+        approval = governance_store.get_approval(approval_id)
+        assert approval is not None
+        assert approval["status"] == "pending"
+
+        updated = governance_store.review_approval(
+            approval_id,
+            approved=True,
+            reviewer="analyst",
+            comment="Proceed",
+        )
+        assert updated is True
+        reviewed = governance_store.get_approval(approval_id)
+        assert reviewed["status"] == "approved"
+
+    def test_log_decision_and_feedback(self, governance_store):
+        decision_id = governance_store.log_ai_decision(
+            session_id="sess-1",
+            case_id="case-1",
+            workflow_id="threat-hunt",
+            profile_id="threat_hunter",
+            decision_type="run_playbook",
+            summary="Run threat hunt",
+            rationale="Hypothesis needs structured hunt",
+        )
+        decision = governance_store.get_ai_decision(decision_id)
+        assert decision is not None
+        assert decision["decision_type"] == "run_playbook"
+
+        updated = governance_store.add_decision_feedback(
+            decision_id,
+            feedback="Helpful decision",
+            reviewer="lead-analyst",
+        )
+        assert updated is True
+        decision = governance_store.get_ai_decision(decision_id)
+        assert decision["feedback"] == "Helpful decision"
+
+    def test_default_db_falls_back_when_home_cache_is_readonly(self, monkeypatch, tmp_path):
+        from src.agent.governance_store import GovernanceStore
+
+        init_calls = {"count": 0}
+
+        def fake_init_db(self):
+            init_calls["count"] += 1
+            if init_calls["count"] == 1:
+                raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        monkeypatch.setattr(GovernanceStore, "_init_db", fake_init_db)
+        monkeypatch.setattr(GovernanceStore, "_verify_writable", lambda self: None)
+        monkeypatch.chdir(tmp_path)
+
+        store = GovernanceStore()
+
+        assert init_calls["count"] == 2
+        assert store._db_path == tmp_path / ".cabta-runtime" / "governance.db"
+
+
+class TestWorkflowService:
+    def test_validate_dependencies(self, agent_store, workflow_registry):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        registry.register_local_tool("investigate_ioc", "IOC", {}, "analysis", noop)
+        registry.register_local_tool("correlate_findings", "Correlate", {}, "analysis", noop)
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                playbook_engine=SimpleNamespace(get_playbook=lambda pid: {"id": pid}),
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+            )
+        )
+        result = service.validate_dependencies(app, "ioc-triage")
+        assert result["status"] in {"ready", "degraded"}
+        assert "investigate_ioc" in result["required_tools"]["available"]
+
+    def test_validate_dependencies_blocks_missing_playbook_backend(self, agent_store, workflow_registry):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        registry.register_local_tool("investigate_ioc", "IOC", {}, "analysis", noop)
+        registry.register_local_tool("correlate_findings", "Correlate", {}, "analysis", noop)
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                playbook_engine=SimpleNamespace(get_playbook=lambda _pid: None),
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+            )
+        )
+
+        result = service.validate_dependencies(app, "ioc-triage")
+        assert result["status"] == "blocked"
+        assert result["required_playbook"]["id"] == "ioc_triage"
+        assert result["required_playbook"]["available"] is False
+
+    def test_list_runs_filters_workflow_sessions(self, agent_store, workflow_registry):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        sid = agent_store.create_session(
+            goal="Workflow run",
+            metadata={
+                "workflow_id": "ioc-triage",
+                "current_step": 1,
+                "max_steps": 4,
+                "specialist_team": ["triage", "threat_intel_analyst"],
+                "active_specialist": "triage",
+                "collaboration_mode": "multi_agent",
+            },
+        )
+        runs = service.list_runs()
+        match = next(item for item in runs if item["session_id"] == sid)
+        assert match["collaboration_mode"] == "multi_agent"
+        assert match["active_specialist"] == "triage"
+
+
+class TestHeadlessSOCDaemon:
+    def test_build_status_validates_schedules(self, workflow_registry, agent_store):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        daemon = HeadlessSOCDaemon(
+            config={
+                "daemon": {
+                    "enabled": True,
+                    "schedules": [
+                        {"workflow_id": "ioc-triage", "enabled": True},
+                        {"workflow_id": "missing-workflow", "enabled": True},
+                    ],
+                }
+            },
+            workflow_registry=workflow_registry,
+            workflow_service=service,
+        )
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        registry.register_local_tool("investigate_ioc", "IOC", {}, "analysis", noop)
+        registry.register_local_tool("correlate_findings", "Correlate", {}, "analysis", noop)
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+            )
+        )
+
+        status = daemon.build_status(app)
+
+        assert status["enabled"] is True
+        assert status["schedule_count"] == 2
+        assert any(item["workflow_id"] == "ioc-triage" for item in status["validation"])
+        assert any(item["status"] == "invalid" for item in status["validation"])
+
+    @pytest.mark.asyncio
+    async def test_run_once_executes_enabled_schedules_only(self, workflow_registry):
+        daemon = HeadlessSOCDaemon(
+            config={
+                "daemon": {
+                    "enabled": True,
+                    "schedules": [
+                        {"workflow_id": "ioc-triage", "enabled": True},
+                        {"workflow_id": "threat-hunt", "enabled": False},
+                    ],
+                }
+            },
+            workflow_registry=workflow_registry,
+        )
+
+        seen = []
+
+        async def runner(schedule):
+            seen.append(schedule["workflow_id"])
+            return {"workflow_id": schedule["workflow_id"], "status": "queued"}
+
+        result = await daemon.run_once(runner)
+
+        assert seen == ["ioc-triage"]
+        assert result == [{"workflow_id": "ioc-triage", "status": "queued"}]
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_retries_blocked_jobs_through_durable_queue(self, tmp_path, workflow_registry, agent_store):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        daemon = HeadlessSOCDaemon(
+            config={
+                "daemon": {
+                    "enabled": True,
+                    "retry_backoff_seconds": 5,
+                    "schedules": [{"workflow_id": "ioc-triage", "enabled": True, "id": "sched-1"}],
+                }
+            },
+            workflow_registry=workflow_registry,
+            workflow_service=service,
+            queue_store=DaemonQueueStore(db_path=str(tmp_path / "daemon.db")),
+        )
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=ToolRegistry(),
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+                agent_loop=None,
+                playbook_engine=None,
+                case_store=None,
+            )
+        )
+
+        result = await daemon.run_cycle(app, worker_id="test-worker")
+
+        assert result[0]["status"] == "blocked"
+        assert result[0]["queue_retry"]["status"] == "retry_scheduled"
+        assert daemon.build_status(app)["queue"]["retry_scheduled"] == 1
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_completes_successful_jobs_in_queue(self, tmp_path, workflow_registry, agent_store):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        daemon = HeadlessSOCDaemon(
+            config={
+                "daemon": {
+                    "enabled": True,
+                    "schedules": [{"workflow_id": "full-investigation", "enabled": True, "id": "sched-2"}],
+                }
+            },
+            workflow_registry=workflow_registry,
+            workflow_service=service,
+            queue_store=DaemonQueueStore(db_path=str(tmp_path / "daemon-success.db")),
+        )
+
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        for tool_name in ("extract_iocs", "correlate_findings", "analyze_detection_coverage", "create_case"):
+            registry.register_local_tool(tool_name, tool_name, {}, "analysis", noop)
+
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+                agent_loop=SimpleNamespace(investigate=AsyncMock(return_value="queued-session")),
+                playbook_engine=None,
+                case_store=None,
+            )
+        )
+
+        result = await daemon.run_cycle(app, worker_id="test-worker")
+
+        assert result[0]["status"] == "running"
+        assert result[0]["queue_job_id"]
+        assert daemon.build_status(app)["queue"]["completed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_dispatch_schedule_uses_agent_backend(self, workflow_registry, agent_store):
+        service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
+        daemon = HeadlessSOCDaemon(
+            config={"daemon": {"enabled": True}},
+            workflow_registry=workflow_registry,
+            workflow_service=service,
+        )
+
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        for tool_name in (
+            "extract_iocs",
+            "correlate_findings",
+            "analyze_detection_coverage",
+            "create_case",
+        ):
+            registry.register_local_tool(tool_name, tool_name, {}, "analysis", noop)
+
+        mock_agent_loop = SimpleNamespace(investigate=AsyncMock(return_value="wf-agent-session"))
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+                agent_loop=mock_agent_loop,
+                playbook_engine=None,
+                case_store=None,
+            )
+        )
+
+        result = await daemon.dispatch_schedule(
+            app,
+            {"workflow_id": "full-investigation", "goal": "Deep-dive suspicious host"},
+        )
+
+        assert result["status"] == "running"
+        assert result["backend"] == "agent"
+        assert result["session_id"] == "wf-agent-session"
+        mock_agent_loop.investigate.assert_awaited_once()
+
+
+class TestCaseIntelligence:
+    def test_build_graph_and_timeline(self, tmp_path, governance_store):
+        mgr = AnalysisManager(db_path=str(tmp_path / "jobs.db"))
+        store = AgentStore(db_path=str(tmp_path / "agent.db"))
+        case_store = CaseStore(db_path=str(tmp_path / "cases.db"))
+        intelligence = CaseIntelligenceService(
+            analysis_manager=mgr,
+            agent_store=store,
+            case_store=case_store,
+            governance_store=governance_store,
+        )
+
+        case_id = case_store.create_case("Threat case")
+        job_id = mgr.create_job("ioc", {"value": "8.8.8.8"})
+        mgr.complete_job(job_id, {"ioc": "8.8.8.8", "verdict": "SUSPICIOUS"}, verdict="SUSPICIOUS", score=55)
+        assert case_store.link_analysis(case_id, job_id)
+
+        session_id = store.create_session(
+            goal="Investigate 8.8.8.8 on HOST-1",
+            case_id=case_id,
+            metadata={"workflow_id": "ioc-triage", "agent_profile_id": "triage", "current_step": 1, "max_steps": 3},
+        )
+        store.add_step(session_id, 1, "thinking", "Inspect host HOST-1 and domain test.example")
+        assert case_store.link_workflow(case_id, session_id, "ioc-triage")
+
+        governance_store.create_approval(
+            session_id=session_id,
+            case_id=case_id,
+            workflow_id="ioc-triage",
+            action_type="tool_execution",
+            tool_name="block_ip",
+            target={"indicators": ["8.8.8.8"]},
+            rationale="Contain suspected IOC",
+        )
+        governance_store.log_ai_decision(
+            session_id=session_id,
+            case_id=case_id,
+            workflow_id="ioc-triage",
+            profile_id="triage",
+            decision_type="final_answer",
+            summary="IOC is suspicious",
+        )
+
+        graph = intelligence.build_graph(case_id)
+        timeline = intelligence.build_timeline(case_id)
+
+        assert graph is not None
+        assert graph["node_count"] >= 4
+        assert any(node["type"] == "ip" for node in graph["nodes"])
+        assert timeline is not None
+        assert timeline["event_count"] >= 4
+
     @pytest.mark.asyncio
     async def test_register_default_tools_uses_injected_sandbox_orchestrator(self, tool_registry):
         mock_orch = MagicMock()
@@ -530,6 +1134,80 @@ class TestToolRegistry:
         assert result["results_count"] == 0
         assert result["query_count"] == 1
         assert result["queries"]["spl"]
+
+    @pytest.mark.asyncio
+    async def test_search_logs_delegates_to_connected_splunk_backend(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock(
+            return_value={
+                "result": {
+                    "status": "executed",
+                    "backend": "splunk",
+                    "results": [{"dest_ip": "185.220.101.45", "process_name": "powershell.exe"}],
+                    "results_count": 1,
+                    "suspicious_indicators": ["185.220.101.45"],
+                    "suspicious_executables": ["powershell.exe"],
+                }
+            }
+        )
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 7, "max_results": 25}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"spl": ['index=network | search dest_ip="185.220.101.45"']},
+            timerange="24h",
+            _execution_context={"session_id": "hunt001", "workflow_id": "threat-hunt"},
+        )
+
+        assert result["status"] == "executed"
+        assert result["mode"] == "splunk_live"
+        assert result["configured_backends"] == ["splunk"]
+        assert result["results_count"] == 1
+        assert "185.220.101.45" in result["suspicious_indicators"]
+        mock_mcp.call_tool.assert_awaited_once()
+
+        decisions = governance_store.list_ai_decisions(session_id="hunt001")
+        assert decisions
+        assert decisions[0]["decision_type"] == "log_search_execution"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_requires_approval_for_broad_raw_query(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock()
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 7, "max_results": 25}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query='index=* | stats count by host',
+            timerange="24h",
+            _execution_context={"session_id": "hunt-approval"},
+        )
+
+        assert result["status"] == "approval_required"
+        assert result["approval_id"]
+        assert mock_mcp.call_tool.await_count == 0
+
+        approval = governance_store.get_approval(result["approval_id"])
+        assert approval is not None
+        assert approval["tool_name"] == "splunk.search_logs"
 
 
 # ====================================================================== #
@@ -877,6 +1555,9 @@ class TestPlaybookEngine:
         names = [p["name"] for p in pbs]
         assert "PB1" in names
         assert "PB2" in names
+        pb1 = next(p for p in pbs if p["name"] == "PB1")
+        assert pb1["tool_count"] == 1
+        assert pb1["tools"] == ["t"]
 
     def test_get_nonexistent_playbook(self, playbook_engine):
         assert playbook_engine.get_playbook("nonexistent") is None
@@ -941,6 +1622,30 @@ class TestPlaybookEngine:
             {},
         )
         assert result == "Value: {{missing}}"
+
+    @pytest.mark.asyncio
+    async def test_final_answer_action_interpolates_report_text(self, playbook_engine, agent_store):
+        pid = playbook_engine.register_playbook(
+            name="Interpolated Final Answer",
+            description="Ensure final answers render context variables",
+            steps=[
+                {
+                    "name": "summarize",
+                    "action": "final_answer",
+                    "description": "Verdict {{verdict}} for {{ioc}}",
+                }
+            ],
+        )
+
+        session_id = await playbook_engine.execute(
+            pid,
+            {"verdict": "MALICIOUS", "ioc": "1.2.3.4"},
+            wait_for_completion=True,
+        )
+
+        steps = agent_store.get_steps(session_id)
+        assert steps[-1]["step_type"] == "final_answer"
+        assert steps[-1]["content"] == "Verdict MALICIOUS for 1.2.3.4"
 
     def test_interpolate_params_preserves_raw_objects(self, playbook_engine):
         context = {
@@ -1007,6 +1712,7 @@ class TestPlaybookEngine:
     def test_get_builtin_playbook_includes_input_params(self, playbook_engine):
         pb = playbook_engine.get_playbook("alert_triage")
         assert pb is not None
+        assert isinstance(pb.get("input"), list)
         assert isinstance(pb.get("input_params"), list)
         assert any(item.get("name") == "alert_text" for item in pb["input_params"] if isinstance(item, dict))
         assert "alert_text" in pb.get("parameters", {})
@@ -1429,6 +2135,12 @@ class TestMCPClientManager:
         assert saved["config_json"]["token"] == "top-secret"
         assert saved["config_json"]["auto_connect"] is True
 
+    def test_resolve_stdio_command_maps_project_relative_python(self):
+        resolved = MCPClientManager._resolve_stdio_command(r".\.venv\Scripts\python.exe")
+        expected = (_PROJECT_ROOT / ".venv" / "Scripts" / "python.exe").resolve()
+        assert Path(resolved) == expected
+        assert expected.exists()
+
 
 # ====================================================================== #
 #  9. FastAPI endpoint tests
@@ -1554,8 +2266,12 @@ class TestFastAPIEndpoints:
 
         resp = client.get("/api/playbooks")
         assert resp.status_code == 200
-        names = [p["name"] for p in resp.json()["playbooks"]]
+        playbooks = resp.json()["playbooks"]
+        names = [p["name"] for p in playbooks]
         assert "Engine PB" in names
+        engine_pb = next(p for p in playbooks if p["name"] == "Engine PB")
+        assert engine_pb["tool_count"] == 1
+        assert engine_pb["tools"] == ["t"]
 
     def test_get_playbook_details_include_input_parameters(self, agent_store, playbook_engine):
         from starlette.testclient import TestClient
@@ -1638,6 +2354,23 @@ class TestFastAPIEndpoints:
         saved = agent_store.list_mcp_connections()[0]
         assert saved["config_json"]["auto_connect"] is True
 
+    def test_add_mcp_server_splits_full_stdio_command_line(self, agent_store):
+        from starlette.testclient import TestClient
+
+        app = self._build_app(agent_store)
+        client = TestClient(app)
+
+        resp = client.post("/api/mcp/servers", json={
+            "name": "split-server",
+            "transport": "stdio",
+            "command": "npx -y @modelcontextprotocol/server-filesystem C:/allowed/dir",
+        })
+        assert resp.status_code == 200
+
+        saved = agent_store.list_mcp_connections()[0]["config_json"]
+        assert saved["command"] == "npx"
+        assert saved["args"] == ["-y", "@modelcontextprotocol/server-filesystem", "C:/allowed/dir"]
+
     def test_mcp_server_list_masks_secret_env_and_token(self, agent_store):
         from starlette.testclient import TestClient
 
@@ -1660,6 +2393,48 @@ class TestFastAPIEndpoints:
         server = next(s for s in resp.json()["servers"] if s["name"] == "secret-server")
         assert "*" in server["config_json"]["token"]
         assert "*" in server["config_json"]["env"]["API_KEY"]
+
+    def test_mcp_server_list_prefers_live_connection_status(self, agent_store):
+        from starlette.testclient import TestClient
+
+        class FakeMCPClient:
+            def get_connection_status(self):
+                return {
+                    "free-osint": {
+                        "connected": True,
+                        "transport": "stdio",
+                        "description": "Free OSINT",
+                        "tool_count": 2,
+                        "tools": ["openphish_lookup", "crtsh_subdomain_search"],
+                        "error": None,
+                    }
+                }
+
+        agent_store.save_mcp_connection(
+            "free-osint",
+            "stdio",
+            {
+                "name": "free-osint",
+                "transport": "stdio",
+                "command": "python",
+                "status": "disconnected",
+            },
+        )
+        agent_store.update_mcp_status("free-osint", "disconnected", tools=[])
+
+        app = self._build_app(agent_store, mcp_client=FakeMCPClient())
+        client = TestClient(app)
+
+        resp = client.get("/api/mcp/servers")
+        assert resp.status_code == 200
+        server = next(s for s in resp.json()["servers"] if s["name"] == "free-osint")
+        assert server["status"] == "connected"
+        assert server["tool_count"] == 2
+        assert server["tools_json"] == [
+            {"name": "openphish_lookup"},
+            {"name": "crtsh_subdomain_search"},
+        ]
+        assert server["live_status"]["connected"] is True
 
     def test_connect_added_mcp_server_registers_tools_for_agent(self, agent_store):
         from starlette.testclient import TestClient
@@ -1711,6 +2486,29 @@ class TestFastAPIEndpoints:
 
         resp2 = client.get("/api/mcp/servers")
         assert len(resp2.json()["servers"]) == 0
+
+    def test_delete_agent_session_endpoint_removes_related_records(self, agent_store):
+        from starlette.testclient import TestClient
+
+        session_id = agent_store.create_session(goal="Delete session from UI")
+        agent_store.add_step(session_id, 1, "thinking", "Collect evidence")
+        agent_store.upsert_specialist_task(
+            session_id=session_id,
+            workflow_id="ioc-triage",
+            profile_id="triage",
+            phase_order=0,
+            status="active",
+            summary="Triage running",
+        )
+        app = self._build_app(agent_store)
+        client = TestClient(app)
+
+        resp = client.delete(f"/api/agent/sessions/{session_id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert agent_store.get_session(session_id) is None
+        assert agent_store.get_steps(session_id) == []
+        assert agent_store.list_specialist_tasks(session_id) == []
 
     def test_delete_connected_mcp_server_disconnects_and_unregisters(self, agent_store):
         from starlette.testclient import TestClient
@@ -1941,6 +2739,9 @@ class TestNewAgentTools:
         names = [t.name for t in tool_registry.list_tools()]
         assert "sandbox_submit" in names
         assert "correlate_findings" in names
+        assert "analyze_detection_coverage" in names
+        assert "build_detection_backlog" in names
+        assert "create_case" in names
 
     @pytest.mark.asyncio
     async def test_extract_iocs_tool_returns_playbook_friendly_contract(self, tool_registry):
@@ -2041,11 +2842,102 @@ class TestNewAgentTools:
         assert "185.220.101.45" in result["requested_iocs"]
         assert "evil.com" in result["requested_iocs"]
 
+    @pytest.mark.asyncio
+    async def test_analyze_detection_coverage_returns_kill_chain_summary(self, tool_registry):
+        tool_registry.register_default_tools({})
+        result = await tool_registry.execute_local_tool(
+            "analyze_detection_coverage",
+            techniques=[
+                {"technique_id": "T1566.001", "technique_name": "Spearphishing Attachment", "tactic": "Initial Access"},
+                {"technique_id": "T1059.001", "technique_name": "PowerShell", "tactic": "Execution"},
+                {"technique_id": "T1071.001", "technique_name": "Web Protocols", "tactic": "Command and Control"},
+            ],
+        )
+        assert result["status"] == "analyzed"
+        assert result["technique_count"] == 3
+        assert result["coverage_ratio_pct"] > 0
+        assert "kill_chain" in result
+        assert "Initial Access" in result["kill_chain"]["phases_detected"]
+
+    @pytest.mark.asyncio
+    async def test_create_attack_layer_returns_navigator_payload(self, tool_registry):
+        tool_registry.register_default_tools({})
+        result = await tool_registry.execute_local_tool(
+            "create_attack_layer",
+            techniques=[
+                {"technique_id": "T1059.001", "technique_name": "PowerShell", "tactic": "execution"},
+                {"technique_id": "T1566.001", "technique_name": "Spearphishing Attachment", "tactic": "initial-access"},
+            ],
+            layer_name="Threat Hunt Layer",
+        )
+        assert result["status"] == "generated"
+        assert result["technique_count"] == 2
+        assert result["layer"]["name"] == "Threat Hunt Layer"
+        assert len(result["layer"]["techniques"]) >= 2
+
+    @pytest.mark.asyncio
+    async def test_build_detection_backlog_returns_prioritized_plan(self, tool_registry):
+        tool_registry.register_default_tools({})
+        result = await tool_registry.execute_local_tool(
+            "build_detection_backlog",
+            techniques=[
+                {"technique_id": "T1566.001", "technique_name": "Spearphishing Attachment", "tactic": "Initial Access"},
+                {"technique_id": "T1059.001", "technique_name": "PowerShell", "tactic": "Execution"},
+            ],
+            target_platforms=["sigma", "spl", "kql"],
+            existing_rule_types=["sigma"],
+        )
+        assert result["status"] == "planned"
+        assert result["backlog_count"] >= 2
+        assert result["priority_summary"]["high"] >= 1
+        assert "lifecycle" in result
+
+    @pytest.mark.asyncio
+    async def test_case_management_tools_mutate_case_store(self, tool_registry, tmp_path):
+        case_store = CaseStore(db_path=str(tmp_path / "cases.db"))
+        tool_registry.register_default_tools({}, case_store=case_store)
+
+        created = await tool_registry.execute_local_tool(
+            "create_case",
+            title="Suspicious beaconing on FIN-WS-12",
+            description="Opened from threat hunt workflow",
+            initial_note="Seed case note",
+        )
+        case_id = created["case_id"]
+        assert created["status"] == "created"
+
+        noted = await tool_registry.execute_local_tool(
+            "add_case_note",
+            case_id=case_id,
+            note="IOC overlap with prior phishing alert",
+        )
+        assert noted["status"] == "added"
+
+        linked = await tool_registry.execute_local_tool(
+            "link_case_analysis",
+            case_id=case_id,
+            analysis_id="job-123",
+        )
+        assert linked["status"] == "linked"
+
+        updated = await tool_registry.execute_local_tool(
+            "update_case_status",
+            case_id=case_id,
+            status="Escalated",
+        )
+        assert updated["status"] == "updated"
+
+        context = await tool_registry.execute_local_tool("get_case_context", case_id=case_id)
+        assert context["status"] == "loaded"
+        assert context["case"]["status"] == "Escalated"
+        assert len(context["case"]["notes"]) >= 2
+        assert context["analysis_count"] == 1
+
     def test_total_tool_count_no_instances(self, tool_registry):
         """Without analyzer instances, should still expose all non-analyzer playbook helpers."""
         tool_registry.register_default_tools({})
         count = len(tool_registry.list_tools())
-        assert count == 10
+        assert count == 18
 
     def test_total_tool_count_with_mock_instances(self, tool_registry):
         """With analyzer instances, should expose the full local playbook toolset."""
@@ -2063,7 +2955,7 @@ class TestNewAgentTools:
             email_analyzer=mock_email,
         )
         count = len(tool_registry.list_tools())
-        assert count == 14
+        assert count == 22
 
 
 # ====================================================================== #
@@ -2191,6 +3083,44 @@ class TestSettingsAPI:
         assert data["available"] is True
         assert data["configured_model"] == "openai/gpt-oss-20b"
 
+    def test_llm_health_reflects_runtime_provider_failure(self):
+        from starlette.testclient import TestClient
+        from src.web.app import create_app
+
+        app = create_app()
+        app.state.config = {
+            **app.state.config,
+            'llm': {
+                'provider': 'groq',
+                'groq_endpoint': 'https://api.groq.com/openai/v1',
+                'groq_model': 'openai/gpt-oss-20b',
+            },
+            'api_keys': {
+                **app.state.config.get('api_keys', {}),
+                'groq': 'gsk-invalid',
+            },
+        }
+        app.state.web_provider.config = app.state.config
+        app.state.agent_loop.provider_runtime_status = {
+            'provider': 'groq',
+            'available': False,
+            'status': 'error',
+            'error': 'Groq HTTP 401: invalid_api_key',
+            'http_status': 401,
+            'checked_at': '2026-04-14T00:00:00+00:00',
+        }
+
+        client = TestClient(app)
+        resp = client.get("/api/config/llm-health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "groq"
+        assert data["available"] is False
+        assert data["status"] == "degraded"
+        assert "latest live runtime call failed" in data["message"]
+        assert "401" in data["error"]
+
     def test_legacy_ollama_health_endpoint_is_provider_aware(self):
         from starlette.testclient import TestClient
         from src.web.app import create_app
@@ -2252,7 +3182,7 @@ class TestAppComponentWiring:
 
         app = create_app()
         tools = app.state.tool_registry.list_tools()
-        assert len(tools) == 14
+        assert len(tools) == 22
 
     def test_cross_tool_wiring(self):
         from src.web.app import create_app
@@ -2313,6 +3243,140 @@ class TestAgentLoop:
             session_id = await loop.investigate("Test goal")
         assert isinstance(session_id, str) and len(session_id) > 0
         assert session_id in loop._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_investigate_initializes_multi_agent_team_for_workflow(self, tmp_path, agent_profiles, workflow_registry):
+        db = tmp_path / "loop_multi_agent.db"
+        store = AgentStore(db_path=str(db))
+        loop = AgentLoop(
+            config={
+                "agent": {"max_steps": 6},
+                "llm": {"provider": "ollama", "ollama_endpoint": "http://localhost:11434", "ollama_model": "llama3.1:8b"},
+                "api_keys": {},
+            },
+            tool_registry=ToolRegistry(),
+            agent_store=store,
+            agent_profiles=agent_profiles,
+            workflow_registry=workflow_registry,
+        )
+
+        with patch.object(loop, "_run_loop", new_callable=AsyncMock):
+            session_id = await loop.investigate(
+                "Investigate suspicious lateral movement",
+                metadata={"workflow_id": "full-investigation", "agent_profile_id": "investigator"},
+            )
+
+        session = store.get_session(session_id)
+        assert session is not None
+        metadata = session["metadata"]
+        assert metadata["collaboration_mode"] == "multi_agent"
+        assert metadata["lead_agent_profile_id"] == "investigator"
+        assert metadata["active_specialist"] == "triage"
+        assert metadata["specialist_team"][0] == "triage"
+        assert len(metadata["specialist_team"]) > 1
+
+    def test_build_workflow_block_uses_skill_sections(self, tmp_path, agent_profiles, workflow_registry):
+        db = tmp_path / "loop_sections.db"
+        store = AgentStore(db_path=str(db))
+        loop = AgentLoop(
+            config={
+                "agent": {"max_steps": 6},
+                "llm": {"provider": "ollama", "ollama_endpoint": "http://localhost:11434", "ollama_model": "llama3.1:8b"},
+                "api_keys": {},
+            },
+            tool_registry=ToolRegistry(),
+            agent_store=store,
+            agent_profiles=agent_profiles,
+            workflow_registry=workflow_registry,
+        )
+        state = AgentState(
+            session_id="sess-sections",
+            goal="Investigate",
+            workflow_id="forensic-analysis",
+            agent_profile_id="network_forensics",
+        )
+        state.configure_specialist_team(["investigator", "network_forensics"], active_specialist="network_forensics")
+
+        block = loop._build_workflow_block(state)
+
+        assert "Workflow operating model:" in block
+        assert "Workflow phases:" in block
+
+    def test_sync_specialist_progress_records_handoff(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(goal="Workflow goal", metadata={"workflow_id": "full-investigation"})
+        state = AgentState(session_id=session_id, goal="Workflow goal", workflow_id="full-investigation", max_steps=6)
+        state.configure_specialist_team(["triage", "investigator", "correlator"], active_specialist="triage")
+        loop._active_sessions[session_id] = state
+
+        loop._sync_specialist_progress(session_id, state, reason="Workflow session initialized")
+        initial_tasks = loop.store.list_specialist_tasks(session_id)
+        assert initial_tasks[0]["status"] == "active"
+        assert initial_tasks[1]["status"] == "planned"
+
+        state.step_count = 3
+        loop._sync_specialist_progress(session_id, state, reason="Phase progression")
+
+        assert state.active_specialist == "investigator"
+        assert len(state.specialist_handoffs) == 1
+        assert state.specialist_handoffs[0]["from_profile"] == "triage"
+        assert state.specialist_handoffs[0]["to_profile"] == "investigator"
+        session = loop.store.get_session(session_id)
+        assert session["metadata"]["active_specialist"] == "investigator"
+        tasks = loop.store.list_specialist_tasks(session_id)
+        assert tasks[0]["status"] == "completed"
+        assert tasks[1]["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_run_playbook_preserves_case_context_and_marks_subworkflow_started(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop._playbook_engine = SimpleNamespace(execute=AsyncMock(return_value="pb-sub-session"))
+
+        session_id = loop.store.create_session(goal="Investigate suspicious host", case_id="CASE-123")
+        state = AgentState(session_id=session_id, goal="Investigate suspicious host", max_steps=4)
+        loop._active_sessions[session_id] = state
+
+        with patch.object(
+            loop,
+            "_think",
+            new_callable=AsyncMock,
+            side_effect=[
+                {
+                    "action": "run_playbook",
+                    "playbook_id": "ioc_triage",
+                    "params": {"ioc": "1.2.3.4"},
+                    "reasoning": "Delegate IOC triage to a dedicated sub-workflow.",
+                },
+                {
+                    "action": "final_answer",
+                    "answer": "Sub-workflow dispatched for deeper IOC analysis.",
+                    "verdict": "UNKNOWN",
+                    "reasoning": "Waiting for downstream evidence.",
+                },
+            ],
+        ), patch.object(loop, "_generate_summary", new_callable=AsyncMock, return_value="done"):
+            await loop._run_loop(session_id)
+
+        loop._playbook_engine.execute.assert_awaited_once_with(
+            "ioc_triage",
+            {"ioc": "1.2.3.4"},
+            case_id="CASE-123",
+        )
+
+        steps = loop.store.get_steps(session_id)
+        playbook_step = next(step for step in steps if step["step_type"] == "playbook_result")
+        playbook_payload = json.loads(playbook_step["content"])
+        assert playbook_payload["status"] == "started"
+        assert playbook_payload["case_id"] == "CASE-123"
+
+        session = loop.store.get_session(session_id)
+        findings = session["findings"]
+        assert any(
+            finding["type"] == "playbook_started"
+            and finding["case_id"] == "CASE-123"
+            and finding["status"] == "started"
+            for finding in findings
+        )
 
     # ---- get_state returns None for unknown session ------------------ #
     def test_get_state_returns_none_for_unknown(self, tmp_path):
@@ -2499,10 +3563,19 @@ class TestAgentLoop:
     async def test_generate_summary(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         state = AgentState(session_id="s1", goal="test")
+        state.add_finding({"type": "tool_result", "tool": "investigate_ioc", "result": {"verdict": "MALICIOUS"}})
         state.add_finding({"type": "final_answer", "answer": "All clear", "verdict": "CLEAN"})
         summary = await loop._generate_summary(state)
-        assert "CLEAN" in summary
+        assert "MALICIOUS" in summary
         assert "All clear" in summary
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_omits_llm_verdict_when_no_authoritative_outcome_exists(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.add_finding({"type": "final_answer", "answer": "Awaiting more evidence", "verdict": "CLEAN"})
+        summary = await loop._generate_summary(state)
+        assert summary == "Awaiting more evidence"
 
     # ---- _generate_summary fallback when LLM fails ------------------- #
     @pytest.mark.asyncio

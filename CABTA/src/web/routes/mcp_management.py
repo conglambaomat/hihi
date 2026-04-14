@@ -5,6 +5,7 @@ MCP Server management routes.
 
 import asyncio
 import logging
+import shlex
 import shutil
 from typing import Dict, List, Optional
 
@@ -168,7 +169,24 @@ def merge_mcp_server_records(app, include_live_status: bool = True) -> List[dict
     if include_live_status and hasattr(app.state, 'mcp_client') and app.state.mcp_client:
         live_status = app.state.mcp_client.get_connection_status()
         for entry in merged:
-            entry['live_status'] = live_status.get(entry['name'], {})
+            live = live_status.get(entry['name'], {})
+            entry['live_status'] = live
+            if live:
+                if live.get('connected'):
+                    entry['status'] = 'connected'
+                elif live.get('error'):
+                    entry['status'] = f"error: {str(live['error'])[:120]}"
+                else:
+                    entry['status'] = 'disconnected'
+
+                if live.get('tool_count') is not None:
+                    entry['tool_count'] = live.get('tool_count')
+                if live.get('tools'):
+                    entry['tools_json'] = [
+                        {"name": tool_name}
+                        for tool_name in live.get('tools', [])
+                        if tool_name
+                    ]
 
     return merged
 
@@ -229,7 +247,20 @@ async def list_servers(request: Request):
 async def add_server(request: Request, body: MCPServerAdd):
     """Add a new MCP server configuration."""
     store = request.app.state.agent_store
-    server_id = store.save_mcp_connection(body.name, body.transport, body.model_dump())
+    payload = body.model_dump()
+    if body.transport == 'stdio':
+        command = str(body.command or "").strip()
+        args = list(body.args or [])
+        if command and not args and any(ch.isspace() for ch in command):
+            try:
+                tokens = shlex.split(command, posix=False)
+            except ValueError:
+                tokens = command.split()
+            if len(tokens) > 1:
+                payload['command'] = tokens[0]
+                payload['args'] = tokens[1:]
+
+    server_id = store.save_mcp_connection(body.name, body.transport, payload)
     return {"id": server_id, "name": body.name}
 
 

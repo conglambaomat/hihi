@@ -47,6 +47,9 @@ session_data.json
 ioc_result.json
 ioc_session.json
 ps.json
+.cabta-runtime/
+.blue-team-assistant/
+.verify-runtime/
 
 # --- Uploaded / Temp Files ---
 uploads/
@@ -57,6 +60,9 @@ nul
 
 # --- Test Artifacts ---
 .pytest_cache/
+.pytest-basetemp/
+.pytest_tmp/
+pytest-cache-files-*/
 .coverage
 htmlcov/
 .tox/

@@ -7,6 +7,7 @@ import json
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from src.web.analysis_manager import AnalysisManager
 from src.web.case_store import CaseStore
@@ -230,6 +231,8 @@ class TestFastAPIEndpoints:
             pytest.skip("fastapi not installed")
 
         from src.web.app import create_app
+        from src.workflows.service import WorkflowService
+        from src.case_intelligence.service import CaseIntelligenceService
 
         self.app = create_app()
         # Override with temp DBs
@@ -238,6 +241,17 @@ class TestFastAPIEndpoints:
         )
         self.app.state.case_store = CaseStore(
             db_path=str(tmp_path / 'cases.db')
+        )
+        self.app.state.workflow_service = WorkflowService(
+            workflow_registry=self.app.state.workflow_registry,
+            agent_store=self.app.state.agent_store,
+            case_store=self.app.state.case_store,
+        )
+        self.app.state.case_intelligence = CaseIntelligenceService(
+            analysis_manager=self.app.state.analysis_manager,
+            agent_store=self.app.state.agent_store,
+            case_store=self.app.state.case_store,
+            governance_store=self.app.state.governance_store,
         )
         self.client = TestClient(self.app)
 
@@ -249,6 +263,7 @@ class TestFastAPIEndpoints:
         assert 'checks' in data
         assert 'capabilities' in data
         assert 'issues' in data
+        assert 'daemon' in data['capabilities']
 
     def test_health_check_renders_html_for_browser_navigation(self):
         r = self.client.get('/api/config/health', headers={'accept': 'text/html'})
@@ -360,6 +375,282 @@ class TestFastAPIEndpoints:
         assert 'sources' in data
         assert 'summary' in data
 
+    def test_agent_profiles_endpoint(self):
+        r = self.client.get('/api/agent/profiles')
+        assert r.status_code == 200
+        data = r.json()
+        assert 'profiles' in data
+        assert any(item['id'] == 'threat_hunter' for item in data['profiles'])
+        assert any(item['id'] == 'correlator' for item in data['profiles'])
+
+    def test_agent_profile_detail_endpoint(self):
+        r = self.client.get('/api/agent/profiles/responder')
+        assert r.status_code == 200
+        data = r.json()
+        assert data['id'] == 'responder'
+        assert data['can_issue_verdict'] is False
+
+    def test_agent_capability_catalog_endpoint(self):
+        r = self.client.get('/api/agent/capabilities')
+        assert r.status_code == 200
+        data = r.json()
+        assert data['verdict_authority']['owner'] == 'cabta_scoring'
+        assert data['agent_profiles']['count'] >= 1
+
+    def test_workflows_list_endpoint(self):
+        r = self.client.get('/api/workflows')
+        assert r.status_code == 200
+        data = r.json()
+        assert 'workflows' in data
+        assert any(item['id'] == 'incident-response' for item in data['workflows'])
+        assert any(item['id'] == 'full-investigation' for item in data['workflows'])
+        full = next(item for item in data['workflows'] if item['id'] == 'full-investigation')
+        assert full['multi_agent'] is True
+        assert len(full['agents']) > 1
+
+    def test_workflow_detail_endpoint(self):
+        r = self.client.get('/api/workflows/incident-response')
+        assert r.status_code == 200
+        data = r.json()
+        assert data['playbook_id'] == 'incident_response'
+        assert data['default_agent_profile'] == 'responder'
+
+    def test_skill_workflow_detail_endpoint(self):
+        r = self.client.get('/api/workflows/full-investigation')
+        assert r.status_code == 200
+        data = r.json()
+        assert data['definition_kind'] == 'skill'
+        assert data['default_agent_profile'] == 'investigator'
+        assert len(data['agents']) > 1
+
+    def test_workflow_validate_endpoint(self):
+        r = self.client.get('/api/workflows/ioc-triage/validate')
+        assert r.status_code == 200
+        data = r.json()
+        assert data['workflow_id'] == 'ioc-triage'
+        assert data['status'] in ('ready', 'degraded', 'blocked')
+
+    def test_workflow_run_uses_playbook_backend(self):
+        self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
+        r = self.client.post('/api/workflows/incident-response/run', json={
+            'goal': 'Respond to a malware incident',
+            'params': {'alert_text': 'Suspicious beaconing'},
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data['workflow_id'] == 'incident-response'
+        assert data['backend'] == 'playbook'
+        assert data['session_id'] == 'wf-session'
+
+    def test_workflow_run_accepts_inputs_alias_for_params(self):
+        self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
+
+        r = self.client.post('/api/workflows/threat-hunt/run', json={
+            'inputs': {
+                'hunt_hypothesis': 'Investigate suspicious outbound beaconing',
+                'known_indicators': {'ips': ['185.220.101.45']},
+            },
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.playbook_engine.execute.await_args.args
+        assert args[0] == 'threat_hunt'
+        assert args[1]['hunt_hypothesis'] == 'Investigate suspicious outbound beaconing'
+        assert args[1]['known_indicators']['ips'] == ['185.220.101.45']
+
+    def test_chat_playbook_accepts_structured_json_input(self):
+        self.app.state.playbook_engine.execute = AsyncMock(return_value='chat-playbook-session')
+
+        r = self.client.post('/api/chat', json={
+            'playbook_id': 'alert_triage',
+            'message': json.dumps({
+                'alert_text': 'Suspicious login from 10.0.0.5',
+                'alert_source': 'SIEM',
+                'alert_severity': 'high',
+            }),
+        })
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data['session_id'] == 'chat-playbook-session'
+
+        args = self.app.state.playbook_engine.execute.await_args.args
+        assert args[0] == 'alert_triage'
+        assert args[1]['alert_text'] == 'Suspicious login from 10.0.0.5'
+        assert args[1]['alert_source'] == 'SIEM'
+        assert args[1]['alert_severity'] == 'high'
+
+    def test_chat_playbook_maps_plain_text_to_first_required_input(self):
+        self.app.state.playbook_engine.execute = AsyncMock(return_value='chat-playbook-session')
+
+        r = self.client.post('/api/chat', json={
+            'playbook_id': 'alert_triage',
+            'message': 'SIEM alert: suspicious outbound connection to 10.0.0.5',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.playbook_engine.execute.await_args.args
+        assert args[0] == 'alert_triage'
+        assert args[1]['alert_text'] == 'SIEM alert: suspicious outbound connection to 10.0.0.5'
+
+    def test_delete_agent_session_endpoint_removes_session_children(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Delete from investigations',
+        )
+        self.app.state.agent_store.add_step(
+            session_id,
+            1,
+            'thinking',
+            'Collect evidence',
+        )
+        self.app.state.agent_store.upsert_specialist_task(
+            session_id=session_id,
+            workflow_id='ioc-triage',
+            profile_id='triage',
+            phase_order=0,
+            status='active',
+            summary='Triage in progress',
+        )
+
+        r = self.client.delete(f'/api/agent/sessions/{session_id}')
+        assert r.status_code == 200
+        assert r.json()['status'] == 'deleted'
+        assert self.app.state.agent_store.get_session(session_id) is None
+        assert self.app.state.agent_store.get_steps(session_id) == []
+        assert self.app.state.agent_store.list_specialist_tasks(session_id) == []
+
+    def test_workflow_sessions_endpoint(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Run workflow',
+            metadata={'workflow_id': 'ioc-triage', 'current_step': 1, 'max_steps': 4},
+        )
+        self.app.state.agent_store.add_step(
+            session_id,
+            1,
+            'thinking',
+            'Investigate IOC 8.8.8.8',
+            tool_name='investigate_ioc',
+        )
+        self.app.state.agent_store.upsert_specialist_task(
+            session_id=session_id,
+            workflow_id='ioc-triage',
+            profile_id='triage',
+            phase_order=0,
+            status='active',
+            summary='Triage is active',
+        )
+
+        r = self.client.get('/api/workflows/sessions')
+        assert r.status_code == 200
+        data = r.json()
+        assert any(item['session_id'] == session_id for item in data['items'])
+
+        r2 = self.client.get(f'/api/workflows/sessions/{session_id}')
+        assert r2.status_code == 200
+        detail = r2.json()
+        assert detail['session_id'] == session_id
+        assert len(detail['steps']) == 1
+        assert len(detail['specialist_tasks']) == 1
+
+        r3 = self.client.get(f'/api/agent/sessions/{session_id}/specialists')
+        assert r3.status_code == 200
+        assert len(r3.json()['items']) == 1
+
+    def test_workflows_page(self):
+        r = self.client.get('/agent/workflows')
+        assert r.status_code == 200
+        assert 'Workflow Registry' in r.text
+
+    def test_approvals_page(self):
+        approval_id = self.app.state.governance_store.create_approval(
+            session_id='sess-approval',
+            case_id='case-approval',
+            workflow_id='incident-response',
+            action_type='tool_execution',
+            tool_name='block_ip',
+            target={'ip': '8.8.8.8'},
+            rationale='Containment requested',
+        )
+        assert approval_id
+
+        r = self.client.get('/agent/approvals')
+        assert r.status_code == 200
+        assert 'Approvals' in r.text
+        assert 'Approve' in r.text
+        assert 'Reject' in r.text
+        assert approval_id in r.text
+
+    def test_decisions_page(self):
+        decision_id = self.app.state.governance_store.log_ai_decision(
+            session_id='sess-decision',
+            case_id='case-decision',
+            workflow_id='ioc-triage',
+            profile_id='triage',
+            decision_type='final_answer',
+            summary='IOC is suspicious',
+        )
+        assert decision_id
+
+        r = self.client.get('/agent/decisions')
+        assert r.status_code == 200
+        assert 'Decision Log' in r.text
+        assert 'Save Feedback' in r.text
+        assert decision_id in r.text
+
+    def test_governance_approval_endpoints(self):
+        approval_id = self.app.state.governance_store.create_approval(
+            session_id='sess-approval',
+            case_id='case-approval',
+            workflow_id='incident-response',
+            action_type='tool_execution',
+            tool_name='sandbox_submit',
+            target={'file_path': 'C:/samples/a.exe'},
+            rationale='Need dynamic analysis',
+        )
+
+        r = self.client.get('/api/governance/approvals')
+        assert r.status_code == 200
+        assert any(item['id'] == approval_id for item in r.json()['items'])
+
+        r2 = self.client.get(f'/api/governance/approvals/{approval_id}')
+        assert r2.status_code == 200
+        assert r2.json()['tool_name'] == 'sandbox_submit'
+
+        r3 = self.client.post(
+            f'/api/governance/approvals/{approval_id}/review',
+            json={'approved': True, 'reviewer': 'lead', 'comment': 'Approved'},
+        )
+        assert r3.status_code == 200
+        reviewed = self.app.state.governance_store.get_approval(approval_id)
+        assert reviewed['status'] == 'approved'
+
+    def test_governance_decision_endpoints(self):
+        decision_id = self.app.state.governance_store.log_ai_decision(
+            session_id='sess-decision',
+            case_id='case-decision',
+            workflow_id='threat-hunt',
+            profile_id='threat_hunter',
+            decision_type='run_playbook',
+            summary='Escalate into structured hunt',
+            rationale='IOC cluster requires hunt workflow',
+        )
+
+        r = self.client.get('/api/governance/decisions')
+        assert r.status_code == 200
+        assert any(item['id'] == decision_id for item in r.json()['items'])
+
+        r2 = self.client.get(f'/api/governance/decisions/{decision_id}')
+        assert r2.status_code == 200
+        assert r2.json()['decision_type'] == 'run_playbook'
+
+        r3 = self.client.post(
+            f'/api/governance/decisions/{decision_id}/feedback',
+            json={'feedback': 'Useful escalation', 'reviewer': 'lead'},
+        )
+        assert r3.status_code == 200
+        decision = self.app.state.governance_store.get_ai_decision(decision_id)
+        assert decision['feedback'] == 'Useful escalation'
+
     def test_create_case(self):
         r = self.client.post('/api/cases', json={
             'title': 'Test Case', 'severity': 'high'
@@ -399,6 +690,75 @@ class TestFastAPIEndpoints:
         })
         assert r2.status_code == 200
         assert 'id' in r2.json()
+
+    def test_case_intelligence_endpoints(self):
+        r = self.client.post('/api/cases', json={'title': 'Threat Case', 'severity': 'high'})
+        cid = r.json()['id']
+
+        aid = self.app.state.analysis_manager.create_job('ioc', {'value': '8.8.8.8'})
+        self.app.state.analysis_manager.complete_job(
+            aid,
+            {'ioc': '8.8.8.8', 'verdict': 'SUSPICIOUS'},
+            verdict='SUSPICIOUS',
+            score=55,
+        )
+        self.app.state.case_store.link_analysis(cid, aid)
+        self.app.state.case_store.add_note(cid, 'Analyst note', 'analyst')
+
+        session_id = self.app.state.agent_store.create_session(
+            goal='Investigate 8.8.8.8 on HOST-1',
+            case_id=cid,
+            metadata={'workflow_id': 'ioc-triage', 'agent_profile_id': 'triage', 'current_step': 1, 'max_steps': 4},
+        )
+        self.app.state.agent_store.add_step(
+            session_id,
+            1,
+            'thinking',
+            'Investigate IOC 8.8.8.8 on HOST-1',
+            tool_name='investigate_ioc',
+        )
+        self.app.state.case_store.link_workflow(cid, session_id, 'ioc-triage')
+
+        approval_id = self.app.state.governance_store.create_approval(
+            session_id=session_id,
+            case_id=cid,
+            workflow_id='ioc-triage',
+            action_type='tool_execution',
+            tool_name='block_ip',
+            target={'ip': '8.8.8.8'},
+            rationale='Contain IOC',
+        )
+        decision_id = self.app.state.governance_store.log_ai_decision(
+            session_id=session_id,
+            case_id=cid,
+            workflow_id='ioc-triage',
+            profile_id='triage',
+            decision_type='final_answer',
+            summary='IOC is suspicious',
+        )
+
+        graph = self.client.get(f'/api/cases/{cid}/graph')
+        assert graph.status_code == 200
+        graph_data = graph.json()
+        assert graph_data['node_count'] >= 4
+        assert any(node['type'] == 'ip' for node in graph_data['nodes'])
+
+        timeline = self.client.get(f'/api/cases/{cid}/timeline')
+        assert timeline.status_code == 200
+        timeline_data = timeline.json()
+        assert timeline_data['event_count'] >= 4
+
+        workflows = self.client.get(f'/api/cases/{cid}/workflows')
+        assert workflows.status_code == 200
+        assert any(item['session_id'] == session_id for item in workflows.json()['items'])
+
+        approvals = self.client.get(f'/api/cases/{cid}/approvals')
+        assert approvals.status_code == 200
+        assert any(item['id'] == approval_id for item in approvals.json()['items'])
+
+        decisions = self.client.get(f'/api/cases/{cid}/decisions')
+        assert decisions.status_code == 200
+        assert any(item['id'] == decision_id for item in decisions.json()['items'])
 
     def test_report_json(self):
         # Create and complete a job

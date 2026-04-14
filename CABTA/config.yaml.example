@@ -45,6 +45,13 @@ web:
     enabled: false        # Use deterministic demo fixtures for localhost walkthroughs
     dataset: "default"    # Fixture set under data/demo/
 
+# Optional headless SOC daemon
+daemon:
+  enabled: false
+  retry_backoff_seconds: 60
+  lease_timeout_seconds: 300
+  schedules: []
+
 # Built-in MCP Servers
 # These names intentionally match the playbook references under data/playbooks/.
 # Start CABTA from the project root so relative paths resolve correctly.
@@ -129,3 +136,17 @@ mcp_servers:
     args: ["-m", "src.mcp_servers.flare_tools"]
     description: "FLARE-style reverse engineering helpers"
     auto_connect: true
+
+  - name: "splunk"
+    transport: "stdio"
+    command: ".\\.venv\\Scripts\\python.exe"
+    args: ["-m", "src.mcp_servers.splunk_tools"]
+    env:
+      SPLUNK_URL: "https://splunk.example.local:8089"
+      SPLUNK_TOKEN: ""
+      SPLUNK_VERIFY_TLS: "true"
+      SPLUNK_ALLOWED_INDEXES: "main,endpoint,network"
+      SPLUNK_MAX_WINDOW_HOURS: "168"
+      SPLUNK_MAX_RESULTS: "200"
+    description: "Read-only Splunk hunting, pivots, and host timeline lookups"
+    auto_connect: false

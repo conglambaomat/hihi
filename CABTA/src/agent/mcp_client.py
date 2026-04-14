@@ -11,11 +11,14 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +257,8 @@ class MCPClientManager:
         if not cfg.command:
             raise ValueError(f"stdio transport requires 'command' for server {cfg.name}")
 
+        resolved_command = self._resolve_stdio_command(cfg.command)
+
         # Build environment
         env = os.environ.copy()
         if cfg.env:
@@ -267,7 +272,7 @@ class MCPClientManager:
             from mcp.client.stdio import StdioServerParameters, stdio_client
 
             params = StdioServerParameters(
-                command=cfg.command,
+                command=resolved_command,
                 args=cmd_args,
                 env=cfg.env,
             )
@@ -292,7 +297,7 @@ class MCPClientManager:
                 cfg.name,
             )
             proc = await asyncio.create_subprocess_exec(
-                cfg.command, *cmd_args,
+                resolved_command, *cmd_args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -305,11 +310,35 @@ class MCPClientManager:
 
         except FileNotFoundError:
             raise ConnectionError(
-                f"Command not found: {cfg.command}. "
+                f"Command not found: {resolved_command}. "
                 f"Make sure the MCP server is installed."
             )
         except Exception as exc:
             raise ConnectionError(f"stdio connect failed for {cfg.name}: {exc}") from exc
+
+    @staticmethod
+    def _resolve_stdio_command(command: str) -> str:
+        """Resolve stdio commands relative to the CABTA project root when needed."""
+        raw = str(command or "").strip()
+        if not raw:
+            return raw
+
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        candidate = Path(expanded)
+
+        if candidate.is_absolute():
+            return str(candidate)
+
+        if any(sep in expanded for sep in ("\\", "/")) or expanded.startswith("."):
+            project_candidate = (PROJECT_ROOT / candidate).resolve()
+            if project_candidate.exists():
+                return str(project_candidate)
+
+        found = shutil.which(expanded)
+        if found:
+            return found
+
+        return expanded
 
     async def _connect_sse(self, connection: MCPConnection) -> None:
         """Connect to an MCP server via Server-Sent Events."""

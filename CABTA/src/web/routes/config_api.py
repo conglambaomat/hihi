@@ -63,9 +63,58 @@ def _runtime_llm_config(request: Request):
     return llm_cfg, api_keys, provider
 
 
+def _latest_runtime_llm_signal(request: Request, provider: str):
+    """Return the strongest runtime signal collected by active LLM components."""
+    signals = []
+    for attr in ('agent_loop', 'llm_analyzer'):
+        component = getattr(request.app.state, attr, None)
+        signal = getattr(component, 'provider_runtime_status', None)
+        if not isinstance(signal, dict):
+            continue
+        if str(signal.get('provider') or '').strip().lower() != provider:
+            continue
+        if signal.get('available') is None:
+            continue
+        signals.append(signal)
+
+    if not signals:
+        return None
+
+    failing = [item for item in signals if item.get('available') is False]
+    if failing:
+        return sorted(failing, key=lambda item: str(item.get('checked_at') or ''))[-1]
+
+    return sorted(signals, key=lambda item: str(item.get('checked_at') or ''))[-1]
+
+
+def _apply_runtime_llm_signal(result: dict, runtime_signal: dict | None) -> dict:
+    """Overlay optimistic config-based health with observed runtime failures/successes."""
+    if not runtime_signal:
+        return result
+
+    merged = dict(result)
+    merged['last_runtime_check'] = runtime_signal.get('checked_at')
+
+    if runtime_signal.get('available') is False:
+        merged['available'] = False
+        merged['model_available'] = False
+        merged['status'] = 'degraded'
+        merged['error'] = runtime_signal.get('error') or merged.get('error')
+        merged['message'] = (
+            f"{merged['provider'].title()} is configured, but the latest live runtime call failed."
+        )
+    elif runtime_signal.get('available') is True:
+        merged['available'] = True
+        merged['model_available'] = True
+        merged['status'] = 'configured'
+
+    return merged
+
+
 async def _build_llm_health_result(request: Request, endpoint: str = 'http://localhost:11434'):
     """Return provider-aware LLM health diagnostics."""
     llm_cfg, api_keys, provider = _runtime_llm_config(request)
+    runtime_signal = _latest_runtime_llm_signal(request, provider)
     result = {
         'provider': provider,
         'status': 'degraded',
@@ -96,7 +145,7 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
             ),
             'error': None if has_key else 'Groq API key not configured.',
         })
-        return result
+        return _apply_runtime_llm_signal(result, runtime_signal)
 
     if provider == 'anthropic':
         has_key = bool(api_keys.get('anthropic'))
@@ -113,7 +162,7 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
             ),
             'error': None if has_key else 'Anthropic API key not configured.',
         })
-        return result
+        return _apply_runtime_llm_signal(result, runtime_signal)
 
     base = str(endpoint or llm_cfg.get('ollama_endpoint') or llm_cfg.get('base_url') or 'http://localhost:11434').rstrip('/')
     result.update({
@@ -153,7 +202,7 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
         result['error'] = f'Cannot connect to Ollama: {exc}'
         result['message'] = 'Ollama is selected as the LLM provider, but the local runtime is not reachable.'
 
-    return result
+    return _apply_runtime_llm_signal(result, runtime_signal)
 
 
 def _wants_html(request: Request) -> bool:
@@ -168,6 +217,8 @@ def _wants_html(request: Request) -> bool:
 async def _build_health_payload(request: Request):
     """Assemble the health/readiness payload used by JSON and HTML views."""
     provider = request.app.state.web_provider
+    capability_catalog = getattr(request.app.state, 'capability_catalog', None)
+    daemon = getattr(request.app.state, 'headless_soc_daemon', None)
     checks = {
         'analysis_manager': bool(getattr(request.app.state, 'analysis_manager', None)),
         'case_store': bool(getattr(request.app.state, 'case_store', None)),
@@ -183,6 +234,12 @@ async def _build_health_payload(request: Request):
     llm_health_result = await _build_llm_health_result(request)
     feature_status = provider.feature_status(request.app)
     source_summary = provider.source_health_summary(request.app)
+    capability_summary = capability_catalog.build_summary(request.app) if capability_catalog else {}
+    verdict_authority = (
+        capability_catalog.build_catalog(request.app).get('verdict_authority', {})
+        if capability_catalog else {}
+    )
+    daemon_status = daemon.build_status(request.app) if daemon else {"enabled": False, "schedule_count": 0}
     issues = []
 
     llm_enabled = bool((getattr(request.app.state, 'config', {}) or {}).get('analysis', {}).get('enable_llm', True))
@@ -215,9 +272,12 @@ async def _build_health_payload(request: Request):
         'mode': provider.app_mode(),
         'checks': checks,
         'critical_status': 'healthy' if not critical_missing else 'unhealthy',
+        'verdict_authority': verdict_authority,
         'capabilities': {
             'llm_runtime': llm_health_result,
             'feature_flags': feature_status,
+            'orchestration': capability_summary,
+            'daemon': daemon_status,
         },
         'source_summary': source_summary,
         'issues': issues,
@@ -248,6 +308,8 @@ async def health(request: Request):
 async def info(request: Request):
     """System information."""
     provider = request.app.state.web_provider
+    capability_catalog = getattr(request.app.state, 'capability_catalog', None)
+    capability_summary = capability_catalog.build_summary(request.app) if capability_catalog else {}
     return {
         'app': 'AISA',
         'version': '2.0.0',
@@ -255,6 +317,9 @@ async def info(request: Request):
         'platform': platform.platform(),
         'mode': provider.app_mode(),
         'demo_enabled': provider.is_demo_mode(),
+        'verdict_authority_owner': capability_summary.get('verdict_authority_owner', 'cabta_scoring'),
+        'agent_profile_count': capability_summary.get('agent_profile_count', 0),
+        'workflow_count': capability_summary.get('workflow_count', 0),
     }
 
 

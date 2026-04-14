@@ -1,86 +1,202 @@
-# CABTA Vibe Coding Operating Model
+# AISA Vibe Coding Operating Model
 
 ## Why This Exists
 
-CABTA is already broad. It has IOC investigation, file analysis, email forensics, a web dashboard, agent workflows, MCP integration, scoring, reporting, and many specialized analyzers.
+AISA is no longer just a broad artifact-analysis repo.
 
-Without a stable operating model, AI-assisted development here will drift fast.
+After studying `vigil-main`, the repo direction now includes:
+
+- deterministic analysis
+- specialist agents
+- workflow orchestration
+- case intelligence
+- governance
+- MCP-driven expansion
+
+Without a disciplined operating model, AI-assisted coding will create architecture drift very quickly.
 
 ## Core Thesis
 
-Effective vibe coding for CABTA means:
+Effective vibe coding for AISA means:
 
-1. keep a written plan for non-trivial work
-2. use the plan as persistent project memory
-3. change one domain lane at a time
-4. preserve evidence-first security logic
-5. verify with focused tests before claiming completion
+1. protect the deterministic analysis core
+2. add new investigation power through explicit layers, not hacks
+3. externalize decisions into docs and plans
+4. integrate Vigil-inspired ideas by seam, not by imitation
+5. verify behavior lane by lane before claiming progress
 
 ## Repo-Specific Rules
 
-### 1. CABTA is the canonical name
+### 1. Product/UI/docs should say AISA
 
-Legacy names exist in the repo. New work should standardize around `CABTA`.
+The repo path is still `CABTA/`, but product-facing work should prefer `AISA`.
 
-### 2. LLM interprets, scoring decides
+### 2. Analysis truth and agent orchestration are different planes
 
-CABTA's strongest architectural rule is that LLM output should support analysts, not replace deterministic verdict logic.
+Do not blur:
 
-### 3. Local-first stays intact
+- artifact verdict logic
+- agent reasoning
+- workflow coordination
+- response governance
 
-Do not make external APIs or cloud LLMs mandatory for core analysis paths.
+### 3. LLM interprets, workflow coordinates, scoring decides
 
-### 4. Graceful degradation matters
+For verdict-bearing flows:
 
-If a source, sandbox, or model is unavailable, the workflow should still return a useful partial result.
+- analyzers extract
+- integrations enrich
+- scoring decides
+- LLM explains
+- workflows orchestrate
 
-## Recommended Work Lanes
+This separation is mandatory.
 
-Use a narrow lane instead of mixing everything at once.
+### 3b. Workflow must call tools for evidence
 
-### IOC lane
+When implementing Vigil-inspired orchestration:
 
-- `src/tools/ioc_investigator.py`
-- `src/integrations/threat_intel*.py`
-- `src/utils/dga_detector.py`
-- `src/utils/domain_age_checker.py`
-- `src/scoring/intelligent_scoring.py`
+- use workflows and agents to coordinate
+- use tools and services to investigate
+- use scoring and evidence contracts to conclude
 
-### Malware lane
+Never let a workflow "complete" an investigation step by pure model reasoning when AISA has a real tool path for that question.
 
-- `src/tools/malware_analyzer.py`
-- relevant analyzer in `src/analyzers/`
-- `src/scoring/tool_based_scoring.py`
-- `src/reporting/`
+### 4. Local-first remains mandatory
 
-### Email lane
+Do not make Vigil-inspired upgrades depend on:
 
-- `src/tools/email_analyzer.py`
-- email analyzers
-- `src/scoring/intelligent_scoring.py`
-- reporting and templates if needed
+- mandatory cloud inference
+- mandatory Docker for core use
+- mandatory Redis/Postgres just to use IOC/file/email analysis
 
-### Web lane
+### 5. Honest degradation matters more than flashy orchestration
 
-- `src/web/app.py`
-- `src/web/routes/`
-- `templates/`
-- `static/`
+If a workflow, MCP tool, or integration is unavailable:
 
-### Agent/MCP lane
+- say so clearly
+- return a useful partial state
+- offer manual fallback where possible
 
-- `src/server.py`
-- `src/agent/`
-- `src/mcp_servers/`
+### 6. Treat Vigil as a pattern library, not a transplant target
+
+Adopt:
+
+- ideas
+- structures
+- service boundaries
+- workflow concepts
+
+Do not blindly copy:
+
+- naming
+- storage assumptions
+- provider lock-in
+- deployment assumptions
+
+### 7. Preserve the asymmetric integration model
+
+Use this as the default architecture stance:
+
+- AISA/CABTA owns analysis core and verdict governance
+- Vigil-inspired features own orchestration, agent roles, approval, and optional daemon behavior
+
+If a task blurs that boundary, stop and redesign before coding.
+
+## Canonical Read Order
+
+Before non-trivial implementation, read:
+
+1. `README.md`
+2. `AGENTS.md`
+3. `docs/project-overview-pdr.md`
+4. `docs/system-design.md`
+5. `docs/vigil-main-integration-blueprint.md`
+6. `docs/codebase-summary.md`
+7. `docs/code-standards.md`
+8. `docs/feature-truth-matrix.md`
+9. `TEST-MANIFEST.md`
+10. relevant plan under `plans/`
+
+## Work Lanes
+
+Use one lane at a time.
+
+### Analysis core lane
+
+Use for:
+
+- IOC
+- file
+- email
+- scoring
+- reporting
+
+### Workflow lane
+
+Use for:
+
+- workflow definition format
+- workflow parser/registry
+- workflow execution state
+- workflow UI and API
+
+### Specialist agent lane
+
+Use for:
+
+- agent profiles
+- role prompts
+- role methodologies
+- tool boundaries
+
+### Case intelligence lane
+
+Use for:
+
+- case schema
+- entity graph
+- timeline
+- cross-analysis pivots
+
+### Governance lane
+
+Use for:
+
+- approval queue
+- AI decision logs
+- feedback
+- action auditing
+
+### Integration control lane
+
+Use for:
+
+- MCP truth model
+- capability catalog
+- custom integration metadata
+- settings and health semantics
+
+### Background automation lane
+
+Use for:
+
+- daemon
+- scheduler
+- queued reasoning
+- polling and monitoring
 
 ## Planning Rule
 
-Create a plan if the task:
+Create or update a plan if the task:
 
-- spans more than one subsystem
+- crosses planes
 - changes scoring or verdict behavior
-- affects both backend and dashboard
-- introduces a new analyzer or TI source
+- changes contracts used by web and agent surfaces
+- introduces a new specialist agent
+- introduces a new workflow system behavior
+- affects cases, approvals, graph, or timeline logic
+- affects MCP or integration control
 - lasts more than one session
 
 ## Minimum Plan Structure
@@ -88,79 +204,129 @@ Create a plan if the task:
 Every meaningful plan should include:
 
 - goal
-- scope
+- owning lane
+- affected planes
 - impacted files
+- contract risks
 - acceptance criteria
 - tests to run
 - docs to update
 - unresolved questions
 
-Use `plans/templates/`.
+## How To Integrate Vigil-Inspired Features Safely
 
-## Context Discipline
+For every feature inspired by Vigil, classify it first:
 
-### Read order
+### Adopt directly
 
-Before coding:
+Good examples:
 
-1. `README.md`
-2. `AGENTS.md`
-3. `docs/project-overview-pdr.md`
-4. `docs/codebase-summary.md`
-5. `docs/code-standards.md`
-6. `TEST-MANIFEST.md`
-7. task-specific plan
+- specialist agent roles
+- readable workflow definitions
+- approval semantics
+- timeline and graph concepts
 
-### Keep context small
+### Adapt carefully
 
-- read the orchestrator before reading many leaf modules
-- load only the relevant analyzer for the current change
-- avoid dragging all docs into every session
+Good examples:
 
-### Externalize memory
+- AI decision logging
+- queue-backed LLM gateway
+- custom integration builder
+- daemon mode
 
-Use files for:
+### Avoid direct import
 
-- plans
-- decision summaries
-- test notes
-- follow-up questions
+Good examples:
 
-Do not rely on chat history alone.
+- provider lock-in assumptions
+- mandatory service dependencies for all users
+- replacing deterministic analysis with agentic reasoning
+
+Write this classification into the plan before coding.
+
+Then answer two extra questions:
+
+1. Does this feature call real AISA tools for evidence?
+2. Does this feature preserve AISA scoring as verdict source of truth?
+
+If either answer is "no", the design is not ready.
 
 ## Quality Gates
 
-A CABTA task is not done until:
+A task is not done until:
 
 - the intended behavior is implemented
-- relevant tests were run or explicitly deferred
-- user-facing docs impact was checked
-- naming drift was not made worse
+- touched lane behavior is verified
+- degraded states remain honest
+- docs were checked
+- no architecture boundary was weakened
 - unresolved questions are listed
 
-## Good Default for Large Features
+## Test Discipline
 
-1. create a feature plan
-2. implement one phase
-3. run focused tests
-4. update docs if needed
-5. move to the next phase
+### For analysis-core changes
 
-## Good Default for Bug Fixes
+Run:
 
-1. isolate failing behavior
-2. identify the lowest layer causing it
-3. fix there first
-4. run focused tests
-5. record any behavior contract that changed
+- focused unit tests
+- contract tests
+- smoke web tests if UI is affected
+
+### For workflow or agent changes
+
+Run:
+
+- workflow parsing or execution tests
+- agent route tests
+- session/progress regression tests
+
+### For governance changes
+
+Run:
+
+- approval logic tests
+- decision-log tests
+- status/health rendering tests
+
+### For integration control changes
+
+Run:
+
+- settings save/load tests
+- MCP registration tests
+- capability-state tests
+
+## Documentation Discipline
+
+When a change alters architecture, behavior, or operating assumptions, update at least one of:
+
+- `docs/system-design.md`
+- `docs/future-system-roadmap.md`
+- `docs/vigil-main-integration-blueprint.md`
+- plan file under `plans/`
+
+Do not leave major architectural intent only in chat.
 
 ## Anti-Patterns
 
-- changing scoring without test coverage
-- changing route payloads without checking templates or API consumers
-- using LLM output as the only reason for a verdict
-- mixing CABTA naming with new alternate names
-- doing multi-session work without a plan file
+- using agent reasoning as verdict authority
+- copying Vigil features wholesale without checking AISA constraints
+- letting workflows infer verdicts without going through AISA evidence/scoring paths
+- adding workflows with unclear ownership or no execution truth
+- building graph/timeline features without normalized entities
+- adding response automation without approval or audit semantics
+- exposing tools to agents without capability-state truth
+- doing multi-session architecture work without a plan
+
+## Best Default for Large Features
+
+1. write or update the plan
+2. decide the lane and plane boundaries
+3. implement the narrowest vertical slice
+4. run focused tests
+5. update docs
+6. then move to the next phase
 
 ## Unresolved Questions
 

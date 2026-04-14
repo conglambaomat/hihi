@@ -6,6 +6,7 @@ Follows the AnalysisManager / CaseStore pattern (threading.Lock + _init_db + _co
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -15,7 +16,17 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path.home() / '.blue-team-assistant' / 'cache' / 'agent.db'
+def _default_db_path() -> Path:
+    explicit = os.environ.get('CABTA_AGENT_DB')
+    if explicit:
+        return Path(explicit)
+
+    home_override = os.environ.get('CABTA_HOME')
+    home_path = Path(home_override) if home_override else Path.home()
+    return home_path / '.blue-team-assistant' / 'cache' / 'agent.db'
+
+
+_DEFAULT_DB = _default_db_path()
 
 
 class AgentStore:
@@ -24,7 +35,22 @@ class AgentStore:
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = Path(db_path) if db_path else _DEFAULT_DB
         self._lock = threading.Lock()
-        self._init_db()
+        try:
+            self._init_db()
+            self._verify_writable()
+        except (PermissionError, OSError, sqlite3.OperationalError) as exc:
+            if db_path is not None:
+                raise
+            fallback = Path.cwd() / '.cabta-runtime' / 'agent.db'
+            logger.warning(
+                "[AGENT] Default agent DB %s unavailable (%s); falling back to %s",
+                self._db_path,
+                exc,
+                fallback,
+            )
+            self._db_path = fallback
+            self._init_db()
+            self._verify_writable()
 
     # ================================================================== #
     #  Sessions
@@ -215,6 +241,134 @@ class AgentStore:
         conn.close()
         return [self._row_to_dict(desc, r) for r in rows]
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete one session and all persisted child records."""
+        deleted = False
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                "DELETE FROM specialist_tasks WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.execute(
+                "DELETE FROM agent_steps WHERE session_id = ?",
+                (session_id,),
+            )
+            cur = conn.execute(
+                "DELETE FROM agent_sessions WHERE id = ?",
+                (session_id,),
+            )
+            deleted = cur.rowcount > 0
+            conn.commit()
+            conn.close()
+
+        if deleted:
+            logger.info(f"[AGENT] Deleted session: {session_id}")
+        return deleted
+
+    # ================================================================== #
+    #  Specialist Tasks
+    # ================================================================== #
+
+    def upsert_specialist_task(
+        self,
+        *,
+        session_id: str,
+        workflow_id: Optional[str],
+        profile_id: str,
+        phase_order: int,
+        status: str,
+        summary: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create or update one explicit specialist execution record."""
+        task_id = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, default=str)
+
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """SELECT id, started_at, completed_at FROM specialist_tasks
+                   WHERE session_id = ? AND profile_id = ? AND phase_order = ?""",
+                (session_id, profile_id, phase_order),
+            )
+            row = cur.fetchone()
+            if row:
+                task_id = row[0]
+                started_at = row[1] or (now if status in {"active", "completed", "failed"} else None)
+                completed_at = row[2]
+                if status in {"completed", "failed", "skipped"}:
+                    completed_at = completed_at or now
+                elif status == "active":
+                    completed_at = None
+                conn.execute(
+                    """UPDATE specialist_tasks
+                       SET workflow_id = ?, status = ?, summary = ?, metadata_json = ?,
+                           started_at = ?, completed_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        workflow_id,
+                        status,
+                        summary,
+                        metadata_json,
+                        started_at,
+                        completed_at,
+                        now,
+                        task_id,
+                    ),
+                )
+            else:
+                started_at = now if status in {"active", "completed", "failed"} else None
+                completed_at = now if status in {"completed", "failed", "skipped"} else None
+                conn.execute(
+                    """INSERT INTO specialist_tasks
+                       (id, session_id, workflow_id, profile_id, phase_order, status,
+                        summary, metadata_json, created_at, updated_at, started_at, completed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        task_id,
+                        session_id,
+                        workflow_id,
+                        profile_id,
+                        phase_order,
+                        status,
+                        summary,
+                        metadata_json,
+                        now,
+                        now,
+                        started_at,
+                        completed_at,
+                    ),
+                )
+            conn.commit()
+            conn.close()
+
+        return {
+            "id": task_id,
+            "session_id": session_id,
+            "workflow_id": workflow_id,
+            "profile_id": profile_id,
+            "phase_order": phase_order,
+            "status": status,
+            "summary": summary,
+            "metadata": metadata or {},
+        }
+
+    def list_specialist_tasks(self, session_id: str) -> List[Dict]:
+        """Return specialist execution units for one investigation session."""
+        conn = self._connect()
+        cur = conn.execute(
+            """SELECT * FROM specialist_tasks
+               WHERE session_id = ?
+               ORDER BY phase_order ASC, created_at ASC""",
+            (session_id,),
+        )
+        rows = cur.fetchall()
+        desc = cur.description
+        conn.close()
+        return [self._row_to_dict(desc, row) for row in rows]
+
     # ================================================================== #
     #  MCP Connections
     # ================================================================== #
@@ -385,6 +539,9 @@ class AgentStore:
         cur2 = conn.execute("SELECT COUNT(*) FROM agent_steps")
         total_steps = cur2.fetchone()[0] or 0
 
+        cur3 = conn.execute("SELECT COUNT(*) FROM specialist_tasks")
+        total_specialist_tasks = cur3.fetchone()[0] or 0
+
         conn.close()
 
         return {
@@ -393,6 +550,7 @@ class AgentStore:
             "completed_sessions": completed_sessions,
             "failed_sessions": failed_sessions,
             "total_steps": total_steps,
+            "total_specialist_tasks": total_specialist_tasks,
         }
 
     # ================================================================== #
@@ -459,6 +617,25 @@ class AgentStore:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS specialist_tasks (
+                id           TEXT PRIMARY KEY,
+                session_id   TEXT NOT NULL,
+                workflow_id  TEXT,
+                profile_id   TEXT NOT NULL,
+                phase_order  INTEGER NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'planned',
+                summary      TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL,
+                started_at   TEXT,
+                completed_at TEXT,
+                UNIQUE(session_id, profile_id, phase_order),
+                FOREIGN KEY (session_id) REFERENCES agent_sessions(id)
+            )
+        """)
+
         # Indexes
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_status ON agent_sessions(status)"
@@ -469,6 +646,9 @@ class AgentStore:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_steps_session ON agent_steps(session_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_specialist_tasks_session ON specialist_tasks(session_id)"
+        )
 
         conn.commit()
         conn.close()
@@ -476,15 +656,37 @@ class AgentStore:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._db_path), timeout=5)
 
+    def _verify_writable(self) -> None:
+        """Ensure the current SQLite path accepts writes, not just reads."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_store_probe (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO agent_store_probe (id, created_at) VALUES (?, ?)",
+                (uuid.uuid4().hex[:12], datetime.now(timezone.utc).isoformat()),
+            )
+            conn.rollback()
+        finally:
+            conn.close()
+
     @staticmethod
     def _row_to_dict(description, row) -> Dict:
         cols = [d[0] for d in description]
         d = dict(zip(cols, row))
         # Parse known JSON columns
-        for key in ('findings', 'metadata', 'config_json', 'tools_json', 'steps_json'):
+        for key in ('findings', 'metadata', 'config_json', 'tools_json', 'steps_json', 'metadata_json'):
             if d.get(key) and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
                 except json.JSONDecodeError:
                     pass
+        if 'metadata_json' in d and 'metadata' not in d:
+            d['metadata'] = d.get('metadata_json', {})
         return d

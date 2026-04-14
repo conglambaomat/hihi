@@ -1,388 +1,414 @@
-# CABTA Future System Roadmap
+# AISA Future System Roadmap
 
 ## Purpose
 
-This roadmap describes how CABTA should evolve from a strong, broad prototype into a more coherent, scalable, and AI-native security analysis platform.
+This roadmap describes how AISA should evolve after studying `vigil-main`.
 
-It is written for implementation planning, not marketing.
+It is not a generic wishlist.
+It is a phased implementation guide for turning AISA from a strong local-first analysis platform into a stronger AI SOC assistant without breaking its current strengths.
 
 ## Current Position
 
-CABTA already has meaningful depth in:
+AISA already has meaningful depth in:
 
 - IOC investigation
 - malware and file analysis
 - email forensics
-- analyst reporting
-- web dashboard
-- agent workflows
-- MCP integration
+- reporting
+- agent chat and playbooks
+- MCP management
+- local-first web delivery
 
-The main constraint is no longer feature absence. It is system coherence.
+The next step is not "add random AI features."
+The next step is to make the platform more coherent and investigation-native.
 
-The biggest current limits are:
+## What Vigil Adds Strategically
 
-- naming drift across old and new product identities
-- mixed result contracts and backward-compat shims
-- documentation drift versus current code reality
-- test and verification flow not yet packaged as a strong delivery system
-- broad capability spread without a strongly phased product direction
+The most useful lessons from Vigil are:
 
-## Strategic Goal
+- specialist agent roles
+- markdown-readable workflow definitions
+- richer case-centered investigation model
+- graph and timeline intelligence
+- approval-driven action governance
+- AI decision logging and feedback
+- stronger integration control plane
+- optional daemonized autonomous operations
 
-Turn CABTA into a reliable local-first analyst platform with:
+These should be adapted into AISA in phases.
 
-- clearer architecture contracts
-- stronger correctness and verification
-- better AI-assisted investigation workflows
-- more composable integrations
-- cleaner product identity
+## Integration Direction
 
-## Non-Negotiable Product Direction
+The integration direction is:
 
-Future CABTA should remain:
+- AISA keeps the analysis core and verdict governance
+- Vigil-inspired features provide the orchestration plane
+
+That means:
+
+- AISA scoring remains the source of truth for verdicts
+- workflows and specialist agents must call real tools for evidence
+- approval and daemon capabilities wrap around the core instead of replacing it
+
+## Non-Negotiable Direction
+
+Future AISA must remain:
 
 - local-first
 - evidence-first
-- deterministic in verdict path
-- useful with partial configuration
-- extensible without forcing a rewrite
+- deterministic for verdict-bearing analysis flows
+- usable with partial configuration
+- transparent about degraded states
 
-Future CABTA should avoid becoming:
+Future AISA must avoid becoming:
 
-- an LLM-only verdict engine
-- a pile of disconnected analyzers
-- a dashboard with weak analyst workflows
-- a cloud-required system for core analysis
+- a cloud-required SOC product
+- an LLM-only analyst replacement
+- a workflow shell that weakens artifact-analysis quality
+- a black-box autonomous responder
 
 ## Priority Themes
 
-### 1. Platform coherence
+### 1. Preserve analysis truth while adding orchestration power
 
-Unify naming, docs, result contracts, and subsystem responsibilities.
+### 2. Make investigations first-class, not just individual analyses
 
-### 2. Analyst trust
+### 3. Govern AI actions and recommendations more explicitly
 
-Make findings, score provenance, and reasoning easier to audit.
+### 4. Improve integration power without losing clarity
 
-### 3. Stronger execution model
+### 5. Package all of this into docs and contracts that AI coding can follow safely
 
-Improve how CABTA moves from raw artifact -> enriched result -> case context -> action.
+## Recommended Phases
 
-### 4. AI-native investigation workflows
+## Phase 0: Architectural Alignment and Contract Cleanup
 
-Deepen agent and MCP usage as a workflow accelerator, not just a wrapper.
-
-### 5. Product hardening
-
-Improve testing, packaging, performance, and operational reliability.
-
-## Recommended Phased Roadmap
-
-## Phase 0: Stabilize the Foundation
-
-**Goal:** Reduce ambiguity and drift before adding major new capabilities.
+**Goal:** prepare AISA to absorb Vigil-inspired capabilities safely.
 
 ### Outcomes
 
-- CABTA becomes the clear canonical name across new docs and newly touched surfaces.
-- System design, codebase memory, and test manifest become the normal development entrypoint.
-- Result contracts across IOC, file, and email become more explicit and less legacy-dependent.
+- docs align on the two-plane model: analysis plane plus investigation plane
+- AISA identity is consistent in product docs
+- core result contracts and capability states are explicit enough to support deeper orchestration
 
 ### Workstreams
 
-#### Identity and naming convergence
-
-- standardize new docs and UI labels on `CABTA`
-- inventory legacy names in code and docs
-- preserve storage and backward-compat paths until migration is planned
-
-#### Contract normalization
-
-- document stable output keys for IOC, file, email, web, and MCP
-- reduce multi-key fallback logic where possible
-- introduce explicit versioning or compatibility notes where needed
-
-#### Config cleanup
-
-- unify config terminology across docs and code
-- align `config.yaml.example` with current supported keys and behaviors
-- document which keys are optional, deprecated, or planned
-
-#### Documentation repair
-
-- continue removing legacy-name drift from docs and touched code
-- align docs with current cache, web, and agent features
-- make roadmap and system-design docs part of normal dev workflow
+- refresh system docs and roadmap
+- normalize naming and contract language
+- define what belongs to:
+  - deterministic analysis
+  - agentic workflow orchestration
+  - governance
+  - integration control
 
 ### Exit Criteria
 
-- new contributor can understand the repo from docs without hitting naming confusion
-- touched modules no longer add fresh naming drift
-- output contracts are documented enough to support safe refactors
+- contributors can tell where a feature should live before coding
+- docs are precise enough to support long multi-session implementation work
 
-## Phase 1: Harden the Analysis Core
+## Phase 1: Specialist Agent Foundation
 
-**Goal:** Make core analysis pipelines more reliable, explainable, and maintainable.
+**Goal:** move from generic agent behavior to explicit role-based agent profiles.
 
 ### Outcomes
 
-- clearer score provenance
-- easier debugging of verdict changes
-- stronger confidence in analyzer and enrichment behavior
+- named agent profiles for:
+  - triage
+  - investigator
+  - threat hunter
+  - correlator
+  - responder
+  - reporter
+  - MITRE analyst
+  - malware analyst
+  - network analyst
+- each role has methodology, tool boundaries, and output expectations
 
 ### Workstreams
 
-#### Scoring transparency
-
-- make score contribution breakdown first-class for all major analysis types
-- normalize how evidence becomes points across layers
-- improve false-positive reasoning visibility
-
-#### Analyzer contract cleanup
-
-- define expected analyzer return structures
-- separate evidence extraction from verdict shaping more clearly
-- reduce ad hoc per-analyzer result formatting
-
-#### Enrichment reliability
-
-- standardize timeout, retry, and failure semantics across TI sources
-- improve caching strategy and cache observability
-- make source freshness and partial-result status clearer
-
-#### Sandbox and deep-analysis orchestration
-
-- unify how sandbox results feed back into file analysis
-- make beacon, ransomware, memory, and advanced signals easier to compose
-- define when sandbox data should override or enrich static scoring
+- agent profile library
+- agent role selection UX
+- role-specific prompt and policy structure
+- output contract for specialist agent results
 
 ### Exit Criteria
 
-- score changes can be tested and explained more easily
-- analyzer additions require less custom glue
-- partial enrichment failures are easier to diagnose
+- agent behavior is more predictable and reusable
+- playbooks can target named roles instead of only generic freeform chat
+- agent roles are explicitly prevented from becoming final verdict authority
 
-## Phase 2: Build a Strong Investigation Platform
+## Phase 2: Workflow-First Investigation Engine
 
-**Goal:** Make CABTA more than separate analysis tools by strengthening case, correlation, and workflow.
+**Goal:** make workflows readable, inspectable, and first-class.
 
 ### Outcomes
 
-- better analysis-to-case linkage
-- more useful cross-artifact pivoting
-- stronger playbook execution model
+- markdown or similarly human-readable workflow definitions
+- workflow discovery, validation, and reload flow
+- phase-by-phase execution state
+- workflow run history linked to cases or sessions
+- tool-first workflow execution semantics
 
 ### Workstreams
 
-#### Case-centric workflows
-
-- promote cases from passive storage to active investigation containers
-- link IOC, file, email, and notes more richly
-- add investigation summaries and timeline views
-
-#### Correlation layer growth
-
-- correlate repeated IOCs across analyses
-- cluster related activity from email + attachment + IOC pivots
-- surface campaign-level patterns
-
-#### Playbooks as first-class workflow
-
-- improve playbook authoring and visibility
-- map playbooks to investigation stages
-- allow playbooks to express recommended next steps, not only static templates
-
-#### Better history and recall
-
-- improve search across prior analyses
-- promote cached findings into analyst-facing recall
-- support "what have we already seen related to this?" workflows
+- workflow definition format
+- workflow parser and registry
+- workflow execution service
+- workflow UI and API
+- workflow-to-agent role mapping
+- explicit evidence-source declarations for workflow steps
+- enforcement that verdict-bearing steps route through AISA analysis tools
 
 ### Exit Criteria
 
-- CABTA supports investigations, not just isolated scans
-- related artifacts can be pivoted from one surface
-- playbooks become genuinely useful for repeatable analyst work
+- analysts can inspect what a workflow does before running it
+- developers can extend workflows without burying logic in Python only
+- workflow runs use tool-backed evidence collection instead of model-only inference
 
-## Phase 3: Expand the AI-Native Layer
+## Phase 3: Case Intelligence, Graph, and Timeline
 
-**Goal:** Make agent and MCP workflows a major differentiator while preserving analyst control.
+**Goal:** make AISA investigations cumulative and navigable.
 
 ### Outcomes
 
-- better agent-guided investigations
-- stronger MCP tool ecosystem
-- richer human-in-the-loop workflows
+- richer case model
+- entity relationship graph
+- event timeline reconstruction
+- stronger cross-analysis pivoting
+- finding and case similarity pivots
+- recurring IOC and entity overlap visibility
 
 ### Workstreams
 
-#### Agent orchestration maturation
-
-- improve tool planning and execution boundaries
-- add explicit reasoning checkpoints and analyst approval points
-- support longer investigations without losing state quality
-
-#### Investigation memory evolution
-
-- move from cache-style recall to investigation-context memory
-- preserve important decisions, pivots, and rationale
-- support better rehydration for long-running cases
-
-#### MCP ecosystem growth
-
-- package CABTA capabilities into clearer MCP server profiles
-- make external tool integration easier and more observable
-- expose analyst-safe tool subsets for different environments
-
-#### AI-assisted reporting
-
-- improve executive and analyst summaries without hiding raw evidence
-- generate clearer "next action" recommendations
-- support structured briefings for SOC handoff
+- case schema growth
+- evidence linkage
+- entity extraction normalization
+- graph builder service
+- timeline service
+- ATT&CK overlays and correlation summaries
+- related-case scoring via shared IOC and ATT&CK overlap
+- optional embeddings-backed nearest-neighbor search for findings and cases
+- shared-intelligence registry for recurring IOC and entity reuse across investigations
 
 ### Exit Criteria
 
-- agent workflows materially reduce analyst toil
-- MCP becomes a strong interoperability surface
-- long-running investigations remain coherent across sessions
+- related IPs, hosts, users, hashes, domains, and findings can be explored from one investigation context
+- AISA supports "what happened and how is it connected?" better than isolated artifact screens
+- AISA can answer "have we seen something like this before?" with structured evidence
 
-## Phase 4: Productize and Operationalize
+## Phase 4: Governance, Approval, and AI Decision Logging
 
-**Goal:** Make CABTA easier to deploy, verify, and extend as a serious platform.
+**Goal:** make AI-assisted response and recommendation flows auditable and safe.
 
 ### Outcomes
 
-- more reliable test and release flow
+- approval queue for privileged actions
+- confidence-based response gating
+- AI decision logs with reviewer feedback
+- action audit trails
+
+### Workstreams
+
+- approval action model
+- approval service
+- AI decision logging schema
+- decision feedback UI
+- action policy thresholds
+
+### Exit Criteria
+
+- response actions are reviewable
+- agent reasoning is not ephemeral
+- analysts can audit and improve AI behavior over time
+- governance layers operate on evidence-backed conclusions, not unsupported model guesses
+
+## Phase 5: Integration Control Plane and Capability Catalog
+
+**Goal:** make integrations easier to understand, safer to operate, and more useful to agents.
+
+### Outcomes
+
+- machine-readable capability catalog
+- clearer MCP tool truth model
+- integration health and readiness visibility
+- groundwork for custom integration onboarding
+- stronger config-to-runtime integration bridging
+- honest test semantics for integrations and MCP-backed tools
+- clearer secret handling for operational deployments
+
+### Workstreams
+
+- capability catalog generator
+- MCP tool classification
+- workflow dependency declarations
+- source and tool readiness states
+- custom integration metadata model
+- integration bridge for config, env, and runtime application
+- readiness/test states that distinguish configured from live-verified
+- secret-resolution layer with explicit precedence
+- telemetry and logging sanitization for keys, raw findings, prompts, and tool content
+
+### Exit Criteria
+
+- AISA can say exactly which tools and integrations are available, optional, manual, degraded, or not configured
+- agent and workflow selection improve because tool truth is explicit
+- operational telemetry and logs do not casually leak sensitive material
+
+## Phase 6: Detection and Hunt Intelligence Expansion
+
+**Goal:** combine AISA's artifact-analysis strengths with a stronger hunt and detection engineering layer.
+
+### Outcomes
+
+- richer threat-hunt workflows
+- better detection-content generation
+- stronger ATT&CK and coverage guidance
+- optional log-query pivots through SIEM MCP servers
+- hunt-to-detection feedback loops
+- detection coverage and gap summaries around generated rules
+
+### Workstreams
+
+- hunt workflow improvements
+- detection recommendation pipelines
+- coverage and gap analysis concepts
+- log-hunt tool interfaces for Splunk/Elastic/Sentinel via MCP
+- similarity-assisted hunting pivots
+- board-safe summaries of hunt outcomes and coverage posture
+
+### Exit Criteria
+
+- AISA supports proactive hunt workflows better, not only reactive analysis
+- detection engineering becomes a structured output, not only an afterthought
+
+## Phase 7: Optional Daemon and Background Operations
+
+**Goal:** add optional background autonomy without making it mandatory for normal product use.
+
+### Outcomes
+
+- optional daemon mode
+- polling and scheduled hunts
+- queued background reasoning
+- monitored autonomous operations
+- shared-intelligence memory across concurrent or recurring investigations
+- investigation working sets for headless multi-step operations
+
+### Workstreams
+
+- background job model
+- queueing or scheduler layer
+- safe polling sources
+- background notifications and metrics
+- cross-investigation IOC/entity overlap tracking
+- persistent working artifacts for daemon-led investigations
+- approval-aware background orchestration
+
+### Exit Criteria
+
+- teams that want 24/7 monitoring can enable it
+- localhost single-user mode remains simple and strong
+- daemon mode improves investigations without becoming a required dependency
+
+## Phase 8: Productization and Operational Hardening
+
+**Goal:** make the upgraded platform easier to test, run, and extend.
+
+### Outcomes
+
+- better CI and regression gates
 - stronger packaging and deployment
-- clearer extension model for analyzers and integrations
+- clearer extension contracts
+- improved observability
+- audience-specific reporting modes for analyst, executive, and board contexts
 
 ### Workstreams
 
-#### Test and CI maturity
-
-- establish expected test lanes in automation
-- add CI for focused suites and smoke checks
-- track result contract regressions
-
-#### Packaging and deployment
-
-- improve local install story
-- improve Docker and sandbox setup
-- package web + CLI + MCP usage more cleanly
-
-#### Extension architecture
-
-- define plugin-like patterns for analyzers, sources, and playbooks
-- reduce central wiring work for new modules
-- document extension contracts thoroughly
-
-#### Performance and observability
-
-- add better timing and bottleneck visibility
-- track external dependency latency and cache hit rates
-- improve analysis progress reporting in web and agent surfaces
+- contract regression tests
+- workflow and agent integration tests
+- packaging and deployment cleanup
+- performance and telemetry improvements
+- executive and board-grade report templates backed by structured case data
 
 ### Exit Criteria
 
-- CABTA is easier to run, test, and extend
-- future feature work lands with less coupling pain
-- the platform feels operational, not just feature-rich
+- future feature work lands with less risk
+- the platform feels operational, not experimental
+- reporting quality scales across technical and leadership audiences without hand-rewriting
 
-## High-Value Candidate Epics
+## Highest-Value Candidate Epics
 
-These are the most useful roadmap epics to queue first.
+If work must be prioritized tightly, start here:
 
-### Epic 1: Naming and contract cleanup
-
-Why:
-
-- highest leverage for future AI-assisted work
-- reduces confusion in docs, web labels, config, and reporting
-
-### Epic 2: Score provenance and verdict auditability
+### Epic 1: specialist agent foundation
 
 Why:
 
-- improves analyst trust
-- reduces fear when adjusting scoring logic
+- unlocks clearer workflow orchestration
+- improves agent predictability immediately
 
-### Epic 3: Case-centered investigation workflow
-
-Why:
-
-- transforms CABTA from analysis toolkit into investigation platform
-
-### Epic 4: Agent and MCP workflow hardening
+### Epic 2: workflow definition and execution engine
 
 Why:
 
-- likely the most differentiated future direction for CABTA
+- highest leverage Vigil-inspired feature
+- turns repeated investigation behavior into explicit reusable assets
 
-### Epic 5: Test and release hardening
+### Epic 3: case intelligence with graph and timeline
 
 Why:
 
-- prevents future breadth from turning into unmanageable drift
+- converts AISA from analysis toolkit to investigation platform
 
-## What to Avoid Right Now
+### Epic 4: approval and AI decision logging
 
-These are attractive but lower-quality next steps if done too early:
+Why:
 
-- adding many more TI sources before contract cleanup
-- adding more UI pages before case workflow becomes coherent
-- over-investing in LLM polish before score provenance is clearer
-- broad renames without compatibility planning
-- large rewrites of analyzers without explicit return-contract strategy
+- adds trust, governance, and auditability
 
-## Suggested Near-Term Sequence
+### Epic 5: capability catalog and integration control plane
 
-If the goal is "make CABTA stronger fast", the best near-term order is:
+Why:
 
-1. naming and docs convergence
-2. result contract normalization
-3. scoring transparency and auditability
-4. case and correlation workflow strengthening
-5. agent/MCP maturity
-6. packaging and CI hardening
+- reduces drift between reality, UI, agent behavior, and developer docs
 
-## Success Metrics
+### Epic 6: case similarity and shared investigation memory
 
-Use these metrics to judge roadmap progress:
+Why:
 
-### Developer metrics
+- gives agents and analysts a concrete way to pivot from one incident to similar prior evidence
+- increases investigation quality without weakening verdict authority
 
-- fewer files require manual compatibility shims
-- feature work needs less exploratory reading
-- higher percentage of tasks can be implemented from docs + plan only
+### Epic 7: secrets, telemetry hygiene, and operational truth
 
-### Analyst metrics
+Why:
 
-- clearer verdict explanations
-- faster pivot from one artifact to related context
-- stronger next-step recommendations from CABTA outputs
+- autonomy and integrations become dangerous without strong secret handling and honest status semantics
 
-### System metrics
+## Recommended Near-Term Sequence
 
-- lower breakage risk from scoring changes
-- better cache hit rates and source resilience
-- more predictable response time under partial dependency failures
+The best practical order is:
 
-## How to Use This Roadmap
+1. Phase 0
+2. Phase 1
+3. Phase 2
+4. partial Phase 5
+5. Phase 3
+6. Phase 4
+7. partial Phase 6
+8. partial Phase 7
 
-- use it to decide what to build next
-- use it to decide which work should be grouped into one plan
-- use it to reject tempting but low-leverage side quests
-- update it only when architecture direction genuinely changes
+This order gives AISA the structure to absorb later complexity safely.
 
-For implementation work, pair this file with:
+## Roadmap Guardrail
 
-- `docs/system-design.md`
-- `docs/vibe-coding-operating-model.md`
-- `TEST-MANIFEST.md`
-- `plans/templates/*`
+At every phase, preserve this rule:
+
+- CABTA/AISA core decides verdicts
+- Vigil-inspired orchestration coordinates workflows and actions
+
+If a proposed feature weakens that separation, it should be redesigned before implementation.
 
 ## Unresolved Questions
 
-- Should naming convergence include migrating local storage paths from `~/.blue-team-assistant/` to a CABTA-branded path, or should that remain as a compatibility alias long-term?
-- Should the long-term differentiation focus more on analyst workflows, or more on CABTA as an MCP-native security capability platform?
+- None.

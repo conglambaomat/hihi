@@ -306,7 +306,7 @@ class PlaybookEngine:
     handles MCP tool routing, local tools, and result recording.
     """
 
-    def __init__(self, agent_loop, agent_store):
+    def __init__(self, agent_loop, agent_store, governance_store=None):
         """
         Parameters
         ----------
@@ -318,6 +318,7 @@ class PlaybookEngine:
         """
         self.agent_loop = agent_loop
         self.store = agent_store
+        self.governance_store = governance_store
 
         # Built-in playbooks directory
         self._playbooks_dir = Path(__file__).parent.parent.parent / "data" / "playbooks"
@@ -433,6 +434,7 @@ class PlaybookEngine:
                 ],
                 "source": pb.get("source", "unknown"),
                 "trigger_type": pb.get("trigger_type", "manual"),
+                "input": raw_inputs,
                 "input_params": raw_inputs,
                 "inputs": raw_inputs,
                 "parameters": normalized_parameters,
@@ -443,11 +445,23 @@ class PlaybookEngine:
         """List all available playbooks (built-in + database)."""
         results = []
         for pid, pb in self._cache.items():
+            steps = pb.get("_parsed_steps", pb.get("steps", []))
+            tools: List[str] = []
+            for step in steps:
+                tool_name = None
+                if hasattr(step, "tool"):
+                    tool_name = step.tool
+                elif isinstance(step, dict):
+                    tool_name = step.get("tool") or step.get("type")
+                if tool_name and tool_name not in tools:
+                    tools.append(tool_name)
             results.append({
                 "id": pid,
                 "name": pb.get("name", pid),
                 "description": pb.get("description", ""),
-                "step_count": len(pb.get("_parsed_steps", pb.get("steps", []))),
+                "step_count": len(steps),
+                "tool_count": len(tools),
+                "tools": tools,
                 "source": pb.get("source", "unknown"),
                 "trigger_type": pb.get("trigger_type", "manual"),
             })
@@ -710,6 +724,19 @@ class PlaybookEngine:
                 if current_step.requires_approval and current_step.name != skip_approval_step:
                     params = self._interpolate_params(current_step.params, context)
                     reason = current_step.description or current_step.name
+                    approval_id = None
+                    if self.governance_store is not None:
+                        approval_id = self.governance_store.create_approval(
+                            session_id=session_id,
+                            case_id=case_id,
+                            workflow_id=self._session_workflow_id(session_id),
+                            action_type="playbook_step",
+                            tool_name=current_step.tool,
+                            target=params,
+                            rationale=reason,
+                            confidence=0.75,
+                            metadata={"step_name": current_step.name, "playbook_id": playbook_id},
+                        )
                     self.store.add_step(
                         session_id=session_id,
                         step_number=step_number,
@@ -727,6 +754,7 @@ class PlaybookEngine:
                                 "tool": current_step.tool,
                                 "params": params,
                                 "reason": reason,
+                                "approval_id": approval_id,
                             },
                             "playbook_resume_state": {
                                 "playbook_id": playbook_id,
@@ -767,15 +795,25 @@ class PlaybookEngine:
                     )
 
                     if action == "final_answer":
+                        report_text = self._interpolate_string(
+                            current_step.description or current_step.name,
+                            context,
+                        )
+                        self._log_decision(
+                            session_id,
+                            decision_type="playbook_final_answer",
+                            summary=report_text,
+                            rationale=f"Playbook terminal action for {playbook_id}",
+                        )
                         result = {
                             "action": "final_answer",
-                            "report": current_step.description or current_step.name,
+                            "report": report_text,
                         }
                         self.store.add_step(
                             session_id=session_id,
                             step_number=step_number,
                             step_type="final_answer",
-                            content=current_step.description or current_step.name,
+                            content=report_text,
                             tool_name="",
                             tool_params=json.dumps(params, default=str),
                             tool_result=json.dumps(result, default=str),
@@ -793,7 +831,7 @@ class PlaybookEngine:
                         )
                         self._notify(
                             session_id,
-                            {"type": "message", "content": current_step.description or current_step.name},
+                            {"type": "message", "content": report_text},
                         )
                         current_step = self._resolve_next(
                             current_step.on_success or "end",
@@ -950,7 +988,13 @@ class PlaybookEngine:
                         params = self._interpolate_params(current_step.params, iter_context)
                         start = time.time()
                         result = await self._run_tool(
-                            current_step.tool, params, current_step.timeout,
+                            current_step.tool,
+                            params,
+                            current_step.timeout,
+                            session_id=session_id,
+                            case_id=case_id,
+                            workflow_id=self._session_workflow_id(session_id),
+                            playbook_id=playbook_id,
                         )
                         duration_ms = int((time.time() - start) * 1000)
                         iteration_results.append(result)
@@ -996,7 +1040,13 @@ class PlaybookEngine:
 
                     start = time.time()
                     result = await self._run_tool(
-                        current_step.tool, params, current_step.timeout,
+                        current_step.tool,
+                        params,
+                        current_step.timeout,
+                        session_id=session_id,
+                        case_id=case_id,
+                        workflow_id=self._session_workflow_id(session_id),
+                        playbook_id=playbook_id,
                     )
                     duration_ms = int((time.time() - start) * 1000)
 
@@ -1171,6 +1221,43 @@ class PlaybookEngine:
         )
         return session_id
 
+    def _session_workflow_id(self, session_id: str) -> Optional[str]:
+        session = self.store.get_session(session_id)
+        if not session:
+            return None
+        metadata = session.get("metadata", {}) if isinstance(session.get("metadata"), dict) else {}
+        return metadata.get("workflow_id")
+
+    def _log_decision(
+        self,
+        session_id: str,
+        *,
+        decision_type: str,
+        summary: str,
+        rationale: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self.governance_store is None or not summary:
+            return
+        session = self.store.get_session(session_id)
+        if not session:
+            return
+        session_metadata = session.get("metadata", {}) if isinstance(session.get("metadata"), dict) else {}
+        try:
+            self.governance_store.log_ai_decision(
+                session_id=session_id,
+                case_id=session.get("case_id"),
+                workflow_id=session_metadata.get("workflow_id"),
+                profile_id=session_metadata.get("agent_profile_id"),
+                decision_type=decision_type,
+                summary=summary,
+                rationale=rationale,
+                metadata=metadata or {},
+            )
+        except Exception:
+            logger.debug("[PLAYBOOK] Failed to log AI decision", exc_info=True)
+
+        '''
         # Build step lookup by name
         step_map: Dict[str, PlaybookStep] = {s.name: s for s in steps}
 
@@ -1253,23 +1340,27 @@ class PlaybookEngine:
                     params = self._interpolate_params(current_step.params, context)
 
                     if action == "final_answer":
+                        report_text = self._interpolate_string(
+                            current_step.description or current_step.name,
+                            context,
+                        )
                         # Terminal step: record description as final report
                         self.store.add_step(
                             session_id=session_id,
                             step_number=step_number,
                             step_type="final_answer",
-                            content=current_step.description or current_step.name,
+                            content=report_text,
                             tool_name="",
                             tool_params=json.dumps(params, default=str),
                             tool_result=json.dumps(
-                                {"action": "final_answer", "report": current_step.description},
+                                {"action": "final_answer", "report": report_text},
                                 default=str,
                             ),
                             duration_ms=0,
                         )
                         context[current_step.name] = {
                             "action": "final_answer",
-                            "report": current_step.description,
+                            "report": report_text,
                         }
                         context["last_result"] = context[current_step.name]
                         # final_answer is terminal — go to next sequential or end
@@ -1490,6 +1581,7 @@ class PlaybookEngine:
             )
 
         return session_id
+        '''
 
     async def resume_approval(self, session_id: str, approved: bool) -> bool:
         """Resume a paused playbook session after analyst approval or rejection."""
@@ -1639,7 +1731,17 @@ class PlaybookEngine:
     #  Helpers
     # ------------------------------------------------------------------ #
 
-    async def _run_tool(self, tool_name: str, params: Dict, timeout: int) -> Dict:
+    async def _run_tool(
+        self,
+        tool_name: str,
+        params: Dict,
+        timeout: int,
+        *,
+        session_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        playbook_id: Optional[str] = None,
+    ) -> Dict:
         """
         Run a tool via the agent loop with a timeout.
 
@@ -1649,7 +1751,16 @@ class PlaybookEngine:
             if hasattr(self.agent_loop, "run_tool"):
                 import asyncio
                 result = await asyncio.wait_for(
-                    self.agent_loop.run_tool(tool_name, params),
+                    self.agent_loop.run_tool(
+                        tool_name,
+                        params,
+                        execution_context={
+                            "session_id": session_id,
+                            "case_id": case_id,
+                            "workflow_id": workflow_id,
+                            "playbook_id": playbook_id,
+                        },
+                    ),
                     timeout=timeout,
                 )
                 return result if isinstance(result, dict) else {"result": result}

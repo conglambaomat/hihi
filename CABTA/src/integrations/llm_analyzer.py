@@ -4,6 +4,7 @@ Author: Ugur AtesLLM-powered intelligent analysis using Local (Ollama) or Cloud 
 import aiohttp
 import json
 import re
+from datetime import datetime, timezone
 from typing import Dict, Optional
 import logging
 
@@ -55,10 +56,34 @@ class LLMAnalyzer:
         self.groq_key = config.get('api_keys', {}).get('groq', '') or llm_config.get('api_key', '')
         self.groq_endpoint = llm_config.get('groq_endpoint', llm_config.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_config.get('groq_model', llm_config.get('model', 'openai/gpt-oss-20b'))
-        
+
         self.timeout = aiohttp.ClientTimeout(total=120)  # Longer timeout for local LLM
-        
+        self.provider_runtime_status = {
+            "provider": self.provider,
+            "available": None,
+            "status": "unknown",
+            "error": None,
+            "http_status": None,
+            "checked_at": None,
+        }
+
         logger.info(f"[LLM] Provider: {self.provider} | Model: {self._active_model_name()}")
+
+    def _record_runtime_status(
+        self,
+        *,
+        available: bool,
+        error: Optional[str] = None,
+        http_status: Optional[int] = None,
+    ) -> None:
+        self.provider_runtime_status = {
+            "provider": self.provider,
+            "available": available,
+            "status": "ready" if available else "error",
+            "error": error,
+            "http_status": http_status,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
     
     async def analyze_ioc_results(self, ioc: str, ioc_type: str, results: Dict) -> Dict:
         """
@@ -546,6 +571,10 @@ Be specific and reference the tool findings in your analysis."""
             Parsed JSON response or None
         """
         if not self.groq_key:
+            self._record_runtime_status(
+                available=False,
+                error='Groq API key not configured',
+            )
             logger.warning("[LLM] No Groq API key configured")
             return {'error': 'No Groq API key configured'}
 
@@ -574,6 +603,10 @@ Be specific and reference the tool findings in your analysis."""
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_runtime_status(
+                            available=True,
+                            http_status=response.status,
+                        )
                         choices = data.get('choices', [])
                         message = choices[0].get('message', {}) if choices else {}
                         response_text = message.get('content', '')
@@ -583,10 +616,19 @@ Be specific and reference the tool findings in your analysis."""
                         return self._parse_json_response_text(response_text)
 
                     body = await response.text()
+                    self._record_runtime_status(
+                        available=False,
+                        error=f'Groq HTTP {response.status}: {body[:200]}',
+                        http_status=response.status,
+                    )
                     logger.error(f"[LLM] Groq API error {response.status}: {body[:200]}")
                     return None
 
         except Exception as e:
+            self._record_runtime_status(
+                available=False,
+                error=f'Groq request failed: {e}',
+            )
             logger.error(f"[LLM] Groq API call failed: {e}")
             return None
     
@@ -601,6 +643,10 @@ Be specific and reference the tool findings in your analysis."""
             Parsed JSON response or None
         """
         if not self.anthropic_key:
+            self._record_runtime_status(
+                available=False,
+                error='Anthropic API key not configured',
+            )
             logger.warning("[LLM] No Anthropic API key configured")
             return {'error': 'No Anthropic API key configured'}
         
@@ -629,6 +675,10 @@ Be specific and reference the tool findings in your analysis."""
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_runtime_status(
+                            available=True,
+                            http_status=response.status,
+                        )
                         content = data.get('content', [])
                         
                         if content and content[0].get('type') == 'text':
@@ -637,10 +687,19 @@ Be specific and reference the tool findings in your analysis."""
                             # Extract JSON from response
                             return self._parse_json_response_text(text)
                     else:
+                        self._record_runtime_status(
+                            available=False,
+                            error=f'Anthropic HTTP {response.status}',
+                            http_status=response.status,
+                        )
                         logger.error(f"[LLM] Anthropic API error: {response.status}")
                         return None
-        
+
         except Exception as e:
+            self._record_runtime_status(
+                available=False,
+                error=f'Anthropic request failed: {e}',
+            )
             logger.error(f"[LLM] Anthropic API call failed: {e}")
             return None
     

@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+from ..utils.log_hunting_policy import evaluate_hunt_request, normalize_query_bundle
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +25,9 @@ class ToolDefinition:
     category: str                       # analysis, threat_intel, sandbox, forensics, edr, re
     requires_approval: bool = False
     is_dangerous: bool = False          # If True, should run in sandbox
+    evidence_mode: str = "tool"
+    verdict_role: str = "supporting"
+    recommended_profiles: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -33,6 +38,9 @@ class ToolDefinition:
             "category": self.category,
             "requires_approval": self.requires_approval,
             "is_dangerous": self.is_dangerous,
+            "evidence_mode": self.evidence_mode,
+            "verdict_role": self.verdict_role,
+            "recommended_profiles": list(self.recommended_profiles),
         }
 
 
@@ -56,6 +64,9 @@ class ToolRegistry:
         executor: Callable[..., Coroutine],
         requires_approval: bool = False,
         is_dangerous: bool = False,
+        evidence_mode: str = "tool",
+        verdict_role: str = "supporting",
+        recommended_profiles: Optional[List[str]] = None,
     ) -> None:
         """Register a local async tool executor."""
         td = ToolDefinition(
@@ -66,6 +77,9 @@ class ToolRegistry:
             category=category,
             requires_approval=requires_approval,
             is_dangerous=is_dangerous,
+            evidence_mode=evidence_mode,
+            verdict_role=verdict_role,
+            recommended_profiles=list(recommended_profiles or []),
         )
         self._tools[name] = td
         self._executors[name] = executor
@@ -77,20 +91,43 @@ class ToolRegistry:
         """Bulk-register tools discovered from an MCP server's list_tools response."""
         for t in tools_list:
             tool_name = f"{server_name}.{t['name']}"
+            category = t.get("category", "mcp")
             td = ToolDefinition(
                 name=tool_name,
                 description=t.get("description", ""),
                 parameters=t.get("inputSchema", t.get("parameters", {})),
                 source=server_name,
-                category=t.get("category", "mcp"),
+                category=category,
                 requires_approval=t.get("requires_approval", False),
                 is_dangerous=t.get("is_dangerous", False),
+                evidence_mode=t.get("evidence_mode", "tool"),
+                verdict_role=t.get("verdict_role", "supporting"),
+                recommended_profiles=t.get(
+                    "recommended_profiles",
+                    self._recommended_profiles_for_category(category),
+                ),
             )
             self._tools[tool_name] = td
 
         logger.info(
             f"[TOOLS] Registered {len(tools_list)} tools from MCP server: {server_name}"
         )
+
+    @staticmethod
+    def _recommended_profiles_for_category(category: str) -> List[str]:
+        mapping = {
+            "analysis": ["investigator", "malware_analyst", "phishing_analyst"],
+            "threat_intel": ["threat_intel_analyst", "triage", "network_analyst"],
+            "sandbox": ["malware_analyst", "responder"],
+            "forensics": ["investigator", "malware_analyst"],
+            "network": ["network_analyst", "threat_hunter"],
+            "detection": ["detection_engineer", "threat_hunter"],
+            "response": ["responder", "case_coordinator"],
+            "case_management": ["case_coordinator", "reporter", "correlator"],
+            "mitre": ["mitre_analyst", "detection_engineer"],
+            "mcp": ["workflow_controller", "investigator"],
+        }
+        return list(mapping.get(str(category or "").lower(), ["workflow_controller"]))
 
     def unregister_server(self, server_name: str) -> int:
         """Remove every tool that belongs to *server_name*. Returns count removed."""
@@ -218,7 +255,9 @@ class ToolRegistry:
                 # Strategy 2: if exactly one kwarg remains, use its value
                 non_kw = {
                     k: v for k, v in mapped_kwargs.items()
-                    if k not in ('_kw',) and k not in [
+                    if not str(k).startswith('_')
+                    and k not in ('_kw',)
+                    and k not in [
                         p for p in sig.parameters if p != param_name
                     ]
                 }
@@ -276,6 +315,9 @@ class ToolRegistry:
         malware_analyzer=None,
         email_analyzer=None,
         sandbox_orchestrator=None,
+        mcp_client=None,
+        governance_store=None,
+        case_store=None,
     ) -> None:
         """Wire up the built-in Blue Team Assistant tools as agent-callable tools.
 
@@ -351,8 +393,131 @@ class ToolRegistry:
                 pass
             return False
 
+        def _unwrap_mcp_payload(result: Any) -> Dict[str, Any]:
+            if not isinstance(result, dict):
+                return {"result": result}
+            payload = result.get("result", result)
+            if isinstance(payload, list) and len(payload) == 1 and isinstance(payload[0], dict):
+                payload = payload[0]
+            if isinstance(payload, dict):
+                return payload
+            return {"result": payload}
+
         def _safe_snort_sid(seed: str) -> int:
             return 1000000 + (abs(hash(seed)) % 899999)
+
+        def _normalize_tactic_name(value: str) -> str:
+            from ..utils.mitre_kill_chain import PHASES
+
+            if not value:
+                return ""
+            text = str(value).strip()
+            if text in PHASES:
+                return text
+
+            slug = text.lower().replace("_", "-").replace(" ", "-")
+            mapping = {
+                "initial-access": "Initial Access",
+                "execution": "Execution",
+                "persistence": "Persistence",
+                "privilege-escalation": "Privilege Escalation",
+                "defense-evasion": "Defense Evasion",
+                "credential-access": "Credential Access",
+                "discovery": "Discovery",
+                "lateral-movement": "Lateral Movement",
+                "collection": "Collection",
+                "command-and-control": "Command and Control",
+                "c2": "Command and Control",
+                "exfiltration": "Exfiltration",
+                "impact": "Impact",
+            }
+            return mapping.get(slug, text)
+
+        def _extract_attack_techniques(raw: Any) -> List[Dict[str, Any]]:
+            techniques: List[Dict[str, Any]] = []
+            if raw is None:
+                return techniques
+
+            if isinstance(raw, dict):
+                if raw.get("technique_id") or raw.get("id"):
+                    techniques.append(
+                        {
+                            "technique_id": str(raw.get("technique_id") or raw.get("id") or "").strip(),
+                            "technique_name": str(raw.get("technique_name") or raw.get("name") or "").strip(),
+                            "tactic": _normalize_tactic_name(raw.get("tactic") or raw.get("phase") or ""),
+                            "confidence": raw.get("confidence"),
+                        }
+                    )
+                    return [item for item in techniques if item["technique_id"]]
+
+                mitre_mapping = raw.get("mitre_mapping")
+                if isinstance(mitre_mapping, dict):
+                    for technique_id, meta in mitre_mapping.items():
+                        if not str(technique_id).upper().startswith("T"):
+                            continue
+                        meta = meta if isinstance(meta, dict) else {}
+                        techniques.append(
+                            {
+                                "technique_id": str(technique_id),
+                                "technique_name": str(meta.get("name") or meta.get("technique_name") or "").strip(),
+                                "tactic": _normalize_tactic_name(meta.get("tactic") or meta.get("phase") or ""),
+                                "confidence": meta.get("confidence"),
+                            }
+                        )
+
+                mitre_candidates = raw.get("mitre_candidates") or raw.get("mitre_techniques")
+                if isinstance(mitre_candidates, list):
+                    for item in mitre_candidates:
+                        techniques.extend(_extract_attack_techniques(item))
+                elif isinstance(mitre_candidates, dict):
+                    techniques.extend(_extract_attack_techniques(mitre_candidates))
+
+                for key in ("correlation", "result", "analysis_result", "summary"):
+                    nested = raw.get(key)
+                    if isinstance(nested, (dict, list)):
+                        techniques.extend(_extract_attack_techniques(nested))
+
+                if not techniques:
+                    for value in raw.values():
+                        if isinstance(value, (dict, list)):
+                            techniques.extend(_extract_attack_techniques(value))
+
+                deduped: List[Dict[str, Any]] = []
+                seen = set()
+                for item in techniques:
+                    tid = str(item.get("technique_id") or "").strip()
+                    if not tid or tid in seen:
+                        continue
+                    seen.add(tid)
+                    deduped.append(item)
+                return deduped
+
+            if isinstance(raw, list):
+                techniques = []
+                for item in raw:
+                    techniques.extend(_extract_attack_techniques(item))
+                deduped = []
+                seen = set()
+                for item in techniques:
+                    tid = str(item.get("technique_id") or "").strip()
+                    if not tid or tid in seen:
+                        continue
+                    seen.add(tid)
+                    deduped.append(item)
+                return deduped
+
+            if isinstance(raw, str):
+                text = raw.strip()
+                if text.upper().startswith("T"):
+                    return [{"technique_id": text, "technique_name": "", "tactic": "", "confidence": None}]
+            return techniques
+
+        def _extract_technique_ids_from_text(text: str) -> List[str]:
+            import re
+
+            if not isinstance(text, str) or not text.strip():
+                return []
+            return list(dict.fromkeys(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", text, re.IGNORECASE)))
 
         # -------------------------------------------------------------- #
         # 1. investigate_ioc
@@ -379,6 +544,8 @@ class ToolRegistry:
                 },
                 category="threat_intel",
                 executor=_investigate_ioc,
+                verdict_role="analysis_input",
+                recommended_profiles=["triage", "threat_intel_analyst", "network_analyst"],
             )
 
         # -------------------------------------------------------------- #
@@ -406,6 +573,8 @@ class ToolRegistry:
                 },
                 category="analysis",
                 executor=_analyze_malware,
+                verdict_role="analysis_input",
+                recommended_profiles=["malware_analyst", "investigator"],
             )
 
         # -------------------------------------------------------------- #
@@ -433,6 +602,8 @@ class ToolRegistry:
                 },
                 category="analysis",
                 executor=_analyze_email,
+                verdict_role="analysis_input",
+                recommended_profiles=["phishing_analyst", "investigator"],
             )
 
         # -------------------------------------------------------------- #
@@ -504,6 +675,8 @@ class ToolRegistry:
             },
             category="analysis",
             executor=_extract_iocs,
+            verdict_role="supporting",
+            recommended_profiles=["triage", "threat_hunter", "phishing_analyst"],
         )
 
         # -------------------------------------------------------------- #
@@ -745,72 +918,521 @@ class ToolRegistry:
             },
             category="detection",
             executor=_generate_rules,
+            verdict_role="supporting",
+            recommended_profiles=["detection_engineer", "threat_hunter", "reporter"],
         )
 
         # -------------------------------------------------------------- #
-        # 5b. search_logs
+        # 5b. analyze_detection_coverage
         # -------------------------------------------------------------- #
-        async def _search_logs(query: Any = None, timerange: str = "", **_kw) -> Dict:
-            """Return generated hunt queries and an honest status when no log backend is wired."""
+        async def _analyze_detection_coverage(
+            analysis_result: Any = None,
+            techniques: Any = None,
+            summary: str = "",
+            target_platforms: Any = None,
+            existing_rule_types: Any = None,
+            **_kw,
+        ) -> Dict:
+            from ..utils.mitre_kill_chain import KillChainAnalyzer, PHASES
+            from ..detection.coverage_backlog import build_detection_backlog
 
-            def _normalize_queries(raw: Any) -> Dict[str, List[str]]:
-                if raw is None:
-                    return {}
-                if isinstance(raw, dict):
-                    normalized: Dict[str, List[str]] = {}
-                    for key, value in raw.items():
-                        if isinstance(value, list):
-                            items = [str(item) for item in value if str(item).strip()]
-                        elif value in (None, ""):
-                            items = []
-                        else:
-                            items = [str(value)]
-                        if items:
-                            normalized[str(key)] = items
-                    return normalized
-                if isinstance(raw, list):
-                    items = [str(item) for item in raw if str(item).strip()]
-                    return {"generic": items} if items else {}
-                if isinstance(raw, str):
-                    text = raw.strip()
-                    if not text:
-                        return {}
-                    if text.startswith("{") and text.endswith("}"):
-                        try:
-                            import json
+            extracted = _extract_attack_techniques(techniques)
+            if not extracted:
+                extracted = _extract_attack_techniques(analysis_result)
+            if not extracted and summary:
+                extracted = _extract_attack_techniques(_extract_technique_ids_from_text(summary))
 
-                            parsed = json.loads(text)
-                            if isinstance(parsed, dict):
-                                return _normalize_queries(parsed)
-                        except Exception:
-                            pass
-                    return {"generic": [text]}
-                return {"generic": [str(raw)]}
+            analyzer = KillChainAnalyzer()
+            kill_chain = analyzer.analyze(extracted).to_dict()
+            detected_phases = list(kill_chain.get("phases_detected", []))
+            missing_phases = [phase for phase in PHASES if phase not in detected_phases]
+            coverage_ratio_pct = round(float(kill_chain.get("coverage_ratio", 0.0)) * 100, 2)
 
-            normalized_queries = _normalize_queries(query)
-            query_count = sum(len(values) for values in normalized_queries.values())
-            configured_backends = []
-            status = "manual_lookup_required"
-            mode = "query_generation_only"
-            message = (
-                "No SIEM/log backend is configured for automated log search. "
-                "AISA generated hunt queries for analyst-driven execution."
+            severity = "low"
+            if coverage_ratio_pct >= 50 or kill_chain.get("max_severity", 0) >= 0.9:
+                severity = "high"
+            elif coverage_ratio_pct >= 25 or kill_chain.get("max_severity", 0) >= 0.7:
+                severity = "medium"
+
+            backlog = build_detection_backlog(
+                coverage_result={
+                    "coverage_ratio_pct": coverage_ratio_pct,
+                    "missing_phases": missing_phases,
+                },
+                techniques=extracted,
+                target_platforms=target_platforms if isinstance(target_platforms, list) else None,
+                existing_rule_types=existing_rule_types if isinstance(existing_rule_types, list) else None,
             )
 
             return {
+                "status": "analyzed",
+                "technique_count": len(extracted),
+                "techniques": extracted,
+                "kill_chain": kill_chain,
+                "coverage_ratio_pct": coverage_ratio_pct,
+                "missing_phases": missing_phases,
+                "coverage_assessment": kill_chain.get("assessment", "No coverage analysis available"),
+                "severity": severity,
+                "suggested_focus_areas": missing_phases[:4],
+                "detection_backlog": backlog["backlog"],
+                "backlog_count": backlog["backlog_count"],
+                "priority_summary": backlog["priority_summary"],
+                "lifecycle": backlog["lifecycle"],
+                "target_platforms": backlog["target_platforms"],
+            }
+
+        self.register_local_tool(
+            name="analyze_detection_coverage",
+            description=(
+                "Analyze ATT&CK technique coverage, kill-chain progression, and likely detection gaps "
+                "from investigation results."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "analysis_result": {
+                        "description": "Structured analysis result that may contain ATT&CK mapping.",
+                    },
+                    "techniques": {
+                        "description": "Optional ATT&CK techniques list or technique identifiers.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional free-text summary containing ATT&CK technique IDs.",
+                    },
+                    "target_platforms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional rule/query languages to prioritize in the coverage review.",
+                    },
+                    "existing_rule_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional rule types already deployed so the tool can highlight remaining gaps.",
+                    },
+                },
+                "required": [],
+            },
+            category="detection",
+            executor=_analyze_detection_coverage,
+            verdict_role="supporting",
+            recommended_profiles=["detection_engineer", "mitre_analyst", "threat_hunter"],
+        )
+
+        # -------------------------------------------------------------- #
+        # 5c. build_detection_backlog
+        # -------------------------------------------------------------- #
+        async def _build_detection_backlog(
+            analysis_result: Any = None,
+            techniques: Any = None,
+            target_platforms: Any = None,
+            existing_rule_types: Any = None,
+            summary: str = "",
+            **_kw,
+        ) -> Dict:
+            coverage = await _analyze_detection_coverage(
+                analysis_result=analysis_result,
+                techniques=techniques,
+                summary=summary,
+                target_platforms=target_platforms,
+                existing_rule_types=existing_rule_types,
+            )
+            return {
+                "status": "planned",
+                "coverage": coverage,
+                "backlog": coverage.get("detection_backlog", []),
+                "backlog_count": coverage.get("backlog_count", 0),
+                "priority_summary": coverage.get("priority_summary", {}),
+                "lifecycle": coverage.get("lifecycle", {}),
+                "target_platforms": coverage.get("target_platforms", []),
+            }
+
+        self.register_local_tool(
+            name="build_detection_backlog",
+            description=(
+                "Turn ATT&CK coverage findings into a prioritized detection engineering backlog with "
+                "rule-language targets and lifecycle review guidance."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "analysis_result": {"description": "Structured analysis result with ATT&CK context."},
+                    "techniques": {"description": "Optional ATT&CK techniques list or identifiers."},
+                    "summary": {"type": "string", "description": "Optional free-text summary containing ATT&CK IDs."},
+                    "target_platforms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional rule/query languages to prioritize, such as sigma, spl, kql, yara, snort.",
+                    },
+                    "existing_rule_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional currently deployed rule types to avoid duplicate recommendations.",
+                    },
+                },
+                "required": [],
+            },
+            category="detection",
+            executor=_build_detection_backlog,
+            verdict_role="supporting",
+            recommended_profiles=["detection_engineer", "mitre_analyst", "reporter"],
+        )
+
+        # -------------------------------------------------------------- #
+        # 5d. create_attack_layer
+        # -------------------------------------------------------------- #
+        async def _create_attack_layer(
+            analysis_result: Any = None,
+            techniques: Any = None,
+            layer_name: str = "",
+            description: str = "",
+            **_kw,
+        ) -> Dict:
+            from ..reporting.mitre_navigator import generate_navigator_layer
+
+            extracted = _extract_attack_techniques(techniques)
+            if not extracted:
+                extracted = _extract_attack_techniques(analysis_result)
+            if not extracted:
+                return {
+                    "status": "no_techniques",
+                    "message": "No ATT&CK techniques were available to build a Navigator layer.",
+                    "layer": {"techniques": []},
+                }
+
+            base_result = analysis_result if isinstance(analysis_result, dict) else {}
+            mitre_mapping = {}
+            for item in extracted:
+                technique_id = str(item.get("technique_id") or "").strip()
+                if not technique_id:
+                    continue
+                mitre_mapping[technique_id] = {
+                    "name": item.get("technique_name") or technique_id,
+                    "tactic": item.get("tactic") or "",
+                    "confidence": item.get("confidence") or "medium",
+                    "reason": description or "Generated from workflow-backed ATT&CK context.",
+                }
+
+            layer_input = {
+                **base_result,
+                "mitre_mapping": mitre_mapping,
+                "verdict": base_result.get("verdict", "SUSPICIOUS"),
+                "composite_score": base_result.get("composite_score", base_result.get("score", 50)),
+                "file_info": {
+                    "file_name": layer_name or base_result.get("file_info", {}).get("file_name", "Workflow Investigation"),
+                },
+            }
+            layer = generate_navigator_layer(layer_input)
+            if layer_name:
+                layer["name"] = layer_name
+            if description:
+                layer["description"] = description
+
+            return {
+                "status": "generated",
+                "technique_count": len(extracted),
+                "layer": layer,
+            }
+
+        self.register_local_tool(
+            name="create_attack_layer",
+            description=(
+                "Build a MITRE ATT&CK Navigator layer from investigation findings for hunting, reporting, "
+                "or coverage review."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "analysis_result": {
+                        "description": "Structured analysis result with ATT&CK mapping.",
+                    },
+                    "techniques": {
+                        "description": "Optional ATT&CK techniques list or technique identifiers.",
+                    },
+                    "layer_name": {
+                        "type": "string",
+                        "description": "Optional custom layer name.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional custom layer description.",
+                    },
+                },
+                "required": [],
+            },
+            category="mitre",
+            executor=_create_attack_layer,
+            verdict_role="supporting",
+            recommended_profiles=["mitre_analyst", "detection_engineer", "reporter"],
+        )
+
+        # -------------------------------------------------------------- #
+        # 5e. search_logs
+        # -------------------------------------------------------------- #
+        async def _search_logs(
+            query: Any = None,
+            timerange: str = "",
+            _execution_context: Optional[Dict[str, Any]] = None,
+            **_kw,
+        ) -> Dict:
+            """Execute Splunk-backed hunt queries when a live backend is available."""
+
+            normalized_queries = normalize_query_bundle(query)
+            query_count = sum(len(values) for values in normalized_queries.values())
+            execution_context = dict(_execution_context or {})
+            session_id = str(execution_context.get("session_id") or "adhoc-log-hunt")
+            workflow_id = execution_context.get("workflow_id")
+            case_id = execution_context.get("case_id")
+            query_origin = "generated" if isinstance(query, dict) else "raw"
+
+            hunting_cfg = config.get("log_hunting", {}) if isinstance(config, dict) else {}
+            max_window_hours = int(hunting_cfg.get("max_window_hours", 24 * 7) or 24 * 7)
+            max_results = int(hunting_cfg.get("max_results", 200) or 200)
+            max_queries = int(hunting_cfg.get("max_queries_per_hunt", 3) or 3)
+            configured_backends: List[str] = []
+
+            def _log_hunt_decision(decision_type: str, summary: str, metadata: Dict[str, Any]) -> None:
+                if governance_store is None:
+                    return
+                try:
+                    governance_store.log_ai_decision(
+                        session_id=session_id,
+                        case_id=case_id,
+                        workflow_id=workflow_id,
+                        decision_type=decision_type,
+                        summary=summary,
+                        rationale=metadata.get("reason", ""),
+                        metadata=metadata,
+                    )
+                except Exception:
+                    logger.debug("[TOOLS] Failed to log hunt decision", exc_info=True)
+
+            if mcp_client is None or not getattr(mcp_client, "is_connected", lambda _name: False)("splunk"):
+                message = (
+                    "No Splunk log backend is connected for automated hunting. "
+                    "AISA generated hunt queries for analyst-driven execution."
+                )
+                result = {
+                    "status": "manual_lookup_required",
+                    "mode": "query_generation_only",
+                    "timerange": timerange or "7d",
+                    "configured_backends": configured_backends,
+                    "query_count": query_count,
+                    "executed_queries": [],
+                    "queries": normalized_queries,
+                    "results_count": 0,
+                    "suspicious_indicators": [],
+                    "suspicious_files": [],
+                    "suspicious_executables": [],
+                    "message": message,
+                }
+                _log_hunt_decision(
+                    "log_search_manual",
+                    "No live Splunk backend available; hunt downgraded to manual lookup.",
+                    {
+                        "reason": message,
+                        "timerange": result["timerange"],
+                        "query_count": query_count,
+                        "query_origin": query_origin,
+                        "backend": "manual",
+                    },
+                )
+                return result
+
+            configured_backends.append("splunk")
+            spl_queries = normalized_queries.get("splunk") or normalized_queries.get("spl") or normalized_queries.get("generic") or []
+            if not spl_queries:
+                message = "No Splunk-compatible hunt query was available to execute."
+                result = {
+                    "status": "manual_lookup_required",
+                    "mode": "query_generation_only",
+                    "timerange": timerange or "7d",
+                    "configured_backends": configured_backends,
+                    "query_count": query_count,
+                    "executed_queries": [],
+                    "queries": normalized_queries,
+                    "results_count": 0,
+                    "suspicious_indicators": [],
+                    "suspicious_files": [],
+                    "suspicious_executables": [],
+                    "message": message,
+                }
+                _log_hunt_decision(
+                    "log_search_manual",
+                    "No Splunk-compatible hunt query was available.",
+                    {
+                        "reason": message,
+                        "query_count": query_count,
+                        "query_origin": query_origin,
+                        "backend": "splunk",
+                    },
+                )
+                return result
+
+            executed_queries: List[Dict[str, Any]] = []
+            combined_rows: List[Dict[str, Any]] = []
+            suspicious_indicators: List[str] = []
+            suspicious_files: List[str] = []
+            suspicious_executables: List[str] = []
+            errors: List[str] = []
+
+            for candidate in spl_queries[:max_queries]:
+                plan = evaluate_hunt_request(
+                    candidate,
+                    timerange=timerange or "7d",
+                    query_origin=query_origin,
+                    max_window_hours=max_window_hours,
+                    max_results=max_results,
+                )
+                if plan["status"] == "approval_required":
+                    approval_id = None
+                    if governance_store is not None:
+                        try:
+                            approval_id = governance_store.create_approval(
+                                session_id=session_id,
+                                case_id=case_id,
+                                workflow_id=workflow_id,
+                                action_type="log_search",
+                                tool_name="splunk.search_logs",
+                                target={
+                                    "query": plan["query"],
+                                    "timerange": plan["timerange"],
+                                    "backend": "splunk",
+                                },
+                                rationale=plan["reason"],
+                                confidence=0.85,
+                                metadata={
+                                    "query_origin": query_origin,
+                                    "window_hours": plan["window_hours"],
+                                },
+                            )
+                        except Exception:
+                            logger.debug("[TOOLS] Failed to create hunt approval", exc_info=True)
+                    result = {
+                        "status": "approval_required",
+                        "mode": "splunk_live_blocked",
+                        "timerange": plan["timerange"],
+                        "configured_backends": configured_backends,
+                        "query_count": query_count,
+                        "executed_queries": [],
+                        "queries": normalized_queries,
+                        "results_count": 0,
+                        "suspicious_indicators": [],
+                        "suspicious_files": [],
+                        "suspicious_executables": [],
+                        "message": plan["reason"],
+                        "approval_id": approval_id,
+                    }
+                    _log_hunt_decision(
+                        "log_search_approval_required",
+                        "Splunk hunt paused pending analyst approval.",
+                        {
+                            "reason": plan["reason"],
+                            "backend": "splunk",
+                            "query": plan["query"],
+                            "query_origin": query_origin,
+                            "timerange": plan["timerange"],
+                            "approval_id": approval_id,
+                        },
+                    )
+                    return result
+
+                if plan["status"] == "blocked":
+                    result = {
+                        "status": "blocked",
+                        "mode": "splunk_live_blocked",
+                        "timerange": plan["timerange"],
+                        "configured_backends": configured_backends,
+                        "query_count": query_count,
+                        "executed_queries": [],
+                        "queries": normalized_queries,
+                        "results_count": 0,
+                        "suspicious_indicators": [],
+                        "suspicious_files": [],
+                        "suspicious_executables": [],
+                        "message": plan["reason"],
+                    }
+                    _log_hunt_decision(
+                        "log_search_blocked",
+                        "Splunk hunt blocked by policy.",
+                        {
+                            "reason": plan["reason"],
+                            "backend": "splunk",
+                            "query": plan["query"],
+                            "query_origin": query_origin,
+                            "timerange": plan["timerange"],
+                        },
+                    )
+                    return result
+
+                mcp_result = await mcp_client.call_tool(
+                    "splunk",
+                    "search_logs",
+                    {
+                        "query": plan["query"],
+                        "timerange": plan["timerange"],
+                        "max_results": plan["max_results"],
+                        "note": execution_context.get("goal", ""),
+                    },
+                )
+                payload = _unwrap_mcp_payload(mcp_result)
+                executed_queries.append(
+                    {
+                        "query": plan["query"],
+                        "timerange": plan["timerange"],
+                        "status": payload.get("status", "error"),
+                        "backend": payload.get("backend", "splunk"),
+                    }
+                )
+                if payload.get("error"):
+                    errors.append(str(payload["error"]))
+                    continue
+                combined_rows.extend(payload.get("results", []))
+                suspicious_indicators.extend(payload.get("suspicious_indicators", []))
+                suspicious_files.extend(payload.get("suspicious_files", []))
+                suspicious_executables.extend(payload.get("suspicious_executables", []))
+
+            status = "executed"
+            message = "Splunk hunt queries executed successfully."
+            if errors and combined_rows:
+                status = "partial"
+                message = "Splunk hunt partially succeeded; some queries failed."
+            elif errors and not combined_rows:
+                status = "error_partial"
+                message = "Splunk hunt queries failed."
+
+            result = {
                 "status": status,
-                "mode": mode,
+                "mode": "splunk_live",
                 "timerange": timerange or "7d",
                 "configured_backends": configured_backends,
                 "query_count": query_count,
-                "executed_queries": [],
+                "executed_queries": executed_queries,
                 "queries": normalized_queries,
-                "results_count": 0,
-                "suspicious_indicators": [],
-                "suspicious_files": [],
-                "suspicious_executables": [],
+                "results_count": len(combined_rows),
+                "results": combined_rows,
+                "suspicious_indicators": list(dict.fromkeys(suspicious_indicators))[:50],
+                "suspicious_files": list(dict.fromkeys(suspicious_files))[:50],
+                "suspicious_executables": list(dict.fromkeys(suspicious_executables))[:50],
                 "message": message,
             }
+            if errors:
+                result["errors"] = errors
+
+            _log_hunt_decision(
+                "log_search_execution",
+                "Splunk hunt executed through MCP-backed live search.",
+                {
+                    "reason": message,
+                    "backend": "splunk",
+                    "query_count": len(executed_queries),
+                    "results_count": result["results_count"],
+                    "status": status,
+                    "query_origin": query_origin,
+                    "timerange": result["timerange"],
+                },
+            )
+            return result
 
         self.register_local_tool(
             name="search_logs",
@@ -832,8 +1454,10 @@ class ToolRegistry:
                 },
                 "required": [],
             },
-            category="analysis",
+            category="siem",
             executor=_search_logs,
+            verdict_role="analysis_input",
+            recommended_profiles=["threat_hunter", "investigator", "triage"],
         )
 
         # -------------------------------------------------------------- #
@@ -948,6 +1572,8 @@ class ToolRegistry:
                 },
                 category="threat_intel",
                 executor=_search_threat_intel,
+                verdict_role="supporting",
+                recommended_profiles=["threat_intel_analyst", "triage", "network_analyst"],
             )
 
         # -------------------------------------------------------------- #
@@ -991,6 +1617,8 @@ class ToolRegistry:
             executor=_sandbox_submit,
             is_dangerous=True,
             requires_approval=True,
+            verdict_role="supporting",
+            recommended_profiles=["malware_analyst", "responder"],
         )
 
         # -------------------------------------------------------------- #
@@ -1036,10 +1664,262 @@ class ToolRegistry:
             },
             category="analysis",
             executor=_correlate_findings,
+            verdict_role="verdict_authority",
+            recommended_profiles=["investigator", "reporter", "workflow_controller"],
         )
 
         # -------------------------------------------------------------- #
-        # 10. remediation helpers
+        # 10. case management helpers
+        # -------------------------------------------------------------- #
+        async def _get_case_context(case_id: str = "", **_kw) -> Dict:
+            execution_context = dict(_kw.get("_execution_context") or {})
+            resolved_case_id = str(case_id or execution_context.get("case_id") or "").strip()
+            if case_store is None:
+                return {"error": "Case store is not configured"}
+            if not resolved_case_id:
+                return {"error": "No case_id was supplied"}
+            case = case_store.get_case(resolved_case_id)
+            if case is None:
+                return {"error": f"Case '{resolved_case_id}' was not found"}
+            return {
+                "status": "loaded",
+                "case": case,
+                "case_id": resolved_case_id,
+                "analysis_count": len(case.get("analyses", [])),
+                "workflow_count": len(case.get("workflows", [])),
+                "note_count": len(case.get("notes", [])),
+                "event_count": len(case.get("events", [])),
+            }
+
+        self.register_local_tool(
+            name="get_case_context",
+            description="Load the current case record, linked analyses, notes, events, and workflow history.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "case_id": {
+                        "type": "string",
+                        "description": "Case identifier. If omitted, uses the active session case when available.",
+                    },
+                },
+                "required": [],
+            },
+            category="case_management",
+            executor=_get_case_context,
+            verdict_role="supporting",
+            recommended_profiles=["case_coordinator", "investigator", "reporter"],
+        )
+
+        async def _create_case(
+            title: str,
+            description: str = "",
+            severity: str = "medium",
+            initial_note: str = "",
+            **_kw,
+        ) -> Dict:
+            execution_context = dict(_kw.get("_execution_context") or {})
+            if case_store is None:
+                return {"error": "Case store is not configured"}
+            resolved_title = str(title or execution_context.get("goal") or "New investigation case").strip()
+            case_id = case_store.create_case(
+                title=resolved_title,
+                description=str(description or execution_context.get("goal") or "").strip(),
+                severity=str(severity or "medium").strip() or "medium",
+            )
+            note_text = str(initial_note or "").strip()
+            if note_text:
+                case_store.add_note(case_id, note_text, author="agent")
+            return {
+                "status": "created",
+                "case_id": case_id,
+                "title": resolved_title,
+                "severity": severity or "medium",
+                "note_added": bool(note_text),
+            }
+
+        self.register_local_tool(
+            name="create_case",
+            description="Create a structured investigation case and optionally attach an initial agent note.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Case title.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Case description or investigation summary.",
+                    },
+                    "severity": {
+                        "type": "string",
+                        "description": "Case severity such as low, medium, high, or critical.",
+                        "default": "medium",
+                    },
+                    "initial_note": {
+                        "type": "string",
+                        "description": "Optional initial case note.",
+                    },
+                },
+                "required": ["title"],
+            },
+            category="case_management",
+            executor=_create_case,
+            verdict_role="supporting",
+            recommended_profiles=["case_coordinator", "reporter", "triage"],
+        )
+
+        async def _add_case_note(case_id: str = "", note: str = "", content: str = "", author: str = "agent", **_kw) -> Dict:
+            execution_context = dict(_kw.get("_execution_context") or {})
+            if case_store is None:
+                return {"error": "Case store is not configured"}
+            resolved_case_id = str(case_id or execution_context.get("case_id") or "").strip()
+            note_text = str(note or content or "").strip()
+            if not resolved_case_id:
+                return {"error": "No case_id was supplied"}
+            if not note_text:
+                return {"error": "No note content was supplied"}
+            note_id = case_store.add_note(resolved_case_id, note_text, author=author or "agent")
+            return {
+                "status": "added",
+                "case_id": resolved_case_id,
+                "note_id": note_id,
+                "author": author or "agent",
+            }
+
+        self.register_local_tool(
+            name="add_case_note",
+            description="Append a structured note to the active case during a workflow or investigation.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "case_id": {
+                        "type": "string",
+                        "description": "Case identifier. Uses active case when omitted.",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Note content to append.",
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Note author label.",
+                        "default": "agent",
+                    },
+                },
+                "required": ["note"],
+            },
+            category="case_management",
+            executor=_add_case_note,
+            verdict_role="supporting",
+            recommended_profiles=["case_coordinator", "reporter", "investigator"],
+        )
+
+        async def _update_case_status(case_id: str = "", status: str = "", **_kw) -> Dict:
+            execution_context = dict(_kw.get("_execution_context") or {})
+            if case_store is None:
+                return {"error": "Case store is not configured"}
+            resolved_case_id = str(case_id or execution_context.get("case_id") or "").strip()
+            resolved_status = str(status or "").strip()
+            if not resolved_case_id:
+                return {"error": "No case_id was supplied"}
+            if not resolved_status:
+                return {"error": "No status was supplied"}
+            updated = case_store.update_case_status(resolved_case_id, resolved_status)
+            return {
+                "status": "updated" if updated else "not_found",
+                "case_id": resolved_case_id,
+                "case_status": resolved_status,
+            }
+
+        self.register_local_tool(
+            name="update_case_status",
+            description="Update the lifecycle status of an investigation case.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "case_id": {
+                        "type": "string",
+                        "description": "Case identifier. Uses active case when omitted.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New case status such as Open, In Progress, Escalated, or Closed.",
+                    },
+                },
+                "required": ["status"],
+            },
+            category="case_management",
+            executor=_update_case_status,
+            verdict_role="supporting",
+            recommended_profiles=["case_coordinator", "reporter"],
+        )
+
+        async def _link_case_analysis(
+            case_id: str = "",
+            analysis_id: str = "",
+            workflow_session_id: str = "",
+            workflow_id: str = "",
+            **_kw,
+        ) -> Dict:
+            execution_context = dict(_kw.get("_execution_context") or {})
+            if case_store is None:
+                return {"error": "Case store is not configured"}
+            resolved_case_id = str(case_id or execution_context.get("case_id") or "").strip()
+            if not resolved_case_id:
+                return {"error": "No case_id was supplied"}
+            if analysis_id:
+                linked = case_store.link_analysis(resolved_case_id, analysis_id)
+                return {
+                    "status": "linked" if linked else "failed",
+                    "case_id": resolved_case_id,
+                    "analysis_id": analysis_id,
+                }
+            resolved_session_id = str(workflow_session_id or execution_context.get("session_id") or "").strip()
+            resolved_workflow_id = str(workflow_id or execution_context.get("workflow_id") or "").strip()
+            if resolved_session_id and resolved_workflow_id:
+                linked = case_store.link_workflow(resolved_case_id, resolved_session_id, resolved_workflow_id)
+                return {
+                    "status": "linked" if linked else "failed",
+                    "case_id": resolved_case_id,
+                    "workflow_session_id": resolved_session_id,
+                    "workflow_id": resolved_workflow_id,
+                }
+            return {"error": "Either analysis_id or workflow_session_id + workflow_id must be supplied"}
+
+        self.register_local_tool(
+            name="link_case_analysis",
+            description="Link an analysis result or workflow session to a case for chat-driven case management.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "case_id": {
+                        "type": "string",
+                        "description": "Case identifier. Uses active case when omitted.",
+                    },
+                    "analysis_id": {
+                        "type": "string",
+                        "description": "Analysis job identifier to attach to the case.",
+                    },
+                    "workflow_session_id": {
+                        "type": "string",
+                        "description": "Workflow session identifier to attach when linking workflow context.",
+                    },
+                    "workflow_id": {
+                        "type": "string",
+                        "description": "Workflow identifier paired with workflow_session_id.",
+                    },
+                },
+                "required": [],
+            },
+            category="case_management",
+            executor=_link_case_analysis,
+            verdict_role="supporting",
+            recommended_profiles=["case_coordinator", "investigator", "reporter"],
+        )
+
+        # -------------------------------------------------------------- #
+        # 11. remediation helpers
         # -------------------------------------------------------------- #
         async def _isolate_device(target: Any, isolation_type: str = "network", **_kw) -> Dict:
             targets = _ensure_list(target)
@@ -1080,6 +1960,8 @@ class ToolRegistry:
             executor=_isolate_device,
             requires_approval=True,
             is_dangerous=True,
+            verdict_role="supporting",
+            recommended_profiles=["responder", "case_coordinator"],
         )
 
         async def _block_ip(indicators: Any = None, **_kw) -> Dict:
@@ -1115,6 +1997,8 @@ class ToolRegistry:
             executor=_block_ip,
             requires_approval=True,
             is_dangerous=True,
+            verdict_role="supporting",
+            recommended_profiles=["responder", "network_analyst"],
         )
 
         async def _quarantine_file(targets: Any = None, **_kw) -> Dict:
@@ -1150,10 +2034,12 @@ class ToolRegistry:
             executor=_quarantine_file,
             requires_approval=True,
             is_dangerous=True,
+            verdict_role="supporting",
+            recommended_profiles=["responder", "malware_analyst"],
         )
 
         # -------------------------------------------------------------- #
-        # 11. recall_ioc - Check investigation memory for past results
+        # 12. recall_ioc - Check investigation memory for past results
         # -------------------------------------------------------------- #
         async def _recall_ioc(ioc: str = "", text: str = "", hypothesis: str = "", known_indicators: Any = None, **_kw) -> Dict:
             """Recall previously investigated IOC results from memory."""
@@ -1237,6 +2123,8 @@ class ToolRegistry:
             },
             category="analysis",
             executor=_recall_ioc,
+            verdict_role="supporting",
+            recommended_profiles=["investigator", "case_coordinator", "threat_hunter"],
         )
 
         logger.info(

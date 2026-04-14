@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+
+{% block title %}Approvals{% endblock %}
+{% block page_title %}Approval Queue{% endblock %}
+{% block page_subtitle %}<span class="page-subtitle">Human review gate for high-impact agent actions.</span>{% endblock %}
+
+{% block extra_head %}
+<style>
+    .governance-shell { display: flex; flex-direction: column; gap: 1.4rem; }
+    .governance-hero { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.9fr); gap: 1rem; }
+    .governance-hero-card, .governance-stat-card, .governance-record {
+        border-radius: 22px;
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 28%), rgba(15, 23, 42, 0.78);
+        box-shadow: 0 22px 46px rgba(2, 6, 23, 0.18);
+    }
+    .governance-hero-card, .governance-stat-card, .governance-record { padding: 1.15rem; }
+    .governance-kicker {
+        display: inline-flex; align-items: center; gap: 0.45rem; margin-bottom: 0.8rem;
+        font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: #7dd3fc;
+    }
+    .governance-title { margin: 0; font-size: clamp(1.7rem, 2.4vw, 2.35rem); line-height: 1.05; letter-spacing: -0.04em; }
+    .governance-copy { margin: 0.95rem 0 0; max-width: 64ch; color: var(--text-secondary); line-height: 1.7; }
+    .governance-points { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 1.15rem; }
+    .governance-point {
+        display: inline-flex; align-items: center; gap: 0.45rem; min-height: 38px; padding: 0.45rem 0.82rem;
+        border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(148, 163, 184, 0.12);
+        color: var(--text-primary); font-size: 0.82rem;
+    }
+    .governance-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+    .governance-stat-label, .record-meta-label, .record-section-title, .review-panel-title {
+        font-size: 0.74rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted);
+    }
+    .governance-stat-value { margin-top: 0.45rem; font-size: 1.8rem; font-weight: 700; letter-spacing: -0.04em; color: var(--text-primary); }
+    .governance-stat-note, .review-panel-copy { margin-top: 0.4rem; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.65; }
+    .governance-list { display: flex; flex-direction: column; gap: 1rem; }
+    .governance-record-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.95fr); gap: 1rem; }
+    .record-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.9rem; margin-bottom: 1rem; }
+    .record-title { margin: 0; font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); word-break: break-word; }
+    .record-subtitle { margin-top: 0.28rem; color: var(--text-secondary); font-size: 0.86rem; }
+    .record-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+    .record-chip {
+        display: inline-flex; align-items: center; gap: 0.38rem; min-height: 34px; padding: 0.36rem 0.72rem; border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.14); background: rgba(255, 255, 255, 0.04); color: var(--text-primary);
+        font-size: 0.76rem; font-weight: 600;
+    }
+    .record-chip.status-pending { color: #fcd34d; border-color: rgba(245, 158, 11, 0.24); background: rgba(245, 158, 11, 0.11); }
+    .record-chip.status-approved { color: #86efac; border-color: rgba(34, 197, 94, 0.24); background: rgba(34, 197, 94, 0.11); }
+    .record-chip.status-rejected { color: #fca5a5; border-color: rgba(239, 68, 68, 0.24); background: rgba(239, 68, 68, 0.11); }
+    .record-chip.confidence-high { color: #67e8f9; border-color: rgba(34, 211, 238, 0.22); }
+    .record-chip.confidence-medium { color: #fcd34d; border-color: rgba(245, 158, 11, 0.22); }
+    .record-chip.confidence-low { color: #cbd5e1; }
+    .record-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .record-meta, .review-summary-item, .record-section {
+        padding: 0.82rem 0.9rem; border-radius: 16px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+    .record-meta-value { margin-top: 0.3rem; color: var(--text-primary); font-size: 0.92rem; line-height: 1.45; word-break: break-word; }
+    .record-code { font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; }
+    .record-section { margin-top: 1rem; background: rgba(2, 6, 23, 0.32); }
+    .record-section-title { display: flex; align-items: center; gap: 0.45rem; margin: 0 0 0.6rem; }
+    .record-rationale { margin: 0; color: var(--text-secondary); line-height: 1.7; }
+    .payload-block {
+        margin: 0; padding: 1rem; border-radius: 16px; background: rgba(15, 23, 42, 0.86); border: 1px solid rgba(148, 163, 184, 0.1);
+        font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; line-height: 1.65; color: #dbeafe; white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+    }
+    .evidence-list { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+    .evidence-chip {
+        display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.72rem; border-radius: 12px;
+        background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(148, 163, 184, 0.12); color: var(--text-primary); font-size: 0.8rem;
+    }
+    .review-panel {
+        display: flex; flex-direction: column; gap: 0.9rem; height: 100%; padding: 1rem; border-radius: 18px;
+        background: linear-gradient(180deg, rgba(14, 165, 233, 0.08), transparent 46%), rgba(15, 23, 42, 0.62);
+        border: 1px solid rgba(14, 165, 233, 0.14);
+    }
+    .review-panel.pending {
+        border-color: rgba(245, 158, 11, 0.2);
+        background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), transparent 46%), rgba(15, 23, 42, 0.62);
+    }
+    .approval-comment {
+        min-height: 132px; background: rgba(15, 23, 42, 0.82); border-color: rgba(148, 163, 184, 0.14); color: var(--text-primary);
+    }
+    .approval-action-row { display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center; }
+    .approval-action-row .btn { min-width: 124px; border-radius: 12px; font-weight: 600; }
+    .approval-status-message { min-height: 1.2rem; }
+    .empty-state {
+        padding: 1.8rem; text-align: center; border-radius: 22px; border: 1px dashed rgba(148, 163, 184, 0.18); background: rgba(255, 255, 255, 0.03);
+    }
+    @media (max-width: 1199.98px) { .governance-hero, .governance-record-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 767.98px) {
+        .governance-stat-grid, .record-meta-grid { grid-template-columns: 1fr; }
+        .record-header { flex-direction: column; }
+        .record-badges { justify-content: flex-start; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set stats = namespace(total=approvals|length, pending=0, approved=0, rejected=0, high_conf=0, with_case=0) %}
+{% for approval in approvals %}
+    {% if approval.status == 'pending' %}{% set stats.pending = stats.pending + 1 %}{% elif approval.status == 'approved' %}{% set stats.approved = stats.approved + 1 %}{% elif approval.status == 'rejected' %}{% set stats.rejected = stats.rejected + 1 %}{% endif %}
+    {% if approval.confidence and approval.confidence >= 0.8 %}{% set stats.high_conf = stats.high_conf + 1 %}{% endif %}
+    {% if approval.case_id %}{% set stats.with_case = stats.with_case + 1 %}{% endif %}
+{% endfor %}
+
+<section class="governance-shell">
+    <div class="governance-hero">
+        <article class="governance-hero-card">
+            <div class="governance-kicker"><i class="bi bi-shield-check"></i>Governance Layer</div>
+            <h1 class="governance-title">Approval Queue</h1>
+            <p class="governance-copy">
+                Review high-impact actions before the orchestration plane continues. This layout is meant to answer four questions quickly:
+                what is waiting, why the agent asked, how confident it is, and what exact payload would be executed.
+            </p>
+            <div class="governance-points">
+                <span class="governance-point"><i class="bi bi-hourglass-split"></i>{{ stats.pending }} pending review</span>
+                <span class="governance-point"><i class="bi bi-briefcase"></i>{{ stats.with_case }} linked to cases</span>
+                <span class="governance-point"><i class="bi bi-stars"></i>{{ stats.high_conf }} high-confidence requests</span>
+            </div>
+        </article>
+        <div class="governance-stat-grid">
+            <article class="governance-stat-card"><div class="governance-stat-label">Total Records</div><div class="governance-stat-value">{{ stats.total }}</div><div class="governance-stat-note">All approval requests currently retained in the governance store.</div></article>
+            <article class="governance-stat-card"><div class="governance-stat-label">Pending</div><div class="governance-stat-value">{{ stats.pending }}</div><div class="governance-stat-note">Items that still need a human decision before execution can continue.</div></article>
+            <article class="governance-stat-card"><div class="governance-stat-label">Approved</div><div class="governance-stat-value">{{ stats.approved }}</div><div class="governance-stat-note">Requests already cleared by an analyst or reviewer.</div></article>
+            <article class="governance-stat-card"><div class="governance-stat-label">Rejected</div><div class="governance-stat-value">{{ stats.rejected }}</div><div class="governance-stat-note">Requests that were blocked and did not proceed.</div></article>
+        </div>
+    </div>
+
+    <div class="governance-list">
+        {% for approval in approvals %}
+        {% set confidence = approval.confidence or 0 %}
+        {% if confidence >= 0.8 %}{% set confidence_class = 'confidence-high' %}{% set confidence_label = 'High confidence' %}
+        {% elif confidence >= 0.5 %}{% set confidence_class = 'confidence-medium' %}{% set confidence_label = 'Medium confidence' %}
+        {% else %}{% set confidence_class = 'confidence-low' %}{% set confidence_label = 'Low confidence' %}{% endif %}
+
+        <article class="governance-record approval-card" data-approval-id="{{ approval.id }}">
+            <div class="governance-record-grid">
+                <div>
+                    <div class="record-header">
+                        <div>
+                            <h2 class="record-title">{{ approval.tool_name }}</h2>
+                            <div class="record-subtitle">{{ approval.action_type | replace('_', ' ') | title }}</div>
+                        </div>
+                        <div class="record-badges">
+                            <span class="record-chip status-{{ approval.status }}"><i class="bi {% if approval.status == 'pending' %}bi-hourglass-split{% elif approval.status == 'approved' %}bi-check-circle{% else %}bi-x-circle{% endif %}"></i>{{ approval.status | upper }}</span>
+                            <span class="record-chip {{ confidence_class }}"><i class="bi bi-speedometer2"></i>{{ confidence_label }}{% if approval.confidence is not none %} · {{ '%.2f' | format(confidence) }}{% endif %}</span>
+                        </div>
+                    </div>
+
+                    <div class="record-meta-grid">
+                        <div class="record-meta"><span class="record-meta-label">Approval ID</span><div class="record-meta-value record-code">{{ approval.id }}</div></div>
+                        <div class="record-meta"><span class="record-meta-label">Requested At</span><div class="record-meta-value">{{ approval.requested_at }}</div></div>
+                        <div class="record-meta"><span class="record-meta-label">Session</span><div class="record-meta-value record-code">{{ approval.session_id }}</div></div>
+                        <div class="record-meta"><span class="record-meta-label">Workflow</span><div class="record-meta-value">{{ approval.workflow_id or 'Direct agent action' }}</div></div>
+                        <div class="record-meta"><span class="record-meta-label">Case</span><div class="record-meta-value">{{ approval.case_id or 'Not linked' }}</div></div>
+                        <div class="record-meta"><span class="record-meta-label">Evidence Refs</span><div class="record-meta-value">{{ approval.evidence_refs | length }}</div></div>
+                    </div>
+
+                    <div class="record-section">
+                        <div class="record-section-title"><i class="bi bi-chat-left-text"></i>Why the agent requested this</div>
+                        <p class="record-rationale">{{ approval.rationale or 'No rationale provided.' }}</p>
+                    </div>
+
+                    {% if approval.evidence_refs %}
+                    <div class="record-section">
+                        <div class="record-section-title"><i class="bi bi-link-45deg"></i>Evidence links</div>
+                        <div class="evidence-list">
+                            {% for ref in approval.evidence_refs %}
+                            <span class="evidence-chip"><i class="bi bi-file-earmark-text"></i>{{ ref.type or ref.kind or ref.id or ref.label or ('Reference ' ~ loop.index) }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <div class="record-section">
+                        <div class="record-section-title"><i class="bi bi-braces-asterisk"></i>Target payload</div>
+                        <pre class="payload-block">{{ approval.target | tojson(indent=2) }}</pre>
+                    </div>
+                </div>
+
+                <aside class="review-panel {% if approval.status == 'pending' %}pending{% endif %}">
+                    <h3 class="review-panel-title">{% if approval.status == 'pending' %}Analyst decision{% else %}Review outcome{% endif %}</h3>
+                    {% if approval.status == 'pending' %}
+                    <p class="review-panel-copy">
+                        This request is paused at the governance boundary. Add a short reviewer note so future analysts can understand why the action was approved or blocked.
+                    </p>
+                    <label class="form-label small mb-1" for="approval-comment-{{ approval.id }}">Reviewer comment</label>
+                    <textarea id="approval-comment-{{ approval.id }}" class="form-control approval-comment mb-2" rows="5" placeholder="Example: Approved because the IP is confirmed malicious across multiple sources and containment is reversible."></textarea>
+                    <div class="approval-action-row">
+                        <button type="button" class="btn btn-sm btn-accent approval-review-btn" data-approved="true"><i class="bi bi-check2-circle me-1"></i>Approve</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger approval-review-btn" data-approved="false"><i class="bi bi-x-circle me-1"></i>Reject</button>
+                    </div>
+                    <span class="small text-muted approval-status-message"></span>
+                    {% else %}
+                    <p class="review-panel-copy">This request has already been reviewed. The summary below is the decision trail preserved for governance and later case review.</p>
+                    <div class="review-summary-item"><span class="record-meta-label">Reviewed At</span><div class="record-meta-value">{{ approval.reviewed_at or 'Not recorded' }}</div></div>
+                    <div class="review-summary-item"><span class="record-meta-label">Reviewer</span><div class="record-meta-value">{{ approval.reviewer or 'Unknown reviewer' }}</div></div>
+                    <div class="review-summary-item"><span class="record-meta-label">Reviewer Comment</span><div class="record-meta-value">{{ approval.reviewer_comment or 'No reviewer note captured.' }}</div></div>
+                    {% endif %}
+                </aside>
+            </div>
+        </article>
+        {% else %}
+        <article class="empty-state">
+            <div class="governance-kicker justify-content-center mb-3"><i class="bi bi-check2-all"></i>Queue clear</div>
+            <h2 class="record-title mb-2">No approvals waiting right now</h2>
+            <p class="record-rationale mb-0">Approval-gated actions will appear here once an agent or workflow hits a high-impact step that needs human review.</p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.approval-review-btn').forEach(function (button) {
+        button.addEventListener('click', async function () {
+            const card = button.closest('.approval-card');
+            const approvalId = card?.dataset.approvalId;
+            const textarea = card?.querySelector('.approval-comment');
+            const statusMessage = card?.querySelector('.approval-status-message');
+            if (!approvalId) return;
+
+            const approved = button.dataset.approved === 'true';
+            const comment = textarea ? textarea.value.trim() : '';
+            const buttons = card.querySelectorAll('.approval-review-btn');
+
+            buttons.forEach(function (btn) { btn.disabled = true; });
+            if (statusMessage) {
+                statusMessage.textContent = approved ? 'Submitting approval...' : 'Submitting rejection...';
+            }
+
+            try {
+                const resp = await fetch('/api/governance/approvals/' + encodeURIComponent(approvalId) + '/review', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ approved: approved, reviewer: 'web_analyst', comment: comment })
+                });
+
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                window.location.reload();
+            } catch (err) {
+                if (statusMessage) statusMessage.textContent = 'Failed to submit review: ' + err.message;
+                buttons.forEach(function (btn) { btn.disabled = false; });
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

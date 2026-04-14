@@ -74,6 +74,10 @@ class WebDataProvider:
             "label": "Optional",
         }
 
+    def _has_configured_mcp_server(self, name: str) -> bool:
+        servers = self.config.get("mcp_servers", []) if isinstance(self.config, dict) else []
+        return any(isinstance(server, dict) and str(server.get("name", "")).strip() == name for server in servers)
+
     def _sandbox_inventory(self, app: Any) -> List[Dict[str, Any]]:
         orchestrator = getattr(app.state, "sandbox_orchestrator", None)
         if orchestrator is None:
@@ -88,6 +92,12 @@ class WebDataProvider:
         llm = cfg.get("llm", {})
         analysis = cfg.get("analysis", {})
         agent_enabled = bool(getattr(app.state, "agent_loop", None))
+        workflow_enabled = bool(getattr(app.state, "workflow_registry", None)) and bool(
+            getattr(app.state, "agent_profiles", None)
+        )
+        governance_enabled = bool(getattr(app.state, "governance_store", None))
+        daemon = getattr(app.state, "headless_soc_daemon", None)
+        daemon_meta = daemon.build_status(app) if daemon is not None else {}
         mcp_meta = self._mcp_status(app)
         provider = str(llm.get("provider") or "").strip().lower()
 
@@ -139,6 +149,22 @@ class WebDataProvider:
             "agent": {
                 "status": "available" if agent_enabled else "optional",
                 "label": "Available" if agent_enabled else "Optional",
+            },
+            "workflow_engine": {
+                "status": "available" if workflow_enabled else "optional",
+                "label": "Profiles + workflows ready" if workflow_enabled else "Optional",
+            },
+            "governance": {
+                "status": "available" if governance_enabled else "optional",
+                "label": "Approval + decision logs" if governance_enabled else "Optional",
+            },
+            "daemon": {
+                "status": "configured" if daemon_meta.get("enabled") else "optional",
+                "label": (
+                    f"{daemon_meta.get('schedule_count', 0)} scheduled workflow(s), "
+                    f"{daemon_meta.get('queue', {}).get('queued', 0)} queued"
+                    if daemon_meta.get("enabled") else "Optional"
+                ),
             },
             "mcp": {
                 "status": mcp_meta["status"],
@@ -207,6 +233,28 @@ class WebDataProvider:
         ]
 
         sources = [{**item, "mode": "live"} for item in premium_sources] + osint_sources
+
+        splunk_connected = False
+        mcp_client = getattr(app.state, "mcp_client", None)
+        if mcp_client is not None:
+            try:
+                splunk_connected = bool(mcp_client.is_connected("splunk"))
+            except Exception:
+                splunk_connected = False
+        if splunk_connected or self._has_configured_mcp_server("splunk"):
+            sources.append(
+                {
+                    "name": "Splunk SIEM",
+                    "category": "siem",
+                    "status": "available" if splunk_connected else "optional",
+                    "mode": "live",
+                    "detail": (
+                        "Read-only Splunk hunting backend is connected for agent-driven log pivots."
+                        if splunk_connected
+                        else "Splunk MCP server is configured but not currently connected."
+                    ),
+                }
+            )
 
         mcp_meta = self._mcp_status(app)
         if getattr(app.state, "mcp_client", None):
@@ -334,6 +382,11 @@ class WebDataProvider:
         return None
 
     def build_template_context(self, app: Any, request: Any, **extra: Any) -> Dict[str, Any]:
+        capability_catalog = getattr(app.state, "capability_catalog", None)
+        capability_summary = (
+            capability_catalog.build_summary(app)
+            if capability_catalog is not None else {}
+        )
         context = {
             "request": request,
             "product_name": "AISA",
@@ -342,6 +395,7 @@ class WebDataProvider:
             "demo_enabled": self.is_demo_mode(),
             "feature_status": self.feature_status(app),
             "source_health_summary": self.source_health_summary(app),
+            "capability_summary": capability_summary,
         }
         context.update(extra)
         return context

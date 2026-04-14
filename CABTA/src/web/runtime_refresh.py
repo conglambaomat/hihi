@@ -72,9 +72,11 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
     from src.agent.playbook_engine import PlaybookEngine
     from src.agent.sandbox_orchestrator import SandboxOrchestrator
     from src.agent.tool_registry import ToolRegistry
+    from src.daemon.service import HeadlessSOCDaemon
     from src.tools.email_analyzer import EmailAnalyzer
     from src.tools.ioc_investigator import IOCInvestigator
     from src.tools.malware_analyzer import MalwareAnalyzer
+    from src.workflows.service import WorkflowService
 
     ioc_inv = None
     mal_ana = None
@@ -116,6 +118,9 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
             malware_analyzer=mal_ana,
             email_analyzer=email_ana,
             sandbox_orchestrator=sandbox_orchestrator,
+            mcp_client=getattr(app.state, "mcp_client", None),
+            governance_store=getattr(app.state, "governance_store", None),
+            case_store=getattr(app.state, "case_store", None),
         )
     except Exception as exc:
         logger.warning("[CONFIG] Default tool registration refresh partial: %s", exc)
@@ -137,6 +142,9 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
             tool_registry=tool_registry,
             agent_store=getattr(app.state, "agent_store", None),
             mcp_client=mcp_client,
+            agent_profiles=getattr(app.state, "agent_profiles", None),
+            workflow_registry=getattr(app.state, "workflow_registry", None),
+            governance_store=getattr(app.state, "governance_store", None),
         )
     except Exception as exc:
         logger.warning("[CONFIG] AgentLoop refresh failed: %s", exc)
@@ -159,6 +167,22 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
     app.state.tool_registry = tool_registry
     app.state.agent_loop = agent_loop
     app.state.playbook_engine = playbook_engine
+    try:
+        app.state.workflow_service = WorkflowService(
+            workflow_registry=getattr(app.state, "workflow_registry", None),
+            agent_store=getattr(app.state, "agent_store", None),
+            case_store=getattr(app.state, "case_store", None),
+        )
+    except Exception as exc:
+        logger.warning("[CONFIG] WorkflowService refresh failed: %s", exc)
+    try:
+        app.state.headless_soc_daemon = HeadlessSOCDaemon(
+            config=config,
+            workflow_registry=getattr(app.state, "workflow_registry", None),
+            workflow_service=getattr(app.state, "workflow_service", None),
+        )
+    except Exception as exc:
+        logger.warning("[CONFIG] HeadlessSOCDaemon refresh failed: %s", exc)
 
     if getattr(app.state, "web_provider", None) is not None:
         app.state.web_provider.config = config

@@ -174,10 +174,14 @@ def normalize_case(case: Dict[str, Any], *, mode: str = "live") -> Dict[str, Any
     base = deepcopy(case)
     analyses = _as_list(base.get("analyses"))
     notes = _as_list(base.get("notes"))
+    workflows = _as_list(base.get("workflows"))
+    events = _as_list(base.get("events"))
     normalized = {
         "mode": mode,
         "is_demo": mode == "demo",
         "analysis_count": base.get("analysis_count", len(analyses)),
         "note_count": base.get("note_count", len(notes)),
+        "workflow_count": base.get("workflow_count", len(workflows)),
+        "event_count": base.get("event_count", len(events)),
     }
     return {**base, **normalized}

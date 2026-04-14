@@ -17,6 +17,8 @@ class InvestigateRequest(BaseModel):
     goal: str = Field(..., min_length=1, description="Investigation goal in natural language")
     case_id: Optional[str] = None
     playbook_id: Optional[str] = None
+    agent_profile_id: Optional[str] = None
+    workflow_id: Optional[str] = None
     max_steps: Optional[int] = Field(None, ge=1, le=500, description="Maximum investigation steps")
 
 
@@ -55,7 +57,35 @@ def _decorate_session_payload(session: Dict) -> Dict:
         payload['execution_mode'] = metadata.get('execution_mode')
     if payload.get('pending_approval') is None and metadata.get('pending_approval') is not None:
         payload['pending_approval'] = metadata.get('pending_approval')
+    if payload.get('active_specialist') is None and metadata.get('active_specialist') is not None:
+        payload['active_specialist'] = metadata.get('active_specialist')
+    if payload.get('specialist_team') is None and metadata.get('specialist_team') is not None:
+        payload['specialist_team'] = metadata.get('specialist_team')
+    if payload.get('specialist_handoffs') is None and metadata.get('specialist_handoffs') is not None:
+        payload['specialist_handoffs'] = metadata.get('specialist_handoffs')
+    if payload.get('collaboration_mode') is None and metadata.get('collaboration_mode') is not None:
+        payload['collaboration_mode'] = metadata.get('collaboration_mode')
+    if payload.get('lead_agent_profile_id') is None and metadata.get('lead_agent_profile_id') is not None:
+        payload['lead_agent_profile_id'] = metadata.get('lead_agent_profile_id')
     return payload
+
+
+def _pending_approval_id(request: Request, session_id: str) -> Optional[str]:
+    loop = getattr(request.app.state, 'agent_loop', None)
+    if loop is not None:
+        state = getattr(loop, '_active_sessions', {}).get(session_id)
+        if state and state.pending_approval:
+            return state.pending_approval.get('action', {}).get('approval_id')
+
+    store = getattr(request.app.state, 'agent_store', None)
+    if store is not None:
+        session = store.get_session(session_id)
+        if session:
+            metadata = session.get('metadata', {}) if isinstance(session.get('metadata'), dict) else {}
+            pending = metadata.get('pending_approval', {})
+            if isinstance(pending, dict):
+                return pending.get('approval_id')
+    return None
 
 
 @router.post('/investigate')
@@ -63,9 +93,22 @@ async def start_investigation(request: Request, body: InvestigateRequest):
     """Start a new agent investigation."""
     agent_loop = _require_agent_loop(request)
     session_id = await agent_loop.investigate(
-        body.goal, body.case_id, body.playbook_id, max_steps=body.max_steps
+        body.goal,
+        body.case_id,
+        body.playbook_id,
+        max_steps=body.max_steps,
+        metadata={
+            "agent_profile_id": body.agent_profile_id,
+            "workflow_id": body.workflow_id,
+        },
     )
-    return {"session_id": session_id, "status": "active", "goal": body.goal}
+    return {
+        "session_id": session_id,
+        "status": "active",
+        "goal": body.goal,
+        "agent_profile_id": body.agent_profile_id,
+        "workflow_id": body.workflow_id,
+    }
 
 
 @router.get('/stats')
@@ -83,6 +126,12 @@ async def agent_stats(request: Request):
         status = mcp_client.get_connection_status()
         stats['mcp_servers'] = len(status)
         stats['mcp_connected'] = sum(1 for s in status.values() if s.get('connected'))
+    profiles = getattr(request.app.state, 'agent_profiles', None)
+    if profiles:
+        stats['agent_profiles'] = profiles.count()
+    workflows = getattr(request.app.state, 'workflow_registry', None)
+    if workflows:
+        stats['workflows'] = len(workflows.list_workflows())
     return stats
 
 
@@ -94,6 +143,36 @@ async def list_tools(request: Request, category: Optional[str] = None):
         raise HTTPException(503, "Tool registry not initialized")
     tools = tool_registry.list_tools(category=category)
     return {"tools": [t.to_dict() for t in tools]}
+
+
+@router.get('/profiles')
+async def list_profiles(request: Request):
+    """List specialist agent profiles."""
+    profiles = getattr(request.app.state, 'agent_profiles', None)
+    if profiles is None:
+        raise HTTPException(503, "Agent profiles not initialized")
+    return {"profiles": profiles.list_profiles()}
+
+
+@router.get('/profiles/{profile_id}')
+async def get_profile(request: Request, profile_id: str):
+    """Return one specialist agent profile."""
+    profiles = getattr(request.app.state, 'agent_profiles', None)
+    if profiles is None:
+        raise HTTPException(503, "Agent profiles not initialized")
+    profile = profiles.get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(404, "Agent profile not found")
+    return profile.to_dict()
+
+
+@router.get('/capabilities')
+async def capability_catalog(request: Request):
+    """Return the machine-readable orchestration and capability catalog."""
+    catalog = getattr(request.app.state, 'capability_catalog', None)
+    if catalog is None:
+        raise HTTPException(503, "Capability catalog not initialized")
+    return catalog.build_catalog(request.app)
 
 
 @router.get('/memory/ioc/{ioc}')
@@ -172,8 +251,10 @@ async def get_session(request: Request, session_id: str):
     if not session:
         raise HTTPException(404, "Session not found")
     steps = store.get_steps(session_id)
+    specialist_tasks = store.list_specialist_tasks(session_id)
     session = _decorate_session_payload(session)
     session['steps'] = steps
+    session['specialist_tasks'] = specialist_tasks
     # Include live state if available
     agent_loop = request.app.state.agent_loop
     if agent_loop:
@@ -183,10 +264,52 @@ async def get_session(request: Request, session_id: str):
     return session
 
 
+@router.get('/sessions/{session_id}/specialists')
+async def get_session_specialists(request: Request, session_id: str):
+    """Return explicit specialist execution units for a session."""
+    store = _require_agent_store(request)
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return {"items": store.list_specialist_tasks(session_id)}
+
+
+@router.delete('/sessions/{session_id}')
+async def delete_session(request: Request, session_id: str):
+    """Delete a persisted investigation session and related records."""
+    store = _require_agent_store(request)
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    agent_loop = getattr(request.app.state, 'agent_loop', None)
+    if agent_loop is not None:
+        live_state = getattr(agent_loop, '_active_sessions', {}).get(session_id)
+        if live_state is not None and not live_state.is_terminal():
+            await agent_loop.cancel_session(session_id)
+        getattr(agent_loop, '_active_sessions', {}).pop(session_id, None)
+        getattr(agent_loop, '_approval_events', {}).pop(session_id, None)
+        getattr(agent_loop, '_subscribers', {}).pop(session_id, None)
+
+    deleted = store.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(404, "Session not found")
+    return {"status": "deleted", "session_id": session_id}
+
+
 @router.post('/sessions/{session_id}/approve')
 async def approve_action(request: Request, session_id: str, body: ApprovalRequest):
     """Approve or reject a pending action."""
     success = False
+    approval_id = _pending_approval_id(request, session_id)
+    governance_store = getattr(request.app.state, 'governance_store', None)
+    if governance_store is not None and approval_id:
+        governance_store.review_approval(
+            approval_id,
+            approved=body.approved,
+            reviewer='analyst',
+            comment=body.comment,
+        )
     agent_loop = request.app.state.agent_loop
     if agent_loop is not None:
         if body.approved:

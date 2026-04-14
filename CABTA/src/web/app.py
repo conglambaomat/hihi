@@ -23,6 +23,8 @@ from .routes import agent as agent_routes
 from .routes import chat as chat_routes
 from .routes import playbooks as playbook_routes
 from .routes import mcp_management as mcp_routes
+from .routes import governance as governance_routes
+from .routes import workflows as workflow_routes
 from . import websocket
 from .analysis_manager import AnalysisManager
 from .case_store import CaseStore
@@ -140,6 +142,41 @@ def create_app() -> FastAPI:
     config = apply_runtime_config_bridges(_load_config())
     app.state.config = config
     app.state.web_provider = WebDataProvider(config)
+    app.state.agent_profiles = None
+    app.state.workflow_registry = None
+    app.state.capability_catalog = None
+    app.state.workflow_service = None
+    app.state.governance_store = None
+    app.state.case_intelligence = None
+    app.state.headless_soc_daemon = None
+
+    try:
+        from src.agent.profiles import AgentProfileRegistry
+        app.state.agent_profiles = AgentProfileRegistry.default()
+        logger.info("[WEB] AgentProfileRegistry initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] AgentProfileRegistry not available: {exc}")
+
+    try:
+        from src.workflows.registry import WorkflowRegistry
+        app.state.workflow_registry = WorkflowRegistry()
+        logger.info("[WEB] WorkflowRegistry initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] WorkflowRegistry not available: {exc}")
+
+    try:
+        from src.agent.capability_catalog import CapabilityCatalog
+        app.state.capability_catalog = CapabilityCatalog()
+        logger.info("[WEB] CapabilityCatalog initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] CapabilityCatalog not available: {exc}")
+
+    try:
+        from src.agent.governance_store import GovernanceStore
+        app.state.governance_store = GovernanceStore()
+        logger.info("[WEB] GovernanceStore initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] GovernanceStore not available: {exc}")
 
     try:
         from src.agent.agent_store import AgentStore
@@ -204,6 +241,8 @@ def create_app() -> FastAPI:
                 ioc_investigator=ioc_inv,
                 malware_analyzer=mal_ana,
                 email_analyzer=email_ana,
+                governance_store=app.state.governance_store,
+                case_store=app.state.case_store,
             )
         except Exception as reg_exc:
             logger.warning(f"[WEB] Default tool registration partial: {reg_exc}")
@@ -254,6 +293,9 @@ def create_app() -> FastAPI:
                 malware_analyzer=app.state.malware_analyzer,
                 email_analyzer=app.state.email_analyzer,
                 sandbox_orchestrator=app.state.sandbox_orchestrator,
+                mcp_client=app.state.mcp_client,
+                governance_store=app.state.governance_store,
+                case_store=app.state.case_store,
             )
         except Exception as reg_exc:
             logger.warning(f"[WEB] Sandbox-aware tool registration partial: {reg_exc}")
@@ -265,6 +307,9 @@ def create_app() -> FastAPI:
             tool_registry=app.state.tool_registry or ToolRegistry(),
             agent_store=app.state.agent_store,
             mcp_client=app.state.mcp_client,
+            agent_profiles=app.state.agent_profiles,
+            workflow_registry=app.state.workflow_registry,
+            governance_store=app.state.governance_store,
         )
         logger.info("[WEB] AgentLoop initialized")
     except Exception as exc:
@@ -275,6 +320,7 @@ def create_app() -> FastAPI:
         app.state.playbook_engine = PlaybookEngine(
             agent_loop=app.state.agent_loop,
             agent_store=app.state.agent_store,
+            governance_store=app.state.governance_store,
         )
         # Wire playbook engine back into agent loop so LLM can trigger playbooks
         if app.state.agent_loop is not None:
@@ -282,6 +328,40 @@ def create_app() -> FastAPI:
         logger.info("[WEB] PlaybookEngine initialized")
     except Exception as exc:
         logger.warning(f"[WEB] PlaybookEngine not available: {exc}")
+
+    try:
+        from src.workflows.service import WorkflowService
+        app.state.workflow_service = WorkflowService(
+            workflow_registry=app.state.workflow_registry,
+            agent_store=app.state.agent_store,
+            case_store=app.state.case_store,
+        )
+        logger.info("[WEB] WorkflowService initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] WorkflowService not available: {exc}")
+
+    try:
+        from src.case_intelligence.service import CaseIntelligenceService
+        app.state.case_intelligence = CaseIntelligenceService(
+            analysis_manager=app.state.analysis_manager,
+            agent_store=app.state.agent_store,
+            case_store=app.state.case_store,
+            governance_store=app.state.governance_store,
+        )
+        logger.info("[WEB] CaseIntelligenceService initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] CaseIntelligenceService not available: {exc}")
+
+    try:
+        from src.daemon.service import HeadlessSOCDaemon
+        app.state.headless_soc_daemon = HeadlessSOCDaemon(
+            config=config,
+            workflow_registry=app.state.workflow_registry,
+            workflow_service=app.state.workflow_service,
+        )
+        logger.info("[WEB] HeadlessSOCDaemon initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] HeadlessSOCDaemon not available: {exc}")
 
     # Register routers
     app.include_router(dashboard.router, prefix='/api/dashboard', tags=['Dashboard'])
@@ -292,6 +372,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_routes.router, prefix='/api/agent', tags=['Agent'])
     app.include_router(chat_routes.router, prefix='/api/chat', tags=['Chat'])
     app.include_router(playbook_routes.router, prefix='/api/playbooks', tags=['Playbooks'])
+    app.include_router(workflow_routes.router, prefix='/api/workflows', tags=['Workflows'])
+    app.include_router(governance_routes.router, prefix='/api/governance', tags=['Governance'])
     app.include_router(mcp_routes.router, prefix='/api/mcp', tags=['MCP'])
     app.include_router(websocket.router)
 
@@ -425,6 +507,35 @@ def _register_page_routes(app: FastAPI) -> None:
         elif app.state.agent_store:
             playbooks = app.state.agent_store.list_playbooks()
         return templates.TemplateResponse(request, 'playbooks.html', page_context(request, playbooks=playbooks))
+
+    @app.get('/agent/workflows', response_class=HTMLResponse, include_in_schema=False)
+    async def agent_workflows_page(request: Request):
+        workflows = []
+        if app.state.workflow_registry:
+            workflows = app.state.workflow_registry.list_workflows()
+            if app.state.workflow_service:
+                workflows = [
+                    {
+                        **workflow,
+                        "dependency_status": app.state.workflow_service.validate_dependencies(app, workflow["id"]).get("status"),
+                    }
+                    for workflow in workflows
+                ]
+        return templates.TemplateResponse(request, 'workflows.html', page_context(request, workflows=workflows))
+
+    @app.get('/agent/approvals', response_class=HTMLResponse, include_in_schema=False)
+    async def agent_approvals_page(request: Request):
+        approvals = []
+        if app.state.governance_store:
+            approvals = app.state.governance_store.list_approvals(limit=100)
+        return templates.TemplateResponse(request, 'approvals.html', page_context(request, approvals=approvals))
+
+    @app.get('/agent/decisions', response_class=HTMLResponse, include_in_schema=False)
+    async def agent_decisions_page(request: Request):
+        decisions = []
+        if app.state.governance_store:
+            decisions = app.state.governance_store.list_ai_decisions(limit=100)
+        return templates.TemplateResponse(request, 'decisions.html', page_context(request, decisions=decisions))
 
     @app.get('/mcp/servers', response_class=HTMLResponse, include_in_schema=False)
     async def mcp_servers_page(request: Request):

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Workflows{% endblock %}
+
+{% block content %}
+<section class="content-section">
+    <div class="page-header">
+        <div>
+            <div class="eyebrow">Orchestration Plane</div>
+            <h1 class="page-title">Workflow Registry</h1>
+            <p class="page-subtitle">
+                Vigil-style workflow definitions layered on top of CABTA analysis and verdict governance.
+            </p>
+        </div>
+        <div class="text-muted small">
+            <div>{{ workflows | length }} workflows loaded</div>
+            <div>{{ capability_summary.agent_profile_count | default(0) }} specialist profiles</div>
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        {% for workflow in workflows %}
+        <article class="dashboard-card">
+            <div class="card-header-row">
+                <div>
+                    <div class="section-title">{{ workflow.name }}</div>
+                    <div class="text-muted small">{{ workflow.id }}</div>
+                </div>
+                <div class="text-end">
+                    {% if workflow.multi_agent %}
+                    <div class="capability-chip status-available mb-1">MULTI-AGENT</div>
+                    {% endif %}
+                    <div class="capability-chip status-{{ 'available' if workflow.execution_backend == 'playbook' else 'optional' }}">
+                        {{ workflow.execution_backend | upper }}
+                    </div>
+                    {% if workflow.dependency_status %}
+                    <div class="small text-muted mt-1">Dependencies: {{ workflow.dependency_status }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            <p class="text-muted mb-3">{{ workflow.description }}</p>
+            <div class="small mb-2"><strong>Default profile:</strong> {{ workflow.default_agent_profile or 'workflow_controller' }}</div>
+            <div class="small mb-2"><strong>Specialist team:</strong> {{ workflow.agent_count }} roles</div>
+            <div class="small mb-2"><strong>Linked playbook:</strong> {{ workflow.playbook_id or 'agent-driven' }}</div>
+            <div class="small mb-3"><strong>Approval mode:</strong> {{ workflow.approval_mode }}</div>
+            {% if workflow.agents %}
+            <div class="chip-row mb-3">
+                {% for agent in workflow.agents %}
+                <span class="table-badge">{{ agent }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if workflow.capabilities %}
+            <div class="chip-row mb-3">
+                {% for capability in workflow.capabilities %}
+                <span class="table-badge">{{ capability }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if workflow.trigger_examples %}
+            <div class="small text-muted">
+                Example: {{ workflow.trigger_examples[0] }}
+            </div>
+            {% endif %}
+        </article>
+        {% else %}
+        <article class="dashboard-card">
+            <div class="section-title">No workflows loaded</div>
+            <p class="text-muted mb-0">
+                Add markdown workflow definitions under <code>CABTA/workflows/</code> to extend orchestration without changing the analysis core.
+            </p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

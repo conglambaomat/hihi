@@ -3,6 +3,7 @@ Author: Ugur Ates
 Chat API routes - Interactive agent conversation.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -17,6 +18,47 @@ class ChatMessage(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
     playbook_id: Optional[str] = None
+
+
+def _coerce_playbook_chat_input(message: str, input_params) -> dict:
+    """Map chat text to playbook inputs with a JSON-object escape hatch."""
+    raw_message = message.strip()
+    input_data = {"query": message, "user_input": message}
+
+    parsed_object = None
+    if raw_message.startswith("{") and raw_message.endswith("}"):
+        try:
+            candidate = json.loads(raw_message)
+        except json.JSONDecodeError:
+            candidate = None
+        if isinstance(candidate, dict):
+            parsed_object = candidate
+            input_data.update(candidate)
+
+    if parsed_object is None:
+        target_param = None
+        normalized_items = []
+        if isinstance(input_params, list):
+            normalized_items = [item for item in input_params if isinstance(item, dict)]
+        elif isinstance(input_params, dict):
+            normalized_items = [
+                {"name": key, **(value if isinstance(value, dict) else {})}
+                for key, value in input_params.items()
+            ]
+
+        for item in normalized_items:
+            if item.get("required") and item.get("name"):
+                target_param = item["name"]
+                break
+        if target_param is None:
+            for item in normalized_items:
+                if item.get("name"):
+                    target_param = item["name"]
+                    break
+        if target_param:
+            input_data[target_param] = message
+
+    return input_data
 
 
 @router.post('')
@@ -37,22 +79,9 @@ async def send_message(request: Request, body: ChatMessage):
         if engine is None:
             raise HTTPException(503, "Playbook engine not initialized")
         try:
-            input_data = {"query": body.message, "user_input": body.message}
             playbook = engine.get_playbook(body.playbook_id) or {}
-            input_params = playbook.get("input", [])
-            if isinstance(input_params, list):
-                target_param = None
-                for item in input_params:
-                    if isinstance(item, dict) and item.get("required") and item.get("name"):
-                        target_param = item["name"]
-                        break
-                if target_param is None:
-                    for item in input_params:
-                        if isinstance(item, dict) and item.get("name"):
-                            target_param = item["name"]
-                            break
-                if target_param:
-                    input_data[target_param] = body.message
+            input_params = playbook.get("input_params", playbook.get("inputs", playbook.get("input", [])))
+            input_data = _coerce_playbook_chat_input(body.message, input_params)
 
             session_id = await engine.execute(
                 body.playbook_id, input_data, case_id=None,

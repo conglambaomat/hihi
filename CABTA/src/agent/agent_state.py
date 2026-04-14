@@ -50,6 +50,12 @@ class AgentState:
     findings: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     pending_approval: Optional[Dict[str, Any]] = field(default=None)
+    agent_profile_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    specialist_team: List[str] = field(default_factory=list)
+    active_specialist: Optional[str] = None
+    specialist_index: int = 0
+    specialist_handoffs: List[Dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ------------------------------------------------------------------ #
@@ -93,6 +99,35 @@ class AgentState:
         self.pending_approval = None
         return approval
 
+    def configure_specialist_team(self, team: List[str], active_specialist: Optional[str] = None) -> None:
+        """Attach a specialist sequence to this session."""
+        clean_team = [str(item).strip() for item in team if str(item).strip()]
+        self.specialist_team = clean_team
+        resolved = str(active_specialist or (clean_team[0] if clean_team else "")).strip() or None
+        self.active_specialist = resolved
+        if resolved and resolved in clean_team:
+            self.specialist_index = clean_team.index(resolved)
+        else:
+            self.specialist_index = 0
+        if resolved:
+            self.agent_profile_id = resolved
+
+    def record_specialist_handoff(self, from_profile: Optional[str], to_profile: str, reason: str) -> Dict[str, Any]:
+        """Record a specialist handoff event."""
+        handoff = {
+            "step": self.step_count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "from_profile": from_profile,
+            "to_profile": to_profile,
+            "reason": reason,
+        }
+        self.specialist_handoffs.append(handoff)
+        self.active_specialist = to_profile
+        self.agent_profile_id = to_profile
+        if to_profile in self.specialist_team:
+            self.specialist_index = self.specialist_team.index(to_profile)
+        return handoff
+
     # ------------------------------------------------------------------ #
     # Status helpers
     # ------------------------------------------------------------------ #
@@ -113,6 +148,13 @@ class AgentState:
             "findings": self.findings,
             "errors": self.errors,
             "pending_approval": self.pending_approval,
+            "agent_profile_id": self.agent_profile_id,
+            "workflow_id": self.workflow_id,
+            "specialist_team": self.specialist_team,
+            "active_specialist": self.active_specialist,
+            "specialist_index": self.specialist_index,
+            "specialist_handoffs": self.specialist_handoffs,
+            "collaboration_mode": "multi_agent" if len(self.specialist_team) > 1 else "single_agent",
             "created_at": self.created_at,
             "is_terminal": self.is_terminal(),
         }

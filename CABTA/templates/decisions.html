@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+
+{% block title %}AI Decisions{% endblock %}
+{% block page_title %}AI Decision Log{% endblock %}
+{% block page_subtitle %}<span class="page-subtitle">Structured review log for agent reasoning, workflow choices, and analyst feedback.</span>{% endblock %}
+
+{% block extra_head %}
+<style>
+    .decision-shell { display: flex; flex-direction: column; gap: 1.4rem; }
+    .decision-hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.95fr); gap: 1rem; }
+    .decision-hero-card, .decision-stat-card, .decision-record {
+        border-radius: 22px; border: 1px solid rgba(148, 163, 184, 0.12);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 28%), rgba(15, 23, 42, 0.78);
+        box-shadow: 0 22px 46px rgba(2, 6, 23, 0.18);
+    }
+    .decision-hero-card, .decision-stat-card, .decision-record { padding: 1.15rem; }
+    .decision-kicker {
+        display: inline-flex; align-items: center; gap: 0.45rem; margin-bottom: 0.8rem;
+        font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: #7dd3fc;
+    }
+    .decision-title { margin: 0; font-size: clamp(1.7rem, 2.4vw, 2.35rem); line-height: 1.05; letter-spacing: -0.04em; }
+    .decision-copy { margin: 0.95rem 0 0; max-width: 64ch; color: var(--text-secondary); line-height: 1.7; }
+    .decision-points { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 1.15rem; }
+    .decision-point {
+        display: inline-flex; align-items: center; gap: 0.45rem; min-height: 38px; padding: 0.45rem 0.82rem;
+        border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(148, 163, 184, 0.12);
+        color: var(--text-primary); font-size: 0.82rem;
+    }
+    .decision-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+    .decision-stat-label, .decision-meta-label, .decision-section-title, .decision-side-title {
+        font-size: 0.74rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted);
+    }
+    .decision-stat-value { margin-top: 0.45rem; font-size: 1.8rem; font-weight: 700; letter-spacing: -0.04em; color: var(--text-primary); }
+    .decision-stat-note, .decision-side-copy { margin-top: 0.4rem; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.65; }
+    .decision-list { display: flex; flex-direction: column; gap: 1rem; }
+    .decision-record-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.9fr); gap: 1rem; }
+    .decision-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.9rem; margin-bottom: 1rem; }
+    .decision-record-title { margin: 0; font-size: 1.12rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text-primary); word-break: break-word; }
+    .decision-record-subtitle { margin-top: 0.28rem; color: var(--text-secondary); font-size: 0.86rem; }
+    .decision-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+    .decision-chip {
+        display: inline-flex; align-items: center; gap: 0.38rem; min-height: 34px; padding: 0.36rem 0.72rem; border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.14); background: rgba(255, 255, 255, 0.04); color: var(--text-primary);
+        font-size: 0.76rem; font-weight: 600;
+    }
+    .decision-chip.confidence-high { color: #67e8f9; border-color: rgba(34, 211, 238, 0.22); }
+    .decision-chip.confidence-medium { color: #fcd34d; border-color: rgba(245, 158, 11, 0.22); }
+    .decision-chip.confidence-low { color: #cbd5e1; }
+    .decision-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .decision-meta, .feedback-summary-item, .decision-section {
+        padding: 0.82rem 0.9rem; border-radius: 16px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+    .decision-meta-value { margin-top: 0.3rem; color: var(--text-primary); font-size: 0.92rem; line-height: 1.45; word-break: break-word; }
+    .decision-code { font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; }
+    .decision-section { margin-top: 1rem; background: rgba(2, 6, 23, 0.32); }
+    .decision-section-title { display: flex; align-items: center; gap: 0.45rem; margin: 0 0 0.6rem; }
+    .decision-summary { margin: 0; color: var(--text-primary); font-size: 1rem; line-height: 1.65; }
+    .decision-rationale { margin: 0; color: var(--text-secondary); line-height: 1.7; }
+    .decision-side-panel {
+        display: flex; flex-direction: column; gap: 0.9rem; height: 100%; padding: 1rem; border-radius: 18px;
+        background: linear-gradient(180deg, rgba(59, 130, 246, 0.08), transparent 46%), rgba(15, 23, 42, 0.62);
+        border: 1px solid rgba(59, 130, 246, 0.14);
+    }
+    .feedback-placeholder {
+        display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.82rem 0.88rem; border-radius: 14px;
+        background: rgba(255, 255, 255, 0.04); border: 1px dashed rgba(148, 163, 184, 0.16); color: var(--text-secondary);
+        font-size: 0.86rem; line-height: 1.6;
+    }
+    .decision-feedback { min-height: 136px; background: rgba(15, 23, 42, 0.82); border-color: rgba(148, 163, 184, 0.14); color: var(--text-primary); }
+    .decision-feedback-btn { min-width: 150px; border-radius: 12px; font-weight: 600; }
+    .decision-feedback-status { min-height: 1.2rem; }
+    .empty-state {
+        padding: 1.8rem; text-align: center; border-radius: 22px; border: 1px dashed rgba(148, 163, 184, 0.18); background: rgba(255, 255, 255, 0.03);
+    }
+    @media (max-width: 1199.98px) { .decision-hero, .decision-record-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 767.98px) {
+        .decision-stat-grid, .decision-meta-grid { grid-template-columns: 1fr; }
+        .decision-header { flex-direction: column; }
+        .decision-badges { justify-content: flex-start; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set stats = namespace(total=decisions|length, with_feedback=0, high_conf=0, final_answers=0, workflow_linked=0) %}
+{% for decision in decisions %}
+    {% if decision.feedback %}{% set stats.with_feedback = stats.with_feedback + 1 %}{% endif %}
+    {% if decision.confidence and decision.confidence >= 0.8 %}{% set stats.high_conf = stats.high_conf + 1 %}{% endif %}
+    {% if decision.decision_type == 'final_answer' %}{% set stats.final_answers = stats.final_answers + 1 %}{% endif %}
+    {% if decision.workflow_id %}{% set stats.workflow_linked = stats.workflow_linked + 1 %}{% endif %}
+{% endfor %}
+
+<section class="decision-shell">
+    <div class="decision-hero">
+        <article class="decision-hero-card">
+            <div class="decision-kicker"><i class="bi bi-journal-text"></i>Governance Layer</div>
+            <h1 class="decision-title">AI Decision Log</h1>
+            <p class="decision-copy">
+                This page captures what the orchestration plane decided, why it decided that, and how analysts later judged the quality of those decisions.
+                It is meant to make AI behavior reviewable instead of opaque.
+            </p>
+            <div class="decision-points">
+                <span class="decision-point"><i class="bi bi-stars"></i>{{ stats.high_conf }} high-confidence decisions</span>
+                <span class="decision-point"><i class="bi bi-chat-left-dots"></i>{{ stats.with_feedback }} analyst-reviewed</span>
+                <span class="decision-point"><i class="bi bi-diagram-3"></i>{{ stats.workflow_linked }} linked to workflows</span>
+            </div>
+        </article>
+        <div class="decision-stat-grid">
+            <article class="decision-stat-card"><div class="decision-stat-label">Total Decisions</div><div class="decision-stat-value">{{ stats.total }}</div><div class="decision-stat-note">Structured decision checkpoints recorded by agents and workflows.</div></article>
+            <article class="decision-stat-card"><div class="decision-stat-label">Final Answers</div><div class="decision-stat-value">{{ stats.final_answers }}</div><div class="decision-stat-note">Terminal summaries generated during investigations.</div></article>
+            <article class="decision-stat-card"><div class="decision-stat-label">With Feedback</div><div class="decision-stat-value">{{ stats.with_feedback }}</div><div class="decision-stat-note">Entries that already have analyst review or tuning comments.</div></article>
+            <article class="decision-stat-card"><div class="decision-stat-label">Awaiting Review</div><div class="decision-stat-value">{{ stats.total - stats.with_feedback }}</div><div class="decision-stat-note">Decisions that could still benefit from analyst feedback.</div></article>
+        </div>
+    </div>
+
+    <div class="decision-list">
+        {% for decision in decisions %}
+        {% set confidence = decision.confidence or 0 %}
+        {% if confidence >= 0.8 %}{% set confidence_class = 'confidence-high' %}{% set confidence_label = 'High confidence' %}
+        {% elif confidence >= 0.5 %}{% set confidence_class = 'confidence-medium' %}{% set confidence_label = 'Medium confidence' %}
+        {% else %}{% set confidence_class = 'confidence-low' %}{% set confidence_label = 'Low confidence' %}{% endif %}
+
+        <article class="decision-record decision-card" data-decision-id="{{ decision.id }}">
+            <div class="decision-record-grid">
+                <div>
+                    <div class="decision-header">
+                        <div>
+                            <h2 class="decision-record-title">{{ decision.decision_type | replace('_', ' ') | title }}</h2>
+                            <div class="decision-record-subtitle">{{ decision.profile_id or 'workflow_controller' }}</div>
+                        </div>
+                        <div class="decision-badges">
+                            <span class="decision-chip"><i class="bi bi-person-badge"></i>{{ decision.profile_id or 'workflow' }}</span>
+                            <span class="decision-chip {{ confidence_class }}"><i class="bi bi-speedometer2"></i>{{ confidence_label }}{% if decision.confidence is not none %} · {{ '%.2f' | format(confidence) }}{% endif %}</span>
+                        </div>
+                    </div>
+
+                    <div class="decision-meta-grid">
+                        <div class="decision-meta"><span class="decision-meta-label">Decision ID</span><div class="decision-meta-value decision-code">{{ decision.id }}</div></div>
+                        <div class="decision-meta"><span class="decision-meta-label">Logged At</span><div class="decision-meta-value">{{ decision.created_at }}</div></div>
+                        <div class="decision-meta"><span class="decision-meta-label">Session</span><div class="decision-meta-value decision-code">{{ decision.session_id }}</div></div>
+                        <div class="decision-meta"><span class="decision-meta-label">Workflow</span><div class="decision-meta-value">{{ decision.workflow_id or 'Direct agent session' }}</div></div>
+                        <div class="decision-meta"><span class="decision-meta-label">Case</span><div class="decision-meta-value">{{ decision.case_id or 'Not linked' }}</div></div>
+                        <div class="decision-meta"><span class="decision-meta-label">Evidence Refs</span><div class="decision-meta-value">{{ decision.evidence_refs | length }}</div></div>
+                    </div>
+
+                    <div class="decision-section">
+                        <div class="decision-section-title"><i class="bi bi-lightbulb"></i>Decision summary</div>
+                        <p class="decision-summary">{{ decision.summary }}</p>
+                    </div>
+
+                    {% if decision.rationale %}
+                    <div class="decision-section">
+                        <div class="decision-section-title"><i class="bi bi-chat-left-quote"></i>Rationale</div>
+                        <p class="decision-rationale">{{ decision.rationale }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <aside class="decision-side-panel">
+                    <h3 class="decision-side-title">{% if decision.feedback %}Analyst review{% else %}Analyst feedback{% endif %}</h3>
+                    {% if decision.feedback %}
+                    <p class="decision-side-copy">This decision has already been reviewed. The feedback below becomes part of the tuning trail for future workflow and prompt changes.</p>
+                    <div class="feedback-summary-item"><span class="decision-meta-label">Feedback</span><div class="decision-meta-value">{{ decision.feedback }}</div></div>
+                    <div class="feedback-summary-item"><span class="decision-meta-label">Reviewer</span><div class="decision-meta-value">{{ decision.feedback_reviewer or 'Unknown reviewer' }}</div></div>
+                    <div class="feedback-summary-item"><span class="decision-meta-label">Recorded At</span><div class="decision-meta-value">{{ decision.feedback_at or 'Not recorded' }}</div></div>
+                    {% else %}
+                    <p class="decision-side-copy">Capture whether this decision was useful, noisy, premature, or needs different evidence thresholds. This is how the orchestration layer gets better over time.</p>
+                    <div class="feedback-placeholder"><i class="bi bi-info-circle"></i>Feedback here does not overwrite the decision log. It adds a reviewer trail on top of it.</div>
+                    <label class="form-label small mb-1" for="decision-feedback-{{ decision.id }}">Analyst feedback</label>
+                    <textarea id="decision-feedback-{{ decision.id }}" class="form-control decision-feedback mb-2" rows="5" placeholder="Example: Useful summary, but the decision should mention why the verdict remained advisory and which evidence source was authoritative."></textarea>
+                    <div class="d-flex gap-2 flex-wrap align-items-center">
+                        <button type="button" class="btn btn-sm btn-accent decision-feedback-btn"><i class="bi bi-save me-1"></i>Save Feedback</button>
+                        <span class="small text-muted decision-feedback-status"></span>
+                    </div>
+                    {% endif %}
+                </aside>
+            </div>
+        </article>
+        {% else %}
+        <article class="empty-state">
+            <div class="decision-kicker justify-content-center mb-3"><i class="bi bi-journal-check"></i>No entries yet</div>
+            <h2 class="decision-record-title mb-2">No AI decisions logged</h2>
+            <p class="decision-rationale mb-0">Agent and workflow reasoning checkpoints will appear here after the orchestration plane is used.</p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.decision-feedback-btn').forEach(function (button) {
+        button.addEventListener('click', async function () {
+            const card = button.closest('.decision-card');
+            const decisionId = card?.dataset.decisionId;
+            const textarea = card?.querySelector('.decision-feedback');
+            const statusMessage = card?.querySelector('.decision-feedback-status');
+            if (!decisionId || !textarea) return;
+
+            const feedback = textarea.value.trim();
+            if (!feedback) {
+                if (statusMessage) statusMessage.textContent = 'Feedback is required.';
+                return;
+            }
+
+            button.disabled = true;
+            if (statusMessage) statusMessage.textContent = 'Saving feedback...';
+
+            try {
+                const resp = await fetch('/api/governance/decisions/' + encodeURIComponent(decisionId) + '/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ feedback: feedback, reviewer: 'web_analyst' })
+                });
+
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                window.location.reload();
+            } catch (err) {
+                if (statusMessage) statusMessage.textContent = 'Failed to save feedback: ' + err.message;
+                button.disabled = false;
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

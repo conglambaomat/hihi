@@ -1,6 +1,7 @@
 import json
 
 from src.mcp_servers import malwoverview_tools
+from src.mcp_servers import splunk_tools
 from src.mcp_servers import threat_intel_tools
 
 
@@ -77,3 +78,38 @@ def test_malwoverview_domain_check_preserves_auth_required_state(monkeypatch):
     assert result["sources"]["threatfox"]["manual"] is True
     assert result["sources"]["urlhaus"]["found"] is False
     assert result["verdict"].startswith("PARTIAL")
+
+
+def test_splunk_search_logs_blocks_mutating_queries():
+    result = splunk_tools.search_logs("index=* | outputlookup suspicious.csv", timerange="24h")
+
+    assert result["status"] == "blocked"
+    assert result["backend"] == "splunk"
+
+
+def test_splunk_search_logs_executes_with_mocked_backend(monkeypatch):
+    monkeypatch.setattr(splunk_tools, "SPLUNK_URL", "https://splunk.example.local:8089")
+    monkeypatch.setattr(splunk_tools, "SPLUNK_TOKEN", "token")
+
+    def fake_request(path, method="GET", data=None):
+        if path == "/services/search/jobs" and method == "POST":
+            return {"sid": "job123"}
+        if path == "/services/search/jobs/job123" and method == "GET":
+            return {"entry": [{"content": {"isDone": "1", "dispatchState": "DONE"}}]}
+        if path == "/services/search/jobs/job123/results" and method == "GET":
+            return {"results": [{"dest_ip": "1.2.3.4", "process_name": "cmd.exe"}]}
+        if path == "/services/search/jobs/job123" and method == "POST":
+            return {"status": "ok"}
+        raise AssertionError(f"Unexpected Splunk request: {method} {path} {data}")
+
+    monkeypatch.setattr(splunk_tools, "_request", fake_request)
+
+    result = splunk_tools.search_logs(
+        'index=network | search dest_ip="1.2.3.4"',
+        timerange="24h",
+        max_results=10,
+    )
+
+    assert result["status"] == "executed"
+    assert result["results_count"] == 1
+    assert "1.2.3.4" in result["suspicious_indicators"]

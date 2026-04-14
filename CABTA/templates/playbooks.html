@@ -763,10 +763,16 @@ var Playbooks = (function () {
             var steps = pb.steps || [];
             var sc = steps.length || pb.step_count || 0;
             totalSteps += sc;
-            steps.forEach(function(s) {
-                var t = s.tool || s.type;
-                if (t) allTools[t] = true;
-            });
+            if (Array.isArray(pb.tools) && pb.tools.length) {
+                pb.tools.forEach(function(t) {
+                    if (t) allTools[t] = true;
+                });
+            } else {
+                steps.forEach(function(s) {
+                    var t = s.tool || s.type;
+                    if (t) allTools[t] = true;
+                });
+            }
             var cat = detectCategory(pb.name, pb.description);
             cats[cat] = true;
         });
@@ -1482,6 +1488,8 @@ var Playbooks = (function () {
         loadPlaybooks();
     } else {
         enhanceServerRenderedCards();
+        applyFilters();
+        loadPlaybooks();
     }
 
     document.querySelectorAll('.modal').forEach(function(modalEl) {

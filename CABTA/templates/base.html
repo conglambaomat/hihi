@@ -654,6 +654,21 @@
                                     <i class="bi bi-journal-code"></i> Playbooks
                                 </a>
                             </li>
+                            <li>
+                                <a class="dropdown-item {% if request.url.path == '/agent/workflows' %}active{% endif %}" href="/agent/workflows">
+                                    <i class="bi bi-diagram-3"></i> Workflows
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item {% if request.url.path == '/agent/approvals' %}active{% endif %}" href="/agent/approvals">
+                                    <i class="bi bi-shield-check"></i> Approvals
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item {% if request.url.path == '/agent/decisions' %}active{% endif %}" href="/agent/decisions">
+                                    <i class="bi bi-journal-text"></i> Decision Log
+                                </a>
+                            </li>
                         </ul>
                     </div>
 
@@ -794,7 +809,7 @@
     <div class="capability-strip">
         {% for name, meta in feature_status.items() %}
         <span class="capability-chip status-{{ meta.status | replace(' ', '_') }}">
-            <i class="bi {% if name == 'llm' %}bi-cpu{% elif name == 'sandbox' %}bi-box-seam{% elif name == 'agent' %}bi-robot{% else %}bi-hdd-network{% endif %}"></i>
+            <i class="bi {% if name == 'llm' %}bi-cpu{% elif name == 'sandbox' %}bi-box-seam{% elif name == 'agent' %}bi-robot{% elif name == 'workflow_engine' %}bi-diagram-3{% elif name == 'governance' %}bi-shield-check{% elif name == 'daemon' %}bi-cpu-fill{% else %}bi-hdd-network{% endif %}"></i>
             {{ name | upper }}: {{ meta.label }}
         </span>
         {% endfor %}

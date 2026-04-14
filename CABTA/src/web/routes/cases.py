@@ -69,9 +69,68 @@ async def link_analysis(request: Request, case_id: str, analysis_id: str):
     return {'message': 'Analysis linked to case'}
 
 
+@router.get('/{case_id}/workflows')
+async def list_case_workflows(request: Request, case_id: str):
+    """List workflow runs linked to a case."""
+    store = request.app.state.case_store
+    case = store.get_case(case_id)
+    if case is None:
+        raise HTTPException(404, 'Case not found')
+    workflow_service = getattr(request.app.state, 'workflow_service', None)
+    if workflow_service is None:
+        return {'items': case.get('workflows', [])}
+    items = []
+    for link in store.list_case_workflows(case_id):
+        run = workflow_service.get_run(link['session_id'])
+        items.append(run or link)
+    return {'items': items}
+
+
 @router.post('/{case_id}/notes')
 async def add_note(request: Request, case_id: str, payload: CaseNote):
     """Add a note to a case."""
     store = request.app.state.case_store
     note_id = store.add_note(case_id, payload.content, payload.author)
     return {'id': note_id, 'message': 'Note added'}
+
+
+@router.get('/{case_id}/timeline')
+async def case_timeline(request: Request, case_id: str):
+    """Return the case timeline reconstructed from real stored events."""
+    intelligence = getattr(request.app.state, 'case_intelligence', None)
+    if intelligence is None:
+        raise HTTPException(503, 'Case intelligence not initialized')
+    timeline = intelligence.build_timeline(case_id)
+    if timeline is None:
+        raise HTTPException(404, 'Case not found')
+    return timeline
+
+
+@router.get('/{case_id}/graph')
+async def case_graph(request: Request, case_id: str):
+    """Return the case graph reconstructed from real stored entities."""
+    intelligence = getattr(request.app.state, 'case_intelligence', None)
+    if intelligence is None:
+        raise HTTPException(503, 'Case intelligence not initialized')
+    graph = intelligence.build_graph(case_id)
+    if graph is None:
+        raise HTTPException(404, 'Case not found')
+    return graph
+
+
+@router.get('/{case_id}/approvals')
+async def case_approvals(request: Request, case_id: str):
+    """List approvals linked to a case."""
+    governance = getattr(request.app.state, 'governance_store', None)
+    if governance is None:
+        raise HTTPException(503, 'Governance store not initialized')
+    return {'items': governance.list_approvals(case_id=case_id, limit=200)}
+
+
+@router.get('/{case_id}/decisions')
+async def case_decisions(request: Request, case_id: str):
+    """List AI decision log entries linked to a case."""
+    governance = getattr(request.app.state, 'governance_store', None)
+    if governance is None:
+        raise HTTPException(503, 'Governance store not initialized')
+    return {'items': governance.list_ai_decisions(case_id=case_id, limit=200)}

@@ -12,12 +12,15 @@ import logging
 import re
 import time
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 
 from .agent_state import AgentPhase, AgentState
 from .agent_store import AgentStore
+from .profiles import AgentProfileRegistry
+from .specialist_supervisor import SpecialistSupervisor
 from .tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,10 @@ Investigation goal: {goal}
 
 Previous findings:
 {findings_block}
+
+{profile_block}
+
+{workflow_block}
 
 {playbooks_block}
 
@@ -60,6 +67,10 @@ You are a Blue Team Security Agent. You investigate security threats autonomousl
 
 Available tools:
 {tools_block}
+
+{profile_block}
+
+{workflow_block}
 
 {playbooks_block}
 
@@ -111,6 +122,9 @@ class AgentLoop:
         llm_analyzer=None,
         mcp_client=None,
         playbook_engine=None,
+        agent_profiles: Optional[AgentProfileRegistry] = None,
+        workflow_registry=None,
+        governance_store=None,
     ):
         self.config = config
         self.tools = tool_registry
@@ -118,6 +132,10 @@ class AgentLoop:
         self.llm = llm_analyzer
         self.mcp_client = mcp_client
         self._playbook_engine = playbook_engine
+        self.agent_profiles = agent_profiles
+        self.workflow_registry = workflow_registry
+        self.governance_store = governance_store
+        self.specialist_supervisor = SpecialistSupervisor(agent_store) if agent_store is not None else None
 
         agent_cfg = config.get('agent', {})
         self.max_steps = agent_cfg.get('max_steps', 50)
@@ -133,6 +151,14 @@ class AgentLoop:
         self.groq_endpoint = llm_cfg.get('groq_endpoint', llm_cfg.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_cfg.get('groq_model', llm_cfg.get('model', 'openai/gpt-oss-20b'))
         self.timeout = aiohttp.ClientTimeout(total=120)
+        self.provider_runtime_status: Dict[str, Any] = {
+            "provider": self.provider,
+            "available": None,
+            "status": "unknown",
+            "error": None,
+            "http_status": None,
+            "checked_at": None,
+        }
 
         # Active sessions & pub-sub
         self._active_sessions: Dict[str, AgentState] = {}
@@ -150,11 +176,35 @@ class AgentLoop:
         case_id: Optional[str] = None,
         playbook_id: Optional[str] = None,
         max_steps: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start an autonomous investigation. Returns *session_id* immediately."""
 
+        metadata = dict(metadata or {})
+        specialist_team = self._resolve_specialist_team(metadata)
+        lead_profile_id = metadata.get("agent_profile_id")
+        active_specialist = specialist_team[0] if specialist_team else (lead_profile_id or "workflow_controller")
+        metadata = {
+            **metadata,
+            "lead_agent_profile_id": lead_profile_id or active_specialist,
+            "agent_profile_id": active_specialist,
+            "specialist_team": specialist_team,
+            "active_specialist": active_specialist,
+            "specialist_index": 0,
+            "specialist_handoffs": [],
+            "collaboration_mode": "multi_agent" if len(specialist_team) > 1 else "single_agent",
+            "current_step": 0,
+        }
+
         session_id = self.store.create_session(
-            goal=goal, case_id=case_id, playbook_id=playbook_id,
+            goal=goal,
+            case_id=case_id,
+            playbook_id=playbook_id,
+            metadata={
+                "execution_mode": "agent",
+                "max_steps": max_steps if max_steps is not None else self.max_steps,
+                **metadata,
+            },
         )
 
         effective_max_steps = max_steps if max_steps is not None else self.max_steps
@@ -162,7 +212,10 @@ class AgentLoop:
             session_id=session_id,
             goal=goal,
             max_steps=effective_max_steps,
+            agent_profile_id=active_specialist,
+            workflow_id=metadata.get("workflow_id"),
         )
+        state.configure_specialist_team(specialist_team, active_specialist=active_specialist)
         self._active_sessions[session_id] = state
         self._approval_events[session_id] = asyncio.Event()
 
@@ -183,6 +236,22 @@ class AgentLoop:
 
         logger.info(f"[AGENT] Investigation started: {session_id} - {goal[:80]}")
         return session_id
+
+    def _record_llm_runtime_status(
+        self,
+        *,
+        available: bool,
+        error: Optional[str] = None,
+        http_status: Optional[int] = None,
+    ) -> None:
+        self.provider_runtime_status = {
+            "provider": self.provider,
+            "available": available,
+            "status": "ready" if available else "error",
+            "error": error,
+            "http_status": http_status,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     async def approve_action(self, session_id: str) -> bool:
         """Approve the pending action so the loop can resume."""
@@ -226,7 +295,12 @@ class AgentLoop:
         state = self._active_sessions.get(session_id)
         return state.to_dict() if state else None
 
-    async def run_tool(self, tool_name: str, params: Dict) -> Dict:
+    async def run_tool(
+        self,
+        tool_name: str,
+        params: Dict,
+        execution_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
         """Execute a single tool by name (used by PlaybookEngine).
 
         Supports multiple tool name formats:
@@ -270,13 +344,128 @@ class AgentLoop:
             return {"error": f"Tool not found: {original_name}"}
 
         if tool_def.source == 'local':
-            return await self.tools.execute_local_tool(tool_name, **params)
+            return await self.tools.execute_local_tool(
+                tool_name,
+                _execution_context=execution_context or {},
+                **params,
+            )
         elif self.mcp_client is not None:
             return await self.mcp_client.call_tool(
                 tool_def.source, tool_name.split(".", 1)[-1], params,
             )
         else:
             return {"error": f"MCP client not available for tool: {original_name}"}
+
+    def _resolve_specialist_team(self, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Resolve the ordered specialist team for a session."""
+        metadata = dict(metadata or {})
+        requested_team = metadata.get("specialist_team")
+        workflow_id = metadata.get("workflow_id")
+        workflow_team: List[str] = []
+        if workflow_id and self.workflow_registry is not None:
+            workflow = self.workflow_registry.get_workflow(workflow_id) or {}
+            workflow_team = [str(item).strip() for item in workflow.get("agents", []) if str(item).strip()]
+
+        candidates: List[str] = []
+        if isinstance(requested_team, list):
+            candidates.extend(str(item).strip() for item in requested_team if str(item).strip())
+        candidates.extend(workflow_team)
+
+        requested_profile = str(metadata.get("agent_profile_id") or "").strip()
+        if requested_profile and requested_profile not in candidates:
+            candidates.insert(0, requested_profile)
+
+        if not candidates:
+            candidates = [requested_profile or "workflow_controller"]
+
+        resolved: List[str] = []
+        for profile_id in candidates:
+            if not profile_id or profile_id in resolved:
+                continue
+            if self.agent_profiles is not None and self.agent_profiles.get_profile(profile_id) is None:
+                continue
+            resolved.append(profile_id)
+        return resolved or ["workflow_controller"]
+
+    def _persist_specialist_metadata(
+        self,
+        session_id: str,
+        state: AgentState,
+        terminal_status: Optional[str] = None,
+        reason: str = "",
+    ) -> None:
+        """Persist collaboration metadata for web/API consumers."""
+        self.store.update_session_metadata(
+            session_id,
+            {
+                "agent_profile_id": state.agent_profile_id,
+                "active_specialist": state.active_specialist,
+                "specialist_index": state.specialist_index,
+                "specialist_team": list(state.specialist_team),
+                "specialist_handoffs": list(state.specialist_handoffs),
+                "collaboration_mode": "multi_agent" if len(state.specialist_team) > 1 else "single_agent",
+                "current_step": state.step_count,
+            },
+            merge=True,
+        )
+        if self.specialist_supervisor is not None:
+            self.specialist_supervisor.sync_session(
+                session_id,
+                state.workflow_id,
+                state,
+                reason=reason,
+                terminal_status=terminal_status,
+            )
+
+    def _sync_specialist_progress(self, session_id: str, state: AgentState, reason: str = "") -> None:
+        """Rotate the active specialist based on workflow progress."""
+        if not state.specialist_team:
+            return
+
+        if len(state.specialist_team) == 1:
+            state.active_specialist = state.specialist_team[0]
+            state.agent_profile_id = state.specialist_team[0]
+            state.specialist_index = 0
+            self._persist_specialist_metadata(session_id, state, reason=reason)
+            return
+
+        max_steps = max(state.max_steps, len(state.specialist_team), 1)
+        desired_index = min(
+            int((max(state.step_count, 0) / max_steps) * len(state.specialist_team)),
+            len(state.specialist_team) - 1,
+        )
+
+        if desired_index != state.specialist_index:
+            from_profile = state.active_specialist
+            to_profile = state.specialist_team[desired_index]
+            handoff_reason = reason or f"Workflow progression moved ownership to specialist phase {desired_index + 1}"
+            handoff = state.record_specialist_handoff(from_profile, to_profile, handoff_reason)
+            self.store.add_step(
+                session_id,
+                state.step_count,
+                "specialist_handoff",
+                json.dumps(handoff, default=str),
+            )
+            self._notify(
+                session_id,
+                {
+                    "type": "specialist_handoff",
+                    "step": state.step_count,
+                    "from_profile": from_profile,
+                    "to_profile": to_profile,
+                    "reason": handoff_reason,
+                },
+            )
+            self._log_decision(
+                session_id,
+                state,
+                decision_type="specialist_handoff",
+                summary=f"Handoff from {from_profile or 'unassigned'} to {to_profile}",
+                rationale=handoff_reason,
+                metadata=handoff,
+            )
+
+        self._persist_specialist_metadata(session_id, state, reason=reason)
 
     # ------------------------------------------------------------------ #
     #  Pub / Sub
@@ -338,8 +527,10 @@ class AgentLoop:
 
         try:
             state.transition(AgentPhase.THINKING)
+            self._sync_specialist_progress(session_id, state, reason="Workflow session initialized.")
 
             while not state.is_terminal() and state.step_count < state.max_steps:
+                self._sync_specialist_progress(session_id, state)
                 # ---- THINK ----
                 state.phase = AgentPhase.THINKING
                 state.current_tool = None
@@ -347,6 +538,7 @@ class AgentLoop:
                     "type": "phase", "phase": "thinking",
                     "step": state.step_count,
                     "max_steps": state.max_steps,
+                    "active_specialist": state.active_specialist,
                 })
 
                 decision = await self._think(state)
@@ -371,12 +563,23 @@ class AgentLoop:
 
                 # ---- Check for final answer ----
                 if decision.get('action') == 'final_answer':
+                    self._log_decision(
+                        session_id,
+                        state,
+                        decision_type='final_answer',
+                        summary=decision.get('answer', '')[:500],
+                        rationale=decision.get('reasoning', ''),
+                        metadata={'verdict': decision.get('verdict', 'UNKNOWN')},
+                    )
                     summary = decision.get('answer', '')
                     verdict = decision.get('verdict', 'UNKNOWN')
+                    authoritative_outcome = self._resolve_authoritative_outcome(state)
                     state.add_finding({
                         "type": "final_answer",
                         "answer": summary,
                         "verdict": verdict,
+                        "verdict_authority": "llm_advisory",
+                        "authoritative_outcome": authoritative_outcome,
                         "reasoning": decision.get('reasoning', ''),
                     })
                     self.store.add_step(
@@ -387,6 +590,14 @@ class AgentLoop:
 
                 # ---- Check for run_playbook action ----
                 if decision.get('action') == 'run_playbook':
+                    self._log_decision(
+                        session_id,
+                        state,
+                        decision_type='run_playbook',
+                        summary=f"Run playbook {decision.get('playbook_id', '')}",
+                        rationale=decision.get('reasoning', ''),
+                        metadata={'params': decision.get('params', {})},
+                    )
                     pb_id = decision.get('playbook_id', '')
                     pb_params = decision.get('params', {})
                     reasoning = decision.get('reasoning', '')
@@ -405,13 +616,18 @@ class AgentLoop:
                             "step": state.step_count, "playbook_id": pb_id,
                         })
                         try:
+                            session_case_id = self._session_case_id(session_id)
                             pb_session = await self._playbook_engine.execute(
-                                pb_id, pb_params, case_id=state.goal,
+                                pb_id,
+                                pb_params,
+                                case_id=session_case_id,
                             )
                             state.add_finding({
-                                "type": "playbook_completed",
+                                "type": "playbook_started",
                                 "playbook_id": pb_id,
                                 "session_id": pb_session,
+                                "case_id": session_case_id,
+                                "status": "started",
                                 "reasoning": reasoning,
                             })
                             self.store.add_step(
@@ -419,7 +635,8 @@ class AgentLoop:
                                 json.dumps({
                                     "playbook_id": pb_id,
                                     "sub_session_id": pb_session,
-                                    "status": "completed",
+                                    "case_id": session_case_id,
+                                    "status": "started",
                                 }, default=str),
                             )
                         except Exception as exc:
@@ -436,10 +653,12 @@ class AgentLoop:
                                 }, default=str),
                             )
                         state.step_count += 1
+                        self._sync_specialist_progress(session_id, state, reason="Playbook phase dispatched to a sub-workflow.")
                         continue
                     else:
                         state.errors.append(f"Playbook engine not available for: {pb_id}")
                         state.step_count += 1
+                        self._sync_specialist_progress(session_id, state, reason="Playbook backend unavailable; workflow continued.")
                         continue
 
                 # ---- Validate action field ----
@@ -452,6 +671,7 @@ class AgentLoop:
                         "Expected: use_tool, final_answer, or run_playbook."
                     )
                     state.step_count += 1
+                    self._sync_specialist_progress(session_id, state, reason="Invalid action returned; specialist team advanced.")
                     continue
 
                 # ---- Resolve tool ----
@@ -466,12 +686,29 @@ class AgentLoop:
                         "message": f"Tool '{tool_name}' not found in registry.",
                     })
                     state.step_count += 1
+                    self._sync_specialist_progress(session_id, state, reason="Unknown tool forced workflow to progress.")
                     continue
 
                 # ---- Approval gate ----
                 if tool_def.requires_approval:
+                    approval_id = None
+                    if self.governance_store is not None:
+                        approval_id = self.governance_store.create_approval(
+                            session_id=session_id,
+                            case_id=self._session_case_id(session_id),
+                            workflow_id=state.workflow_id,
+                            action_type='tool_execution',
+                            tool_name=tool_name,
+                            target=decision.get('params', {}),
+                            rationale=f"Tool '{tool_name}' requires analyst approval before execution.",
+                            confidence=0.75,
+                            metadata={
+                                'agent_profile_id': state.agent_profile_id,
+                                'decision': decision,
+                            },
+                        )
                     state.request_approval(
-                        decision,
+                        {**decision, 'approval_id': approval_id},
                         f"Tool '{tool_name}' requires analyst approval before execution.",
                     )
                     state.phase = AgentPhase.WAITING_HUMAN
@@ -493,6 +730,7 @@ class AgentLoop:
                             "tool": tool_name,
                         })
                         state.step_count += 1
+                        self._sync_specialist_progress(session_id, state, reason="Approval was rejected; ownership moved to the next specialist.")
                         state.transition(AgentPhase.THINKING)
                         continue
                     # Approved - fall through to ACT
@@ -530,6 +768,7 @@ class AgentLoop:
                     "tool_source": "mcp" if is_mcp else "local",
                     "tool_server": tool_name.split('.')[0] if is_mcp else None,
                     "params": decision.get('params', {}),
+                    "active_specialist": state.active_specialist,
                 })
 
                 import time as _time
@@ -547,6 +786,7 @@ class AgentLoop:
                     "result": result,
                 })
                 state.step_count += 1
+                self._sync_specialist_progress(session_id, state, reason=f"Completed specialist action via {tool_name}.")
 
                 # Persist findings snapshot
                 self.store.update_session_findings(session_id, state.findings)
@@ -594,6 +834,7 @@ class AgentLoop:
                                 "tool_source": "mcp",
                                 "tool_server": mcp_server,
                                 "params": mcp_params,
+                                "active_specialist": state.active_specialist,
                             })
                             mcp_decision = {
                                 "action": "use_tool",
@@ -613,6 +854,7 @@ class AgentLoop:
                                 "result": mcp_result,
                             })
                             state.step_count += 1
+                            self._sync_specialist_progress(session_id, state, reason=f"Auto-enrichment completed via {mcp_tool}.")
                             self.store.update_session_findings(
                                 session_id, state.findings,
                             )
@@ -637,6 +879,7 @@ class AgentLoop:
                                 mcp_tool, enrich_exc,
                             )
                             state.step_count += 1
+                            self._sync_specialist_progress(session_id, state, reason=f"Auto-enrichment failed for {mcp_tool}; specialist team progressed.")
 
                 self._notify(session_id, {
                     "type": "observation",
@@ -653,9 +896,9 @@ class AgentLoop:
                 if state.step_count >= state.max_steps:
                     state.errors.append(f"Step limit ({state.max_steps}) reached")
                 state.phase = AgentPhase.COMPLETED
-
-            summary = await self._generate_summary(state)
             final_status = 'completed' if state.phase == AgentPhase.COMPLETED else 'failed'
+            self._persist_specialist_metadata(session_id, state, terminal_status=final_status, reason="Workflow session finished.")
+            summary = await self._generate_summary(state)
             self.store.update_session_status(session_id, final_status, summary)
             self.store.update_session_findings(session_id, state.findings)
 
@@ -685,6 +928,8 @@ class AgentLoop:
         """Build context and call the LLM to decide the next action."""
         tools_block = self._build_tools_block()
         findings_block = self._build_findings_block(state)
+        profile_block = self._build_profile_block(state)
+        workflow_block = self._build_workflow_block(state)
         playbooks_block = self._build_playbooks_block()
         all_tools = self.tools.get_tools_for_llm()
         # Filter tools to a manageable set for the LLM
@@ -697,6 +942,8 @@ class AgentLoop:
             system_prompt = _SYSTEM_PROMPT.format(
                 goal=state.goal,
                 findings_block=findings_block,
+                profile_block=profile_block,
+                workflow_block=workflow_block,
                 playbooks_block=playbooks_block,
             )
         else:
@@ -704,6 +951,8 @@ class AgentLoop:
                 tools_block=tools_block,
                 goal=state.goal,
                 findings_block=findings_block,
+                profile_block=profile_block,
+                workflow_block=workflow_block,
                 playbooks_block=playbooks_block,
             )
 
@@ -1092,6 +1341,90 @@ class AgentLoop:
         except Exception:
             return ""
 
+    def _build_profile_block(self, state: AgentState) -> str:
+        """Return specialist-agent guidance for the current session."""
+        if self.agent_profiles is None:
+            return ""
+        block = self.agent_profiles.get_prompt_block(state.agent_profile_id)
+        lines = []
+        if block:
+            lines.append("Specialist profile guidance:\n" + block)
+        if state.specialist_team:
+            lines.append(
+                "Active specialist team: "
+                + " -> ".join(state.specialist_team)
+            )
+            lines.append(
+                f"Current active specialist: {state.active_specialist or state.agent_profile_id or 'workflow_controller'}"
+            )
+        return "\n".join(line for line in lines if line)
+
+    def _build_workflow_block(self, state: AgentState) -> str:
+        """Return workflow guardrails for the current session."""
+        if self.workflow_registry is None or not state.workflow_id:
+            return ""
+        workflow = self.workflow_registry.get_workflow(state.workflow_id)
+        if not workflow:
+            return ""
+
+        lines = [
+            f"Workflow context: {workflow.get('name', state.workflow_id)}",
+            f"Workflow backend: {workflow.get('execution_backend', 'agent')}",
+        ]
+        if workflow.get("description"):
+            lines.append("Workflow intent: " + str(workflow["description"]))
+        if workflow.get("use_case"):
+            lines.append("Workflow use case: " + str(workflow["use_case"]))
+        if workflow.get("agents"):
+            lines.append(
+                "Suggested specialist sequence: "
+                + ", ".join(str(agent) for agent in workflow["agents"])
+            )
+        if state.specialist_handoffs:
+            last_handoff = state.specialist_handoffs[-1]
+            lines.append(
+                "Latest specialist handoff: "
+                f"{last_handoff.get('from_profile') or 'unassigned'} -> {last_handoff.get('to_profile')}"
+            )
+        if workflow.get("tools_used"):
+            lines.append(
+                "Expected evidence tools: "
+                + ", ".join(str(tool) for tool in workflow["tools_used"])
+            )
+        sections = workflow.get("sections") or {}
+        operating_model = sections.get("operating_model")
+        if operating_model:
+            excerpt = self._section_excerpt(operating_model)
+            if excerpt:
+                lines.append("Workflow operating model: " + excerpt)
+        phase_sequence = sections.get("phase_sequence") or sections.get("phases")
+        if phase_sequence:
+            excerpt = self._section_excerpt(phase_sequence)
+            if excerpt:
+                lines.append("Workflow phases: " + excerpt)
+        lines.append(
+            "Workflow guardrail: follow the tool-backed workflow path and never "
+            "invent unsupported evidence."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _section_excerpt(section_text: str, limit: int = 3) -> str:
+        parts: List[str] = []
+        for raw_line in section_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("- "):
+                parts.append(line[2:].strip())
+            elif re.match(r"^\d+\.\s+", line):
+                parts.append(re.sub(r"^\d+\.\s+", "", line))
+            elif not parts:
+                parts.append(line)
+            if len(parts) >= limit:
+                break
+        return " | ".join(parts[:limit])
+
     @staticmethod
     def _build_findings_block(state: AgentState) -> str:
         """Summarise findings so far (capped to keep context manageable)."""
@@ -1106,6 +1439,38 @@ class AgentLoop:
                 preview = preview[:600] + "..."
             parts.append(f"[{f.get('step', i)}] {preview}")
         return "\n".join(parts)
+
+    def _session_case_id(self, session_id: str) -> Optional[str]:
+        session = self.store.get_session(session_id)
+        if not session:
+            return None
+        return session.get('case_id')
+
+    def _log_decision(
+        self,
+        session_id: str,
+        state: AgentState,
+        *,
+        decision_type: str,
+        summary: str,
+        rationale: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self.governance_store is None or not summary:
+            return
+        try:
+            self.governance_store.log_ai_decision(
+                session_id=session_id,
+                case_id=self._session_case_id(session_id),
+                workflow_id=state.workflow_id,
+                profile_id=state.agent_profile_id,
+                decision_type=decision_type,
+                summary=summary,
+                rationale=rationale,
+                metadata=metadata or {},
+            )
+        except Exception:
+            logger.debug("[AGENT] Failed to log AI decision", exc_info=True)
 
     # ================================================================== #
     #  ACT - execute a tool
@@ -1129,7 +1494,17 @@ class AgentLoop:
             if tool_def is None:
                 result = {"error": f"Tool not found: {tool_name}"}
             elif tool_def.source == 'local':
-                result = await self.tools.execute_local_tool(tool_name, **params)
+                result = await self.tools.execute_local_tool(
+                    tool_name,
+                    _execution_context={
+                        "session_id": state.session_id,
+                        "case_id": self._session_case_id(state.session_id),
+                        "workflow_id": state.workflow_id,
+                        "agent_profile_id": state.agent_profile_id,
+                        "goal": state.goal,
+                    },
+                    **params,
+                )
             elif self.mcp_client is not None:
                 # MCP remote tool call
                 result = await self.mcp_client.call_tool(
@@ -1192,15 +1567,47 @@ class AgentLoop:
     #  Summary generation
     # ================================================================== #
 
+    @staticmethod
+    def _resolve_authoritative_outcome(state: AgentState) -> Optional[Dict[str, str]]:
+        """Return the best evidence-backed outcome seen in tool results."""
+        for finding in reversed(state.findings):
+            if finding.get("type") != "tool_result":
+                continue
+            result = finding.get("result")
+            if not isinstance(result, dict):
+                continue
+
+            verdict = result.get("verdict")
+            if verdict:
+                return {
+                    "kind": "verdict",
+                    "label": str(verdict).upper(),
+                    "source": str(finding.get("tool") or "tool_result"),
+                }
+
+            severity = result.get("severity")
+            if severity:
+                return {
+                    "kind": "severity",
+                    "label": f"SEVERITY:{str(severity).upper()}",
+                    "source": str(finding.get("tool") or "tool_result"),
+                }
+
+        return None
+
     async def _generate_summary(self, state: AgentState) -> str:
         """Ask the LLM to produce a concise investigation summary."""
-        # If there is a final_answer finding, use it directly
+        authoritative_outcome = self._resolve_authoritative_outcome(state)
+
+        # If there is a final_answer finding, prefer its explanation but keep
+        # any verdict/severity prefix tied to evidence-backed tool results.
         for f in reversed(state.findings):
             if f.get("type") == "final_answer":
                 answer = f.get("answer", "")
-                verdict = f.get("verdict", "")
                 if answer:
-                    return f"[{verdict}] {answer}"
+                    if authoritative_outcome:
+                        return f"[{authoritative_outcome['label']}] {answer}"
+                    return answer
 
         # Otherwise ask LLM to summarise
         findings_json = json.dumps(state.findings[-15:], default=str, indent=1)
@@ -1505,6 +1912,10 @@ class AgentLoop:
     ) -> Optional[Any]:
         """Groq OpenAI-compatible /chat/completions with tool calling."""
         if not self.groq_key:
+            self._record_llm_runtime_status(
+                available=False,
+                error="Groq API key not configured.",
+            )
             logger.warning("[AGENT] No Groq API key configured")
             return None
 
@@ -1530,10 +1941,19 @@ class AgentLoop:
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
+                        self._record_llm_runtime_status(
+                            available=False,
+                            error=f"Groq HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
                         logger.error(f"[AGENT] Groq chat error {resp.status}: {body[:300]}")
                         return None
 
                     data = await resp.json()
+                    self._record_llm_runtime_status(
+                        available=True,
+                        http_status=resp.status,
+                    )
                     choices = data.get("choices", [])
                     message = choices[0].get("message", {}) if choices else {}
 
@@ -1543,12 +1963,20 @@ class AgentLoop:
                     return message.get("content", "")
 
         except Exception as exc:
+            self._record_llm_runtime_status(
+                available=False,
+                error=f"Groq request failed: {exc}",
+            )
             logger.error(f"[AGENT] Groq chat failed: {exc}", exc_info=True)
             return None
 
     async def _groq_generate(self, prompt: str) -> Optional[str]:
         """Groq /chat/completions for plain text responses."""
         if not self.groq_key:
+            self._record_llm_runtime_status(
+                available=False,
+                error="Groq API key not configured.",
+            )
             return None
 
         try:
@@ -1570,13 +1998,26 @@ class AgentLoop:
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
+                        self._record_llm_runtime_status(
+                            available=False,
+                            error=f"Groq HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
                         logger.error(f"[AGENT] Groq generate error {resp.status}: {body[:200]}")
                         return None
                     data = await resp.json()
+                    self._record_llm_runtime_status(
+                        available=True,
+                        http_status=resp.status,
+                    )
                     choices = data.get("choices", [])
                     message = choices[0].get("message", {}) if choices else {}
                     return message.get("content", "")
         except Exception as exc:
+            self._record_llm_runtime_status(
+                available=False,
+                error=f"Groq request failed: {exc}",
+            )
             logger.error(f"[AGENT] Groq generate failed: {exc}")
             return None
 

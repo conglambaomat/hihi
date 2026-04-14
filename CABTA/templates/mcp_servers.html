@@ -495,12 +495,15 @@
                         <div class="col-12" id="stdioFields">
                             <label for="serverCommand" class="form-label">Komut / Command</label>
                             <input type="text" id="serverCommand" class="form-control"
-                                   placeholder="e.g. npx -y @modelcontextprotocol/server-filesystem"
+                                   placeholder="e.g. npx"
                                    style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <div class="form-text">
+                                Enter the executable here and put each argument on a new line below. If you paste a full command line, CABTA will try to split it automatically.
+                            </div>
                         </div>
                         <div class="col-12" id="stdioArgsField">
                             <label for="serverArgs" class="form-label">Argümanlar / Arguments (her satira bir tane / one per line)</label>
-                            <textarea id="serverArgs" class="form-control" rows="2" placeholder="/path/to/allowed/dir"
+                            <textarea id="serverArgs" class="form-control" rows="2" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/path/to/allowed/dir"
                                 style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);"></textarea>
                         </div>
                         <div class="col-12" id="urlField" style="display:none;">
