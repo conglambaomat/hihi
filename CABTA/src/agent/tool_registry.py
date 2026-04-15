@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+from ..agent.demo_log_backend import execute_demo_log_hunt
 from ..utils.log_hunting_policy import evaluate_hunt_request, normalize_query_bundle
 
 logger = logging.getLogger(__name__)
@@ -1189,6 +1190,9 @@ class ToolRegistry:
             max_window_hours = int(hunting_cfg.get("max_window_hours", 24 * 7) or 24 * 7)
             max_results = int(hunting_cfg.get("max_results", 200) or 200)
             max_queries = int(hunting_cfg.get("max_queries_per_hunt", 3) or 3)
+            demo_cfg = hunting_cfg.get("demo_backend", {}) if isinstance(hunting_cfg, dict) else {}
+            demo_enabled = bool(demo_cfg.get("enabled"))
+            demo_dataset = str(demo_cfg.get("dataset") or "playbook_log_hunt").strip()
             configured_backends: List[str] = []
 
             def _log_hunt_decision(decision_type: str, summary: str, metadata: Dict[str, Any]) -> None:
@@ -1208,6 +1212,29 @@ class ToolRegistry:
                     logger.debug("[TOOLS] Failed to log hunt decision", exc_info=True)
 
             if mcp_client is None or not getattr(mcp_client, "is_connected", lambda _name: False)("splunk"):
+                if demo_enabled:
+                    demo_result = execute_demo_log_hunt(
+                        demo_dataset,
+                        normalized_queries,
+                        timerange=timerange or "24h",
+                        max_results=max_results,
+                    )
+                    _log_hunt_decision(
+                        "log_search_execution",
+                        "Seeded demo log hunt executed without a live Splunk backend.",
+                        {
+                            "reason": demo_result.get("message", ""),
+                            "backend": "demo_fixture",
+                            "dataset": demo_result.get("dataset", demo_dataset),
+                            "query_count": query_count,
+                            "results_count": demo_result.get("results_count", 0),
+                            "query_origin": query_origin,
+                            "timerange": demo_result.get("timerange", timerange or "24h"),
+                            "mode": demo_result.get("mode", "demo_fixture"),
+                        },
+                    )
+                    return demo_result
+
                 message = (
                     "No Splunk log backend is connected for automated hunting. "
                     "AISA generated hunt queries for analyst-driven execution."
@@ -1498,17 +1525,56 @@ class ToolRegistry:
                 **_kw,
             ) -> Dict:
                 """Search threat intel for a query string or a playbook hypothesis bundle."""
+                from ..utils.ioc_extractor import IOCExtractor
+
                 search_terms: List[str] = []
+                skipped_terms: List[str] = []
+
+                def _add_term_if_ioc(value: str) -> None:
+                    term = str(value or "").strip()
+                    if not term:
+                        return
+                    if IOCExtractor.categorize_ioc(term) != "unknown":
+                        if term not in search_terms:
+                            search_terms.append(term)
+                        return
+
+                    extracted = IOCExtractor.extract_all(term)
+                    extracted_terms: List[str] = []
+                    for bucket in ("urls", "domains", "emails", "ipv4", "ipv6"):
+                        for candidate in extracted.get(bucket, []):
+                            candidate = str(candidate).strip()
+                            if candidate and candidate not in extracted_terms:
+                                extracted_terms.append(candidate)
+                    hashes_map = extracted.get("hashes", {}) if isinstance(extracted.get("hashes"), dict) else {}
+                    for bucket in ("md5", "sha1", "sha256"):
+                        for candidate in hashes_map.get(bucket, []):
+                            candidate = str(candidate).strip()
+                            if candidate and candidate not in extracted_terms:
+                                extracted_terms.append(candidate)
+
+                    if extracted_terms:
+                        for candidate in extracted_terms:
+                            if candidate not in search_terms:
+                                search_terms.append(candidate)
+                        return
+
+                    if term not in skipped_terms:
+                        skipped_terms.append(term)
+
                 if query and str(query).strip():
-                    search_terms.append(str(query).strip())
-                if hypothesis and str(hypothesis).strip() and str(hypothesis).strip() not in search_terms:
-                    search_terms.append(str(hypothesis).strip())
+                    _add_term_if_ioc(str(query).strip())
+                if hypothesis and str(hypothesis).strip():
+                    _add_term_if_ioc(str(hypothesis).strip())
                 for value in _indicator_terms(indicators):
                     if value not in search_terms:
                         search_terms.append(value)
 
                 if not search_terms:
-                    return {"error": "No query or indicators supplied"}
+                    return {
+                        "error": "No IOC-style query or indicators supplied",
+                        "skipped_terms": skipped_terms,
+                    }
 
                 results = []
                 for term in search_terms[:10]:
@@ -1539,6 +1605,7 @@ class ToolRegistry:
                     "flagged_results": flagged_results,
                     "results": results,
                     "indicators": _normalize_indicator_map(indicators),
+                    "skipped_terms": skipped_terms,
                     "source": source,
                 }
 

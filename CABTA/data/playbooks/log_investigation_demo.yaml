@@ -1,0 +1,79 @@
+id: log_investigation_demo
+name: Log Investigation Demo
+description: >
+  Deterministic local playbook for validating that CABTA can generate hunt
+  queries, execute a log search through the seeded demo backend, and correlate
+  the returned evidence without requiring a live Splunk deployment.
+trigger_type: manual
+input_params:
+  - name: hunt_hypothesis
+    description: Investigation hypothesis describing the expected activity
+    required: true
+  - name: hunt_timerange
+    description: Search timerange such as 24h or 7d
+    required: false
+  - name: known_indicators
+    description: Structured IOC bundle like {"ips":["1.2.3.4"],"domains":["evil.test"],"hashes":["..."]}
+    required: true
+
+steps:
+  - name: extract_hypothesis_iocs
+    tool: extract_iocs
+    params:
+      text: "{{hunt_hypothesis}}"
+    description: Extract any IOC hints embedded directly in the freeform hypothesis text.
+
+  - name: build_hunt_queries
+    tool: generate_rules
+    params:
+      analysis_result:
+        hypothesis: "{{hunt_hypothesis}}"
+        known_iocs: "{{known_indicators}}"
+      rule_types:
+        - spl
+        - kql
+    description: Generate hunt queries from the hypothesis and known indicators.
+
+  - name: execute_hunt
+    tool: search_logs
+    params:
+      query: "{{build_hunt_queries.queries}}"
+      timerange: "{{hunt_timerange}}"
+    description: Execute the generated hunt queries through the configured live or demo log backend.
+
+  - name: extract_event_iocs
+    tool: extract_iocs
+    for_each: "execute_hunt.results"
+    params:
+      text: "{{item.summary}}"
+    condition:
+      if: "{{execute_hunt.results}}"
+    description: Extract IOC hints from each matching log event summary to verify tool-backed evidence chaining.
+
+  - name: correlate_hunt
+    tool: correlate_findings
+    params:
+      hypothesis_iocs: "{{extract_hypothesis_iocs}}"
+      generated_queries: "{{build_hunt_queries}}"
+      hunt_results: "{{execute_hunt}}"
+      event_iocs: "{{extract_event_iocs}}"
+    description: Correlate the extracted hypothesis IOCs with generated queries and log evidence.
+
+  - name: decide_outcome
+    condition:
+      if: "{{execute_hunt.results_count}} > 0"
+      then: report_positive
+      else: report_negative
+
+  - name: report_positive
+    action: final_answer
+    description: >
+      Demo hunt confirmed {{execute_hunt.results_count}} matching log events.
+      CABTA generated hunt queries, executed search_logs, and correlated the
+      returned evidence for {{known_indicators}}.
+
+  - name: report_negative
+    action: final_answer
+    description: >
+      Demo hunt completed without matching log evidence for {{known_indicators}}
+      within {{hunt_timerange}}.

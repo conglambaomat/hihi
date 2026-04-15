@@ -1,0 +1,109 @@
+{
+  "name": "Playbook Log Hunt Demo",
+  "description": "Deterministic seeded log events for validating tool-backed investigation playbooks without a live SIEM.",
+  "playbook_id": "log_investigation_demo",
+  "default_inputs": {
+    "hunt_hypothesis": "Investigate whether secure-payroll-check.com delivered a payload that beaconed to 185.220.101.45 and executed C:\\Users\\alice\\AppData\\Roaming\\cabta_demo\\invoice_payload.exe on workstation CABTA-WS12.",
+    "hunt_timerange": "24h",
+    "known_indicators": {
+      "ips": [
+        "185.220.101.45"
+      ],
+      "domains": [
+        "secure-payroll-check.com"
+      ],
+      "hashes": [
+        "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a"
+      ]
+    }
+  },
+  "expected": {
+    "results_count": 3,
+    "suspicious_indicators": [
+      "185.220.101.45",
+      "secure-payroll-check.com",
+      "https://secure-payroll-check.com/login",
+      "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a"
+    ],
+    "suspicious_files": [
+      "C:\\Users\\alice\\AppData\\Roaming\\cabta_demo\\invoice_payload.exe"
+    ]
+  },
+  "records": [
+    {
+      "event_id": "cabta-demo-001",
+      "offset_minutes": 18,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "185.220.101.45",
+      "domain": "secure-payroll-check.com",
+      "url": "https://secure-payroll-check.com/login",
+      "process_name": "chrome.exe",
+      "process_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "summary": "User alice opened https://secure-payroll-check.com/login from CABTA-WS12 after receiving a payroll-themed lure.",
+      "tags": [
+        "phishing",
+        "credential",
+        "demo"
+      ],
+      "related_indicators": [
+        "secure-payroll-check.com",
+        "https://secure-payroll-check.com/login"
+      ],
+      "suspicious": true
+    },
+    {
+      "event_id": "cabta-demo-002",
+      "offset_minutes": 11,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "185.220.101.45",
+      "domain": "secure-payroll-check.com",
+      "process_name": "powershell.exe",
+      "process_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "file_path": "C:\\Users\\alice\\AppData\\Roaming\\cabta_demo\\invoice_payload.exe",
+      "sha256": "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a",
+      "summary": "powershell.exe launched invoice_payload.exe and established HTTPS beaconing to 185.220.101.45 within minutes of the phishing click.",
+      "tags": [
+        "powershell",
+        "beacon",
+        "payload",
+        "demo"
+      ],
+      "related_indicators": [
+        "185.220.101.45",
+        "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a"
+      ],
+      "suspicious": true
+    },
+    {
+      "event_id": "cabta-demo-003",
+      "offset_minutes": 7,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "185.220.101.45",
+      "domain": "secure-payroll-check.com",
+      "url": "https://secure-payroll-check.com/api/checkin",
+      "process_name": "invoice_payload.exe",
+      "process_path": "C:\\Users\\alice\\AppData\\Roaming\\cabta_demo\\invoice_payload.exe",
+      "file_path": "C:\\Users\\alice\\AppData\\Roaming\\cabta_demo\\invoice_payload.exe",
+      "sha256": "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a",
+      "summary": "invoice_payload.exe repeated outbound check-ins to secure-payroll-check.com and matched the seeded payload hash.",
+      "tags": [
+        "beacon",
+        "malware",
+        "persistence",
+        "demo"
+      ],
+      "related_indicators": [
+        "185.220.101.45",
+        "secure-payroll-check.com",
+        "7f83b1657ff1fc53b92dc18148a1d65dfa13501446f5a0a0b25b25c4d8f5f50a"
+      ],
+      "suspicious": true
+    }
+  ]
+}

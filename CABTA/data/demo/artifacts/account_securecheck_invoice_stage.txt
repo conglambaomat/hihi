@@ -1,0 +1,19 @@
+Subject: Payroll verification follow-up
+Source: account-securecheck.com
+
+This staged artifact is intentionally non-executable demo content used to
+exercise CABTA forensic and YARA-backed playbooks.
+
+Observed strings:
+- https://account-securecheck.com/review
+- 185.220.101.12
+- cmd.exe /c powershell -nop -w hidden
+- URLDownloadToFile
+- CreateProcess
+- WScript.Shell
+- CurrentVersion\\Run
+- base64
+
+Analyst note:
+The presence of multiple execution, persistence, and download strings should
+trigger the built-in suspicious YARA rules during the Threat Hunt demo.

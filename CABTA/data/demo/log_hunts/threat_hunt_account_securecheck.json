@@ -1,0 +1,111 @@
+{
+  "name": "Threat Hunt Account Securecheck Demo",
+  "description": "Seeded endpoint, proxy, and network events for the built-in Threat Hunt playbook with real MCP-backed enrichment.",
+  "playbook_id": "threat_hunt",
+  "default_inputs": {
+    "hunt_hypothesis": "Investigate whether account-securecheck.com delivered a staged payload to CABTA-WS12 and whether the host later established C2-style beaconing to 185.220.101.12 after the user clicked the phishing lure.",
+    "hunt_timerange": "24h",
+    "known_indicators": {
+      "ips": [
+        "185.220.101.12"
+      ],
+      "domains": [
+        "account-securecheck.com"
+      ],
+      "hashes": [
+        "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636"
+      ]
+    },
+    "target_systems": {
+      "hosts": [
+        "CABTA-WS12"
+      ],
+      "suspicious_dirs": "C:\\Users\\alice\\Downloads",
+      "suspicious_file_path": "${PROJECT_ROOT}/data/demo/artifacts/account_securecheck_invoice_stage.txt",
+      "zeek_log_path": "${PROJECT_ROOT}/data/demo/network/threat_hunt_account_securecheck_conn.log",
+      "suricata_eve_path": "${PROJECT_ROOT}/data/demo/network/threat_hunt_account_securecheck_eve.json"
+    }
+  },
+  "expected": {
+    "results_count": 3,
+    "suspicious_indicators": [
+      "185.220.101.12",
+      "account-securecheck.com",
+      "https://account-securecheck.com/review",
+      "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636"
+    ],
+    "suspicious_files": [
+      "${PROJECT_ROOT}/data/demo/artifacts/account_securecheck_invoice_stage.txt"
+    ]
+  },
+  "records": [
+    {
+      "event_id": "cabta-threat-hunt-001",
+      "offset_minutes": 31,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "104.21.58.62",
+      "domain": "account-securecheck.com",
+      "url": "https://account-securecheck.com/review",
+      "summary": "CABTA-WS12 opened account-securecheck.com from a payroll follow-up message and reached the verification path.",
+      "tags": [
+        "phishing",
+        "credential",
+        "demo"
+      ],
+      "related_indicators": [
+        "account-securecheck.com",
+        "https://account-securecheck.com/review"
+      ],
+      "suspicious": true
+    },
+    {
+      "event_id": "cabta-threat-hunt-002",
+      "offset_minutes": 24,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "185.220.101.12",
+      "domain": "account-securecheck.com",
+      "file_path": "${PROJECT_ROOT}/data/demo/artifacts/account_securecheck_invoice_stage.txt",
+      "download_path": "${PROJECT_ROOT}/data/demo/artifacts/account_securecheck_invoice_stage.txt",
+      "sha256": "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636",
+      "summary": "A staged payload file linked to the phishing lure was written to disk and a follow-on connection to 185.220.101.12 was observed minutes later.",
+      "tags": [
+        "payload",
+        "download",
+        "beacon",
+        "demo"
+      ],
+      "related_indicators": [
+        "185.220.101.12",
+        "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636"
+      ],
+      "suspicious": true
+    },
+    {
+      "event_id": "cabta-threat-hunt-003",
+      "offset_minutes": 16,
+      "host": "CABTA-WS12",
+      "user": "alice",
+      "src_ip": "10.10.5.21",
+      "dest_ip": "185.220.101.12",
+      "domain": "account-securecheck.com",
+      "url": "https://account-securecheck.com/review",
+      "sha256": "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636",
+      "summary": "Repeated long-lived outbound connections matched the staged file hash and looked consistent with beaconing to a Tor-associated external IP.",
+      "tags": [
+        "beacon",
+        "command-and-control",
+        "demo"
+      ],
+      "related_indicators": [
+        "185.220.101.12",
+        "account-securecheck.com",
+        "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636"
+      ],
+      "suspicious": true
+    }
+  ]
+}

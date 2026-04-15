@@ -45,6 +45,15 @@ web:
     enabled: false        # Use deterministic demo fixtures for localhost walkthroughs
     dataset: "default"    # Fixture set under data/demo/
 
+# Log hunting defaults
+log_hunting:
+  max_window_hours: 168
+  max_results: 200
+  max_queries_per_hunt: 3
+  demo_backend:
+    enabled: false        # Use the seeded playbook log fixture when Splunk is unavailable
+    dataset: "playbook_log_hunt"
+
 # Optional headless SOC daemon
 daemon:
   enabled: false

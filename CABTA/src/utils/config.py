@@ -140,6 +140,15 @@ def get_default_config() -> Dict[str, Any]:
                 'dataset': 'default',
             },
         },
+        'log_hunting': {
+            'max_window_hours': 24 * 7,
+            'max_results': 200,
+            'max_queries_per_hunt': 3,
+            'demo_backend': {
+                'enabled': False,
+                'dataset': 'playbook_log_hunt',
+            },
+        },
         'logging': {
             'level': 'INFO',
             'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

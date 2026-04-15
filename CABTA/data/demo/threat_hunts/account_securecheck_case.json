@@ -1,0 +1,43 @@
+{
+  "name": "Threat Hunt Demo - Account Securecheck",
+  "description": "Ready-to-run inputs for the built-in Threat Hunt playbook. Demonstrates seeded log hunting plus live MCP-backed enrichment for DNS, SSL, Shodan, GeoIP, YARA, Zeek, and Suricata analysis.",
+  "playbook_id": "threat_hunt",
+  "log_dataset": "threat_hunt_account_securecheck",
+  "default_inputs": {
+    "hunt_hypothesis": "Investigate whether account-securecheck.com delivered a staged payload to CABTA-WS12 and whether the host later established C2-style beaconing to 185.220.101.12 after the user clicked the phishing lure.",
+    "hunt_timerange": "24h",
+    "known_indicators": {
+      "ips": [
+        "185.220.101.12"
+      ],
+      "domains": [
+        "account-securecheck.com"
+      ],
+      "hashes": [
+        "02c1acdc6abcce81b98756940ba7d6cbc010366b5d05f414f7a713c956ebe636"
+      ]
+    },
+    "target_systems": {
+      "hosts": [
+        "CABTA-WS12"
+      ],
+      "suspicious_dirs": "C:\\Users\\alice\\Downloads",
+      "suspicious_file_path": "${PROJECT_ROOT}/data/demo/artifacts/account_securecheck_invoice_stage.txt",
+      "zeek_log_path": "${PROJECT_ROOT}/data/demo/network/threat_hunt_account_securecheck_conn.log",
+      "suricata_eve_path": "${PROJECT_ROOT}/data/demo/network/threat_hunt_account_securecheck_eve.json"
+    }
+  },
+  "expected": {
+    "results_count": 3,
+    "must_call_tools": [
+      "search_logs",
+      "mcp:network-analysis/analyze_network_iocs",
+      "mcp:osint-tools/whois_lookup",
+      "mcp:osint-tools/ssl_certificate_info",
+      "mcp:network-analysis/analyze_zeek_logs",
+      "mcp:network-analysis/analyze_suricata_alerts",
+      "mcp:forensics-tools/file_metadata",
+      "mcp:remnux/yara_scan"
+    ]
+  }
+}

@@ -263,6 +263,11 @@ class MCPClientManager:
         env = os.environ.copy()
         if cfg.env:
             env.update(cfg.env)
+        current_pythonpath = env.get("PYTHONPATH", "")
+        pythonpath_parts = [str(PROJECT_ROOT)]
+        if current_pythonpath:
+            pythonpath_parts.append(current_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
         cmd_args = cfg.args or []
 
@@ -274,7 +279,8 @@ class MCPClientManager:
             params = StdioServerParameters(
                 command=resolved_command,
                 args=cmd_args,
-                env=cfg.env,
+                env=env,
+                cwd=PROJECT_ROOT,
             )
 
             # Use SDK's stdio_client context manager
@@ -302,6 +308,7 @@ class MCPClientManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=str(PROJECT_ROOT),
             )
             connection.process = proc
             connection.client = _RawJsonRpcClient(proc)
@@ -324,21 +331,61 @@ class MCPClientManager:
             return raw
 
         expanded = os.path.expandvars(os.path.expanduser(raw))
-        candidate = Path(expanded)
+        normalized = expanded
+
+        # Windows-style relative interpreter paths frequently appear in config
+        # files even when CABTA is running on Linux/WSL. Normalize those so the
+        # same config can boot local MCP servers in both environments.
+        if os.sep == "/" and "\\" in normalized:
+            normalized = normalized.replace("\\", "/")
+            if normalized.startswith("./"):
+                normalized = normalized
+            elif normalized.startswith("."):
+                normalized = "./" + normalized.lstrip("./")
+
+        candidate = Path(normalized)
 
         if candidate.is_absolute():
             return str(candidate)
 
-        if any(sep in expanded for sep in ("\\", "/")) or expanded.startswith("."):
+        if any(sep in normalized for sep in ("\\", "/")) or normalized.startswith("."):
             project_candidate = (PROJECT_ROOT / candidate).resolve()
+            if project_candidate.parts[: len((PROJECT_ROOT / ".venv").parts)] == (PROJECT_ROOT / ".venv").parts:
+                # Prefer the currently running interpreter for project-local venv
+                # commands so MCP servers inherit the same dependencies as CABTA.
+                return sys.executable
             if project_candidate.exists():
                 return str(project_candidate)
 
-        found = shutil.which(expanded)
+            # Best-effort cross-platform venv python fallback:
+            #   .venv/Scripts/python.exe  -> .venv/bin/python
+            if "python" in candidate.name.lower():
+                venv_root = None
+                parts_lower = [part.lower() for part in candidate.parts]
+                if ".venv" in parts_lower:
+                    venv_root = PROJECT_ROOT / ".venv"
+                elif "venv" in parts_lower:
+                    venv_root = PROJECT_ROOT / "venv"
+                if venv_root:
+                    for alt in (
+                        venv_root / "bin" / "python",
+                        venv_root / "bin" / "python3",
+                        venv_root / "Scripts" / "python.exe",
+                    ):
+                        if alt.exists():
+                            return str(alt)
+
+        found = shutil.which(normalized)
         if found:
             return found
 
-        return expanded
+        # If the configured command still looks like a Python interpreter but we
+        # could not resolve it, fall back to the current interpreter so local
+        # stdio MCP servers still boot for demos and local development.
+        if "python" in Path(normalized).name.lower():
+            return sys.executable
+
+        return normalized
 
     async def _connect_sse(self, connection: MCPConnection) -> None:
         """Connect to an MCP server via Server-Sent Events."""

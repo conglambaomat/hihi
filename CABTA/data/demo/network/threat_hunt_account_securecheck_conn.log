@@ -1,0 +1,11 @@
+#separator \x09
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	conn
+#open	2026-04-15-07-48-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state	local_orig	local_resp	missed_bytes	history	orig_pkts	orig_ip_bytes	resp_pkts	resp_ip_bytes	tunnel_parents
+#types	time	string	addr	port	addr	port	enum	string	interval	count	count	string	bool	bool	count	string	count	count	count	count	set[string]
+1713167281.245019	CABTA1	10.10.5.21	51344	104.21.58.62	443	tcp	ssl	22.114	1820	53210	SF	-	-	0	ShADadf	18	3500	44	54800	-
+1713167520.005910	CABTA2	10.10.5.21	51412	185.220.101.12	9001	tcp	-	5481.772	325000	10485761	SF	-	-	0	ShADadf	155	428000	421	10500000	-
+1713167708.928100	CABTA3	10.10.5.21	51450	185.220.101.12	443	tcp	ssl	4120.332	245120	204800	SF	-	-	0	ShADadf	120	260000	188	230000	-

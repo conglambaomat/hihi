@@ -15,7 +15,7 @@ input_params:
     description: Bilinen IOC'lar JSON objesi (ornek {"ips":["1.2.3.4"],"domains":["evil.com"],"hashes":["..."]}) / Known IOCs JSON object
     required: false
   - name: target_systems
-    description: Hedef sistemler JSON objesi (ornek {"hosts":["WS-12"],"suspicious_dirs":"C:\\Temp"}) / Target systems JSON object
+    description: Hedef sistemler JSON objesi (ornek {"hosts":["WS-12"],"suspicious_file_path":"C:\\Temp\\payload.exe","zeek_log_path":"C:\\logs\\conn.log","suricata_eve_path":"C:\\logs\\eve.json"}) / Target systems JSON object
     required: false
 
 steps:
@@ -188,7 +188,7 @@ steps:
   - name: network_ioc_analysis
     tool: mcp:network-analysis/analyze_network_iocs
     params:
-      iocs: "{{known_indicators}}"
+      text: "{{hunt_hypothesis}}"
     condition:
       if: "{{known_indicators}}"
     description: Network IOC'larini analiz et - DNS, baglanti, trafik
@@ -196,22 +196,25 @@ steps:
   - name: zeek_log_analysis
     tool: mcp:network-analysis/analyze_zeek_logs
     params:
-      timerange: "{{hunt_timerange}}"
-      indicators: "{{known_indicators}}"
+      log_path: "{{target_systems.zeek_log_path}}"
+      log_type: "conn"
+    condition:
+      if: "{{target_systems.zeek_log_path}}"
     description: Zeek log analizi - ag baglanti kayitlarinda supheli aktivite ara
 
   - name: suricata_alert_analysis
     tool: mcp:network-analysis/analyze_suricata_alerts
     params:
-      timerange: "{{hunt_timerange}}"
-      indicators: "{{known_indicators}}"
+      eve_json_path: "{{target_systems.suricata_eve_path}}"
+    condition:
+      if: "{{target_systems.suricata_eve_path}}"
     description: Suricata alert analizi - IDS/IPS alarmlariyla tehdit eslemesi
 
   - name: suspicious_port_scan
     tool: mcp:network-analysis/port_check
     for_each: "known_indicators.ips"
     params:
-      ip: "{{item}}"
+      host: "{{item}}"
     condition:
       if: "{{known_indicators.ips}}"
     description: Supheli IP'lerde port taramasi - acik servis ve arka kapi tespiti
@@ -280,10 +283,10 @@ steps:
   - name: yara_scan
     tool: mcp:remnux/yara_scan
     params:
-      target_path: "{{target_systems.suspicious_dirs}}"
+      file_path: "{{target_systems.suspicious_file_path}}"
     condition:
-      if: "{{target_systems.suspicious_dirs}}"
-    description: Hedef dizinlerde YARA taramasi
+      if: "{{target_systems.suspicious_file_path}}"
+    description: Supheli dosyada YARA taramasi
 
   # ===== Phase 5: Karar =====
   - name: evaluate_findings
