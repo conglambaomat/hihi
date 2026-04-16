@@ -61,6 +61,8 @@ def _load_config(config_file: Path | None = None) -> dict:
             'ollama_model': 'llama3.1:8b',
             'groq_endpoint': 'https://api.groq.com/openai/v1',
             'groq_model': 'openai/gpt-oss-20b',
+            'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
+            'gemini_model': 'gemini-2.5-flash',
         },
         'agent': {'max_steps': 50},
         'api_keys': {},

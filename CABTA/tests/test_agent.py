@@ -3065,6 +3065,31 @@ class TestSettingsAPI:
         ti_server = next(s for s in app.state.config["mcp_servers"] if s["name"] == "threat-intel-free")
         assert ti_server["env"]["ABUSECH_AUTH_KEY"] == abusech_key
 
+    def test_post_settings_refreshes_live_runtime_api_keys_and_agent_provider_for_gemini(self, tmp_path):
+        from starlette.testclient import TestClient
+
+        app = self._create_app_with_temp_config(tmp_path)
+        client = TestClient(app)
+        vt_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        gemini_key = "AIza_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
+        resp = client.post("/api/config/settings", json={
+            "llm": {
+                "provider": "gemini",
+                "gemini_endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "gemini_model": "gemini-3-flash-preview",
+            },
+            "api_keys": {
+                "virustotal": vt_key,
+                "gemini": gemini_key,
+            },
+        })
+        assert resp.status_code == 200
+        assert app.state.ioc_investigator.threat_intel.api_keys["virustotal"] == vt_key
+        assert app.state.malware_analyzer.threat_intel.api_keys["virustotal"] == vt_key
+        assert app.state.agent_loop.provider == "gemini"
+        assert app.state.agent_loop.gemini_key == gemini_key
+        assert app.state.agent_loop.gemini_model == "gemini-3-flash-preview"
+
     def test_post_settings_can_clear_api_key_and_runtime_bridge(self, tmp_path):
         from starlette.testclient import TestClient
 
@@ -3130,6 +3155,33 @@ class TestSettingsAPI:
         assert data["provider"] == "groq"
         assert data["available"] is True
         assert data["configured_model"] == "openai/gpt-oss-20b"
+
+    def test_llm_health_reports_active_gemini_provider(self):
+        from starlette.testclient import TestClient
+        from src.web.app import create_app
+
+        app = create_app()
+        app.state.config = {
+            **app.state.config,
+            'llm': {
+                'provider': 'gemini',
+                'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
+                'gemini_model': 'gemini-3-flash-preview',
+            },
+            'api_keys': {
+                **app.state.config.get('api_keys', {}),
+                'gemini': 'AIza_runtime_key_abcdefghijklmnopqrstuvwxyz123456',
+            },
+        }
+        app.state.web_provider.config = app.state.config
+
+        client = TestClient(app)
+        resp = client.get("/api/config/llm-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "gemini"
+        assert data["available"] is True
+        assert data["configured_model"] == "gemini-3-flash-preview"
 
     def test_llm_health_reflects_runtime_provider_failure(self):
         from starlette.testclient import TestClient
@@ -3266,8 +3318,10 @@ def _make_agent_loop(tmp_path, **overrides):
             "groq_endpoint": "https://api.groq.com/openai/v1",
             "groq_model": "openai/gpt-oss-20b",
             "anthropic_model": "claude-sonnet-4-20250514",
+            "gemini_endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini_model": "gemini-2.5-flash",
         },
-        "api_keys": {"anthropic": "", "groq": ""},
+        "api_keys": {"anthropic": "", "groq": "", "gemini": ""},
     }
     config.update(overrides.get("config_overrides", {}))
     return AgentLoop(
@@ -3583,6 +3637,68 @@ class TestAgentLoop:
         assert decision is not None
         assert decision["action"] == "final_answer"
 
+    @pytest.mark.asyncio
+    async def test_think_bootstraps_first_tool_when_llm_returns_no_decision(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="Investigate domain account-securecheck.com")
+        state.transition(AgentPhase.THINKING)
+
+        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock, return_value=None):
+            decision = await loop._think(state)
+
+        assert decision is not None
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "investigate_ioc"
+        assert decision["params"]["ioc"] == "account-securecheck.com"
+
+    @pytest.mark.asyncio
+    async def test_think_correlates_existing_findings_when_llm_returns_no_decision(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        async def correlate_executor(**kwargs):
+            return {"verdict": "SUSPICIOUS"}
+        loop.tools.register_local_tool(
+            name="correlate_findings",
+            description="Correlate findings",
+            parameters={"properties": {}},
+            category="analysis",
+            executor=correlate_executor,
+        )
+
+        state = AgentState(session_id="s1", goal="Investigate suspicious infrastructure")
+        state.transition(AgentPhase.THINKING)
+        state.add_finding({"type": "tool_result", "tool": "investigate_ioc", "result": {"verdict": "SUSPICIOUS"}})
+
+        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock, return_value=None):
+            decision = await loop._think(state)
+
+        assert decision is not None
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "correlate_findings"
+        assert isinstance(decision["params"]["findings"], list)
+
+    def test_domain_auto_enrichment_uses_fast_correct_contracts(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.tools.register_mcp_tools("osint-tools", [
+            {"name": "whois_lookup", "description": "", "parameters": {}},
+            {"name": "dns_resolve", "description": "", "parameters": {}},
+            {"name": "ssl_certificate_info", "description": "", "parameters": {}},
+        ])
+        loop.tools.register_mcp_tools("free-osint", [
+            {"name": "crtsh_subdomain_search", "description": "", "parameters": {}},
+        ])
+
+        calls = loop._get_enrichment_mcp_tools(
+            "investigate_ioc",
+            {"ioc": "account-securecheck.com"},
+            "Investigate domain account-securecheck.com",
+        )
+
+        assert calls == [
+            ("osint-tools.whois_lookup", {"target": "account-securecheck.com"}),
+            ("osint-tools.dns_resolve", {"domain": "account-securecheck.com"}),
+            ("osint-tools.ssl_certificate_info", {"host": "account-securecheck.com"}),
+        ]
+
     # ---- _act records step ------------------------------------------- #
     @pytest.mark.asyncio
     async def test_act_records_step(self, tmp_path):
@@ -3636,6 +3752,98 @@ class TestAgentLoop:
             summary = await loop._generate_summary(state)
         assert "3 steps" in summary
 
+    @pytest.mark.asyncio
+    async def test_generate_summary_failure_without_findings_is_factual(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.errors.append("LLM returned no decision.")
+
+        with patch.object(loop, "_call_llm_text", new_callable=AsyncMock, return_value="Hallucinated summary"):
+            summary = await loop._generate_summary(state)
+
+        assert "failed before evidence collection" in summary.lower()
+        assert "LLM returned no decision." in summary
+
+    def test_resolve_authoritative_outcome_prefers_verdict_over_later_severity(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "investigate_ioc",
+            "result": {"ioc": "account-securecheck.com", "verdict": "MALICIOUS", "threat_score": 100},
+        })
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "correlate_findings",
+            "result": {"severity": "critical"},
+        })
+
+        outcome = loop._resolve_authoritative_outcome(state)
+
+        assert outcome == {
+            "kind": "verdict",
+            "label": "MALICIOUS",
+            "source": "investigate_ioc",
+        }
+
+    def test_fallback_decision_without_llm_builds_evidence_backed_answer(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="Investigate suspicious domain")
+        state.step_count = 4
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "investigate_ioc",
+            "result": {
+                "ioc": "account-securecheck.com",
+                "verdict": "MALICIOUS",
+                "threat_score": 100,
+                "domain_enrichment": {
+                    "domain_age": {
+                        "is_newly_registered": True,
+                        "age_days": 6,
+                    },
+                },
+            },
+        })
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "correlate_findings",
+            "result": {
+                "severity": "critical",
+                "statistics": {"unique_iocs": 5},
+            },
+        })
+        loop.provider_runtime_status = {
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        }
+
+        decision = loop._fallback_decision_without_llm(state)
+
+        assert decision["action"] == "final_answer"
+        assert decision["verdict"] == "MALICIOUS"
+        assert "Evidence-backed outcome: MALICIOUS" in decision["answer"]
+        assert "domain age is 6 days" in decision["answer"]
+        assert "quota exceeded" in decision["answer"]
+
+    def test_guess_tool_params_prefers_new_analyst_request_in_follow_up_context(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        goal = (
+            "Continue the previous security investigation using tool-based reasoning.\n\n"
+            "Previous investigation goal:\n"
+            "Investigate 172.67.201.70 and related infrastructure.\n\n"
+            "Previous evidence snapshot:\n"
+            "- DNS resolved to 172.67.201.70\n\n"
+            "New analyst request:\n"
+            "Confirm whether account-securecheck.com is newly registered and suspicious.\n\n"
+            "Use prior evidence when relevant, but gather fresh evidence with tools before reaching a conclusion."
+        )
+
+        params = loop._guess_tool_params(goal)
+
+        assert params == {"ioc": "account-securecheck.com"}
+
     # ---- Ollama provider config -------------------------------------- #
     def test_ollama_provider_config(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -3676,6 +3884,23 @@ class TestAgentLoop:
         assert loop.groq_key == "gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         assert loop.groq_model == "openai/gpt-oss-20b"
         assert loop.groq_endpoint == "https://api.groq.com/openai/v1"
+
+    def test_gemini_provider_config(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "gemini",
+                    "gemini_endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "gemini_model": "gemini-3-flash-preview",
+                },
+                "api_keys": {"gemini": "AIza_runtime_key_abcdefghijklmnopqrstuvwxyz123456", "anthropic": "", "groq": ""},
+            },
+        )
+        assert loop.provider == "gemini"
+        assert loop.gemini_key == "AIza_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
+        assert loop.gemini_model == "gemini-3-flash-preview"
+        assert loop.gemini_endpoint == "https://generativelanguage.googleapis.com/v1beta/openai"
 
     # ---- _parse_tool_call_response ----------------------------------- #
     def test_parse_tool_call_response(self, tmp_path):

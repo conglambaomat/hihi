@@ -126,6 +126,11 @@ class WebDataProvider:
                 "status": "configured" if self._has_api_key("anthropic") else "degraded",
                 "label": "Anthropic" if self._has_api_key("anthropic") else "Anthropic (key missing)",
             }
+        elif provider == "gemini":
+            llm_status = {
+                "status": "configured" if self._has_api_key("gemini") else "degraded",
+                "label": "Gemini" if self._has_api_key("gemini") else "Gemini (key missing)",
+            }
         else:
             llm_status = {
                 "status": "configured" if llm.get("ollama_endpoint") or llm.get("base_url") else "degraded",

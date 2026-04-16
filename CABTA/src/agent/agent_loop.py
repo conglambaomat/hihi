@@ -140,6 +140,7 @@ class AgentLoop:
 
         agent_cfg = config.get('agent', {})
         self.max_steps = agent_cfg.get('max_steps', 50)
+        self.auto_enrich_timeout_seconds = int(agent_cfg.get('auto_enrich_timeout_seconds', 12))
 
         # LLM connection settings (mirrors LLMAnalyzer)
         llm_cfg = config.get('llm', {})
@@ -154,6 +155,15 @@ class AgentLoop:
         )
         self.groq_endpoint = llm_cfg.get('groq_endpoint', llm_cfg.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_cfg.get('groq_model', llm_cfg.get('model', 'openai/gpt-oss-20b'))
+        self.gemini_key = (
+            get_valid_key(config.get('api_keys', {}), 'gemini')
+            or (llm_cfg.get('api_key', '') if is_valid_api_key(llm_cfg.get('api_key', '')) else '')
+        )
+        self.gemini_endpoint = llm_cfg.get(
+            'gemini_endpoint',
+            llm_cfg.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+        ).rstrip('/')
+        self.gemini_model = llm_cfg.get('gemini_model', llm_cfg.get('model', 'gemini-2.5-flash'))
         self.timeout = aiohttp.ClientTimeout(total=120)
         self.provider_runtime_status: Dict[str, Any] = {
             "provider": self.provider,
@@ -847,7 +857,19 @@ class AgentLoop:
                                 "reasoning": "Auto-enrichment with MCP tool",
                             }
                             _mcp_start = _time.time()
-                            mcp_result = await self._act(state, mcp_decision)
+                            try:
+                                mcp_result = await asyncio.wait_for(
+                                    self._act(state, mcp_decision),
+                                    timeout=self.auto_enrich_timeout_seconds,
+                                )
+                            except asyncio.TimeoutError:
+                                mcp_result = {
+                                    "error": (
+                                        f"Auto-enrichment timed out after "
+                                        f"{self.auto_enrich_timeout_seconds}s"
+                                    ),
+                                    "timed_out": True,
+                                }
                             _mcp_dur = int((_time.time() - _mcp_start) * 1000)
                             state.phase = AgentPhase.OBSERVING
                             state.current_tool = None
@@ -969,7 +991,7 @@ class AgentLoop:
         logger.info(f"[AGENT] LLM raw response type={type(raw).__name__}, "
                      f"preview={str(raw)[:500] if raw else 'None'}")
         if raw is None:
-            return None
+            return self._fallback_decision_without_llm(state)
 
         # If the LLM used native tool_call, convert to our decision dict
         if isinstance(raw, dict) and 'tool_calls' in raw:
@@ -1011,6 +1033,44 @@ class AgentLoop:
             return raw
 
         return None
+
+    def _fallback_decision_without_llm(self, state: AgentState) -> Dict[str, Any]:
+        """Return a safe evidence-first fallback when the LLM gives no decision.
+
+        The agent should continue investigating with real tools when possible
+        instead of failing immediately at step 0.
+        """
+        if not state.findings:
+            return {
+                "action": "use_tool",
+                "tool": self._guess_first_tool(state.goal),
+                "params": self._guess_tool_params(state.goal),
+                "reasoning": "Fallback: LLM returned no decision, bootstrapping the first evidence-gathering tool.",
+            }
+
+        last_tool = ""
+        for finding in reversed(state.findings):
+            if finding.get("type") == "tool_result":
+                last_tool = str(finding.get("tool") or "")
+                break
+
+        if last_tool != "correlate_findings" and self.tools.get_tool("correlate_findings") is not None:
+            return {
+                "action": "use_tool",
+                "tool": "correlate_findings",
+                "params": {"findings": state.findings[-10:]},
+                "reasoning": "Fallback: LLM returned no decision, so correlate the accumulated evidence.",
+            }
+
+        authoritative_outcome = self._resolve_authoritative_outcome(state)
+        verdict = authoritative_outcome["label"] if authoritative_outcome else "UNKNOWN"
+        answer = self._build_fallback_answer(state, authoritative_outcome)
+        return {
+            "action": "final_answer",
+            "answer": answer,
+            "verdict": verdict,
+            "reasoning": "Fallback: end the investigation with an evidence-preserving summary.",
+        }
 
     @staticmethod
     def _extract_verdict(text: str) -> str:
@@ -1204,9 +1264,9 @@ class AgentLoop:
             elif re.match(r'[a-zA-Z0-9]', ioc_val) and '.' in ioc_val:
                 # Domain
                 result.extend([
-                    ('osint-tools.whois_lookup', {'domain': ioc_val}),
+                    ('osint-tools.whois_lookup', {'target': ioc_val}),
                     ('osint-tools.dns_resolve', {'domain': ioc_val}),
-                    ('free-osint.crtsh_subdomain_search', {'domain': ioc_val}),
+                    ('osint-tools.ssl_certificate_info', {'host': ioc_val}),
                 ])
             elif re.match(r'^[a-fA-F0-9]{32,64}$', ioc_val):
                 # Hash
@@ -1255,7 +1315,7 @@ class AgentLoop:
 
     def _guess_first_tool(self, goal: str) -> str:
         """Pick the most appropriate tool name based on the investigation goal."""
-        goal_lower = goal.lower()
+        goal_lower = self._focus_goal_text(goal).lower()
 
         # File / malware analysis keywords
         if any(kw in goal_lower for kw in ('file', 'malware', 'sample', 'binary',
@@ -1271,10 +1331,11 @@ class AgentLoop:
         """Extract the most likely tool parameter from the goal text."""
         import re
 
-        tool = self._guess_first_tool(goal)
+        focused_goal = self._focus_goal_text(goal)
+        tool = self._guess_first_tool(focused_goal)
 
         # Try to extract a file path first (for file/email analysis)
-        path_match = re.search(r'([A-Z]:[/\\][\w/\\.\- ]+|/[\w/.\- ]+)', goal)
+        path_match = re.search(r'([A-Z]:[/\\][\w/\\.\- ]+|/[\w/.\- ]+)', focused_goal)
         if path_match:
             path_val = path_match.group(1)
             if tool in ('analyze_malware', 'analyze_email'):
@@ -1283,7 +1344,7 @@ class AgentLoop:
 
         # Try to extract an IP address
         ip_match = re.search(
-            r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', goal,
+            r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', focused_goal,
         )
         if ip_match:
             return {"ioc": ip_match.group(1)}
@@ -1291,7 +1352,7 @@ class AgentLoop:
         # Try to extract a domain
         domain_match = re.search(
             r'\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)\b',
-            goal,
+            focused_goal,
         )
         if domain_match:
             candidate = domain_match.group(1)
@@ -1300,17 +1361,30 @@ class AgentLoop:
                 return {"ioc": candidate}
 
         # Try to extract a hash (MD5/SHA1/SHA256)
-        hash_match = re.search(r'\b([a-fA-F0-9]{32,64})\b', goal)
+        hash_match = re.search(r'\b([a-fA-F0-9]{32,64})\b', focused_goal)
         if hash_match:
             return {"ioc": hash_match.group(1)}
 
         # Try to extract a URL
-        url_match = re.search(r'(https?://\S+)', goal)
+        url_match = re.search(r'(https?://\S+)', focused_goal)
         if url_match:
             return {"ioc": url_match.group(1)}
 
         # Fallback: use the full goal text as input
-        return {"ioc": goal}
+        return {"ioc": focused_goal}
+
+    @staticmethod
+    def _focus_goal_text(goal: str) -> str:
+        """Prefer the newest analyst instruction when follow-up context is embedded."""
+        marker = "New analyst request:"
+        if marker not in goal:
+            return goal
+
+        _, _, tail = goal.rpartition(marker)
+        focused = tail.strip()
+        if "\n\nUse prior evidence" in focused:
+            focused = focused.split("\n\nUse prior evidence", 1)[0].strip()
+        return focused or goal
 
     def _build_tools_block(self) -> str:
         """Format registered tools into a readable list for the prompt."""
@@ -1589,6 +1663,13 @@ class AgentLoop:
                     "source": str(finding.get("tool") or "tool_result"),
                 }
 
+        for finding in reversed(state.findings):
+            if finding.get("type") != "tool_result":
+                continue
+            result = finding.get("result")
+            if not isinstance(result, dict):
+                continue
+
             severity = result.get("severity")
             if severity:
                 return {
@@ -1599,9 +1680,169 @@ class AgentLoop:
 
         return None
 
+    def _build_fallback_answer(
+        self, state: AgentState, authoritative_outcome: Optional[Dict[str, str]],
+    ) -> str:
+        """Build a deterministic evidence-backed answer when LLM calls fail."""
+        sentences: List[str] = []
+        if authoritative_outcome:
+            sentences.append(
+                f"Evidence-backed outcome: {authoritative_outcome['label']} "
+                f"(source: {authoritative_outcome['source']})."
+            )
+        sentences.append(
+            f"LLM decisioning became unavailable after {state.step_count} steps, "
+            f"but the investigation still collected {len(state.findings)} evidence items."
+        )
+
+        evidence_points = self._fallback_evidence_points(state)
+        if evidence_points:
+            sentences.append("Key evidence: " + " ".join(evidence_points))
+
+        provider_error = self._provider_runtime_error_excerpt()
+        if provider_error:
+            sentences.append(f"LLM provider issue: {provider_error}")
+
+        sentences.append("Use the collected evidence for analyst review.")
+        return " ".join(sentences)[:2000]
+
+    def _provider_runtime_error_excerpt(self) -> str:
+        status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
+        if not status or status.get("available", True):
+            return ""
+
+        raw_error = str(status.get("error") or status.get("message") or "").strip()
+        if not raw_error:
+            return ""
+
+        lowered = raw_error.lower()
+        provider_name = str(status.get("provider") or self.provider or "llm").capitalize()
+        if "429" in raw_error and "quota" in lowered:
+            return f"{provider_name} HTTP 429 quota exceeded."
+        if "503" in raw_error and ("high demand" in lowered or "overloaded" in lowered):
+            return f"{provider_name} HTTP 503 service overloaded."
+
+        compact = " ".join(raw_error.split())
+        if len(compact) > 180:
+            compact = compact[:177] + "..."
+        return compact
+
+    @classmethod
+    def _fallback_evidence_points(cls, state: AgentState, limit: int = 3) -> List[str]:
+        evidence: List[str] = []
+        for finding in state.findings:
+            if finding.get("type") != "tool_result":
+                continue
+            tool_name = str(finding.get("tool") or "tool_result")
+            point = cls._describe_fallback_evidence(tool_name, finding.get("result"))
+            if point and point not in evidence:
+                evidence.append(point)
+            if len(evidence) >= limit:
+                break
+        return evidence[:limit]
+
+    @staticmethod
+    def _describe_fallback_evidence(tool_name: str, result: Any) -> str:
+        if not isinstance(result, dict):
+            return ""
+
+        payload = result.get("result") if isinstance(result.get("result"), dict) else result
+        if not isinstance(payload, dict):
+            return ""
+
+        error = payload.get("error")
+        if error:
+            return f"{tool_name} reported error={str(error)[:120]}."
+        if payload.get("timed_out"):
+            return f"{tool_name} timed out while gathering enrichment."
+
+        if tool_name == "investigate_ioc":
+            ioc = str(payload.get("ioc") or "IOC")
+            verdict = str(payload.get("verdict") or "UNKNOWN").upper()
+            threat_score = payload.get("threat_score")
+            domain_enrichment = payload.get("domain_enrichment", {})
+            domain_age = domain_enrichment.get("domain_age", {}) if isinstance(domain_enrichment, dict) else {}
+            if isinstance(domain_age, dict) and domain_age.get("is_newly_registered"):
+                age_days = domain_age.get("age_days")
+                return (
+                    f"{ioc} classified as {verdict} with threat_score={threat_score}; "
+                    f"domain age is {age_days} days."
+                )
+            return f"{ioc} classified as {verdict} with threat_score={threat_score}."
+
+        if tool_name.endswith("whois_lookup"):
+            target = str(payload.get("target") or "domain")
+            creation_date = str(payload.get("creation_date") or "").strip()
+            registrar = payload.get("registrar")
+            registrar_name = ""
+            if isinstance(registrar, list) and registrar:
+                registrar_name = str(registrar[0]).strip()
+            elif registrar:
+                registrar_name = str(registrar).strip()
+            details = ", ".join(
+                part
+                for part in [
+                    f"created={creation_date}" if creation_date else "",
+                    f"registrar={registrar_name}" if registrar_name else "",
+                ]
+                if part
+            )
+            if details:
+                return f"WHOIS for {target}: {details}."
+            return f"WHOIS data collected for {target}."
+
+        if tool_name.endswith("dns_resolve"):
+            domain = str(payload.get("domain") or "domain")
+            records = payload.get("records", {}) if isinstance(payload.get("records"), dict) else {}
+            a_records = records.get("A") if isinstance(records.get("A"), list) else []
+            if a_records:
+                return f"DNS for {domain} resolved to {', '.join(str(ip) for ip in a_records[:3])}."
+            return f"DNS data collected for {domain}."
+
+        if tool_name.endswith("ssl_certificate_info"):
+            host = str(payload.get("host") or "host")
+            issuer = payload.get("issuer", {}) if isinstance(payload.get("issuer"), dict) else {}
+            issuer_cn = str(issuer.get("commonName") or "").strip()
+            not_after = str(payload.get("not_after") or "").strip()
+            details = ", ".join(
+                part
+                for part in [
+                    f"issuer={issuer_cn}" if issuer_cn else "",
+                    f"expires={not_after}" if not_after else "",
+                ]
+                if part
+            )
+            if details:
+                return f"TLS certificate for {host}: {details}."
+            return f"TLS certificate metadata collected for {host}."
+
+        if tool_name == "correlate_findings":
+            severity = str(payload.get("severity") or "").upper()
+            stats = payload.get("statistics", {}) if isinstance(payload.get("statistics"), dict) else {}
+            unique_iocs = stats.get("unique_iocs")
+            if severity:
+                return f"Correlation rated the case severity={severity} across {unique_iocs or 0} unique IOCs."
+            return "Correlation completed across collected findings."
+
+        verdict = payload.get("verdict")
+        if verdict:
+            return f"{tool_name} reported verdict={str(verdict).upper()}."
+
+        severity = payload.get("severity")
+        if severity:
+            return f"{tool_name} reported severity={str(severity).upper()}."
+
+        return ""
+
     async def _generate_summary(self, state: AgentState) -> str:
         """Ask the LLM to produce a concise investigation summary."""
         authoritative_outcome = self._resolve_authoritative_outcome(state)
+
+        if not state.findings and state.errors:
+            return (
+                "Investigation failed before evidence collection. "
+                + " ".join(str(err) for err in state.errors[:2])
+            )[:2000]
 
         # If there is a final_answer finding, prefer its explanation but keep
         # any verdict/severity prefix tied to evidence-backed tool results.
@@ -1629,11 +1870,7 @@ class AgentLoop:
             logger.warning(f"[AGENT] Summary generation failed: {exc}")
 
         # Fallback
-        return (
-            f"Investigation completed in {state.step_count} steps. "
-            f"{len(state.findings)} findings collected. "
-            f"Errors: {len(state.errors)}."
-        )
+        return self._build_fallback_answer(state, authoritative_outcome)
 
     # ================================================================== #
     #  LLM communication
@@ -1655,6 +1892,8 @@ class AgentLoop:
             return await self._anthropic_chat(messages, tools_json)
         if self.provider == 'groq':
             return await self._groq_chat(messages, tools_json)
+        if self.provider == 'gemini':
+            return await self._gemini_chat(messages, tools_json)
         logger.error("[AGENT] Unsupported provider configured: %s", self.provider)
         return None
 
@@ -1666,6 +1905,8 @@ class AgentLoop:
             return await self._anthropic_generate(prompt)
         if self.provider == 'groq':
             return await self._groq_generate(prompt)
+        if self.provider == 'gemini':
+            return await self._gemini_generate(prompt)
         logger.error("[AGENT] Unsupported provider configured: %s", self.provider)
         return None
 
@@ -1681,6 +1922,12 @@ class AgentLoop:
             return (
                 "LLM returned no decision. Verify the Anthropic API key is configured "
                 f"and model '{self.anthropic_model}' is available."
+            )
+        if self.provider == 'gemini':
+            return (
+                "LLM returned no decision. Verify the Gemini API key is configured, "
+                f"the endpoint '{self.gemini_endpoint}' is reachable, and model "
+                f"'{self.gemini_model}' is available."
             )
         return (
             "LLM returned no decision. Verify Ollama is running "
@@ -2023,6 +2270,122 @@ class AgentLoop:
                 error=f"Groq request failed: {exc}",
             )
             logger.error(f"[AGENT] Groq generate failed: {exc}")
+            return None
+
+    # ---- Gemini ---- #
+
+    async def _gemini_chat(
+        self, messages: List[Dict], tools: List[Dict],
+    ) -> Optional[Any]:
+        """Gemini OpenAI-compatible /chat/completions with tool calling."""
+        if not self.gemini_key:
+            self._record_llm_runtime_status(
+                available=False,
+                error="Gemini API key not configured.",
+            )
+            logger.warning("[AGENT] No Gemini API key configured")
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.gemini_key}",
+                "Content-Type": "application/json",
+            }
+            payload: Dict[str, Any] = {
+                "model": self.gemini_model,
+                "messages": messages,
+                "temperature": 1.0,
+                "stream": False,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.gemini_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            available=False,
+                            error=f"Gemini HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] Gemini chat error {resp.status}: {body[:300]}")
+                        return None
+
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+
+                    if message.get("tool_calls"):
+                        return {"tool_calls": message["tool_calls"]}
+
+                    return message.get("content", "")
+
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                available=False,
+                error=f"Gemini request failed: {exc}",
+            )
+            logger.error(f"[AGENT] Gemini chat failed: {exc}", exc_info=True)
+            return None
+
+    async def _gemini_generate(self, prompt: str) -> Optional[str]:
+        """Gemini OpenAI-compatible /chat/completions for plain text responses."""
+        if not self.gemini_key:
+            self._record_llm_runtime_status(
+                available=False,
+                error="Gemini API key not configured.",
+            )
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.gemini_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.gemini_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 1.0,
+                "stream": False,
+            }
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.gemini_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            available=False,
+                            error=f"Gemini HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] Gemini generate error {resp.status}: {body[:200]}")
+                        return None
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+                    return message.get("content", "")
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                available=False,
+                error=f"Gemini request failed: {exc}",
+            )
+            logger.error(f"[AGENT] Gemini generate failed: {exc}")
             return None
 
     # ================================================================== #

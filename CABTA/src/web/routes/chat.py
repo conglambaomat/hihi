@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+DEFAULT_CHAT_AGENT_PROFILE = "investigator"
 
 
 class ChatMessage(BaseModel):
@@ -59,6 +60,75 @@ def _coerce_playbook_chat_input(message: str, input_params) -> dict:
             input_data[target_param] = message
 
     return input_data
+
+
+def _session_metadata(session: dict) -> dict:
+    metadata = session.get("metadata", {}) if isinstance(session, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _preferred_chat_profile(session: Optional[dict] = None) -> str:
+    metadata = _session_metadata(session or {})
+    for key in ("active_specialist", "lead_agent_profile_id", "agent_profile_id"):
+        candidate = str(metadata.get(key) or "").strip()
+        if candidate and candidate != "workflow_controller":
+            return candidate
+    return DEFAULT_CHAT_AGENT_PROFILE
+
+
+def _finding_snapshot(findings, limit: int = 3) -> str:
+    if isinstance(findings, str):
+        try:
+            findings = json.loads(findings)
+        except json.JSONDecodeError:
+            findings = []
+    if not isinstance(findings, list):
+        return ""
+
+    lines = []
+    for finding in findings[-limit:]:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("type") == "tool_result":
+            tool = str(finding.get("tool") or "tool_result")
+            result = finding.get("result")
+            if isinstance(result, dict):
+                if result.get("verdict"):
+                    detail = f"verdict={result.get('verdict')}"
+                elif result.get("severity"):
+                    detail = f"severity={result.get('severity')}"
+                elif result.get("error"):
+                    detail = f"error={str(result.get('error'))[:120]}"
+                else:
+                    detail = f"keys={', '.join(sorted(result.keys())[:5])}"
+            else:
+                detail = str(result)[:120]
+            lines.append(f"- {tool}: {detail}")
+        elif finding.get("type") == "final_answer":
+            lines.append(f"- final_answer: {str(finding.get('answer') or '')[:160]}")
+    return "\n".join(lines)
+
+
+def _build_follow_up_goal(session: dict, message: str) -> str:
+    previous_goal = str(session.get("goal") or "").strip()
+    if previous_goal.lower().startswith("(follow-up to previous investigation:"):
+        _, _, remainder = previous_goal.partition("\n")
+        previous_goal = remainder.strip() or previous_goal
+    previous_summary = str(session.get("summary") or "").strip()
+    evidence_snapshot = _finding_snapshot(session.get("findings"))
+
+    blocks = ["Continue the previous security investigation using tool-based reasoning."]
+    if previous_goal:
+        blocks.append(f"Previous investigation goal:\n{previous_goal}")
+    if previous_summary:
+        blocks.append(f"Previous investigation summary:\n{previous_summary}")
+    if evidence_snapshot:
+        blocks.append(f"Previous evidence snapshot:\n{evidence_snapshot}")
+    blocks.append(f"New analyst request:\n{message.strip()}")
+    blocks.append(
+        "Use prior evidence when relevant, but gather fresh evidence with tools before reaching a conclusion."
+    )
+    return "\n\n".join(blocks)
 
 
 @router.post('')
@@ -116,9 +186,13 @@ async def send_message(request: Request, body: ChatMessage):
             }
 
         # If session is completed/failed, start a new investigation with context
-        context = f"(Follow-up to previous investigation: {session.get('goal', '')})\n{body.message}"
+        context = _build_follow_up_goal(session, body.message)
         session_id = await agent_loop.investigate(
-            context, case_id=session.get('case_id')
+            context,
+            case_id=session.get('case_id'),
+            metadata={
+                "agent_profile_id": _preferred_chat_profile(session),
+            },
         )
         return {
             "session_id": session_id,
@@ -127,7 +201,12 @@ async def send_message(request: Request, body: ChatMessage):
         }
     else:
         # New investigation - LLM will see available playbooks and may auto-select one
-        session_id = await agent_loop.investigate(body.message)
+        session_id = await agent_loop.investigate(
+            body.message,
+            metadata={
+                "agent_profile_id": DEFAULT_CHAT_AGENT_PROFILE,
+            },
+        )
         return {
             "session_id": session_id,
             "status": "processing",

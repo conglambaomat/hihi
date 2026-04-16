@@ -88,6 +88,7 @@ def get_default_config() -> Dict[str, Any]:
             # LLM (optional)
             'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
             'groq': os.environ.get('GROQ_API_KEY', ''),
+            'gemini': os.environ.get('GEMINI_API_KEY', ''),
         },
         'rate_limits': {
             'virustotal': {'requests_per_minute': 4},
@@ -120,6 +121,8 @@ def get_default_config() -> Dict[str, Any]:
             'anthropic_model': 'claude-sonnet-4-20250514',
             'groq_endpoint': 'https://api.groq.com/openai/v1',
             'groq_model': 'openai/gpt-oss-20b',
+            'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
+            'gemini_model': 'gemini-2.5-flash',
         },
         'output': {
             'report_format': 'html',

@@ -639,11 +639,16 @@
                     <!-- Agent dropdown -->
                     <div class="d-lg-none nav-section-label">AGENT</div>
                     <div class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle {% if request.url.path.startswith('/agent') and request.url.path != '/agent/chat' %}active-section{% endif %}"
+                        <a class="nav-link dropdown-toggle {% if request.url.path.startswith('/agent') %}active-section{% endif %}"
                            href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="bi bi-robot me-1"></i>Agent
                         </a>
                         <ul class="dropdown-menu">
+                            <li>
+                                <a class="dropdown-item {% if request.url.path == '/agent/chat' %}active{% endif %}" href="/agent/chat">
+                                    <i class="bi bi-chat-dots"></i> Agent Chat
+                                </a>
+                            </li>
                             <li>
                                 <a class="dropdown-item {% if request.url.path == '/agent/investigations' %}active{% endif %}" href="/agent/investigations">
                                     <i class="bi bi-binoculars"></i> Investigations

@@ -504,6 +504,77 @@ class TestFastAPIEndpoints:
         assert args[0] == 'alert_triage'
         assert args[1]['alert_text'] == 'SIEM alert: suspicious outbound connection to 10.0.0.5'
 
+    def test_chat_new_investigation_defaults_to_investigator_profile(self):
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
+
+        r = self.client.post('/api/chat', json={
+            'message': 'Investigate suspicious domain activity',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert args[0] == 'Investigate suspicious domain activity'
+        assert kwargs['metadata']['agent_profile_id'] == 'investigator'
+
+    def test_chat_follow_up_uses_structured_context_and_preserves_profile(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate account-securecheck.com phishing infrastructure',
+            case_id='CASE-42',
+            metadata={'agent_profile_id': 'phishing_analyst'},
+        )
+        self.app.state.agent_store.update_session_findings(
+            original_session,
+            [{
+                'type': 'tool_result',
+                'tool': 'investigate_ioc',
+                'result': {'verdict': 'MALICIOUS'},
+            }],
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'The domain appears malicious and newly registered.',
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Pivot on related infrastructure and registrar details.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert 'Previous investigation goal:' in args[0]
+        assert 'Previous investigation summary:' in args[0]
+        assert 'Previous evidence snapshot:' in args[0]
+        assert 'New analyst request:' in args[0]
+        assert '(Follow-up to previous investigation:' not in args[0]
+        assert kwargs['case_id'] == 'CASE-42'
+        assert kwargs['metadata']['agent_profile_id'] == 'phishing_analyst'
+
+    def test_chat_follow_up_strips_legacy_follow_up_wrapper_from_previous_goal(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='(Follow-up to previous investigation: hello)\nAnalyze the phishing email at:',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Previous session completed.',
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Pivot on related infrastructure.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        assert 'Previous investigation goal:\nAnalyze the phishing email at:' in args[0]
+
     def test_delete_agent_session_endpoint_removes_session_children(self):
         session_id = self.app.state.agent_store.create_session(
             goal='Delete from investigations',
@@ -571,6 +642,12 @@ class TestFastAPIEndpoints:
         r = self.client.get('/agent/workflows')
         assert r.status_code == 200
         assert 'Workflow Registry' in r.text
+
+    def test_agent_chat_page_is_exposed_in_agent_nav(self):
+        r = self.client.get('/agent/chat')
+        assert r.status_code == 200
+        assert 'Agent Chat' in r.text
+        assert 'href="/agent/chat"' in r.text
 
     def test_approvals_page(self):
         approval_id = self.app.state.governance_store.create_approval(

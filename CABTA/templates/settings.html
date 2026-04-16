@@ -100,6 +100,9 @@
                         <button type="button" class="toggle-option" data-value="anthropic" onclick="Settings.setProvider('anthropic')">
                             <i class="bi bi-cloud me-1"></i>Anthropic
                         </button>
+                        <button type="button" class="toggle-option" data-value="gemini" onclick="Settings.setProvider('gemini')">
+                            <i class="bi bi-google me-1"></i>Gemini
+                        </button>
                     </div>
                 </div>
 
@@ -221,6 +224,35 @@
                     </select>
                     <div class="small text-muted mt-2">
                         These choices map directly to AISA backend modes. Legacy <code>subprocess</code> is normalized to <code>vm</code>.
+                    </div>
+                </div>
+
+                <div id="geminiFields" style="display:none;">
+                    <div class="mb-3">
+                        <label class="form-label">Gemini API Key</label>
+                        <div class="api-key-field">
+                            <input type="password" id="geminiApiKey" class="form-control pe-5"
+                                placeholder="AIza..."
+                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('geminiApiKey', this)">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Gemini Endpoint</label>
+                        <input type="url" id="geminiEndpoint" class="form-control" value="https://generativelanguage.googleapis.com/v1beta/openai"
+                            placeholder="https://generativelanguage.googleapis.com/v1beta/openai"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model Name</label>
+                        <input type="text" id="geminiModel" class="form-control" value="gemini-2.5-flash"
+                            placeholder="e.g. gemini-3-flash-preview"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                        <div class="small text-muted mt-2">
+                            Gemini uses Google's OpenAI-compatible endpoint. Use a tool-calling capable Gemini model for agent workflows.
+                        </div>
                     </div>
                 </div>
 
@@ -414,6 +446,12 @@ var Settings = (function() {
                 if (llm.groq_model || (provider === 'groq' && llm.model)) {
                     document.getElementById('groqModel').value = llm.groq_model || llm.model || 'openai/gpt-oss-20b';
                 }
+                if (llm.gemini_endpoint || (provider === 'gemini' && llm.base_url)) {
+                    document.getElementById('geminiEndpoint').value = llm.gemini_endpoint || llm.base_url || '';
+                }
+                if (llm.gemini_model || (provider === 'gemini' && llm.model)) {
+                    document.getElementById('geminiModel').value = llm.gemini_model || llm.model || 'gemini-2.5-flash';
+                }
 
                 // Agent settings
                 var agent = cfg.agent || {};
@@ -437,6 +475,9 @@ var Settings = (function() {
                 }
                 if (keys.anthropic && keys.anthropic.length > 0) {
                     document.getElementById('anthropicApiKey').placeholder = 'Configured (' + keys.anthropic + ')';
+                }
+                if (keys.gemini && keys.gemini.length > 0) {
+                    document.getElementById('geminiApiKey').placeholder = 'Configured (' + keys.gemini + ')';
                 }
                 apiKeyCatalog.forEach(function(item) {
                     var field = document.getElementById(item.fieldId);
@@ -465,6 +506,7 @@ var Settings = (function() {
         document.getElementById('ollamaFields').style.display = provider === 'ollama' ? '' : 'none';
         document.getElementById('groqFields').style.display = provider === 'groq' ? '' : 'none';
         document.getElementById('anthropicFields').style.display = provider === 'anthropic' ? '' : 'none';
+        document.getElementById('geminiFields').style.display = provider === 'gemini' ? '' : 'none';
     }
 
     function setStatusMsg(el, text, cls, icon) {
@@ -544,6 +586,9 @@ var Settings = (function() {
         } else if (currentProvider === 'groq') {
             llm.groq_endpoint = document.getElementById('groqEndpoint').value.trim() || 'https://api.groq.com/openai/v1';
             llm.groq_model = document.getElementById('groqModel').value.trim() || 'openai/gpt-oss-20b';
+        } else if (currentProvider === 'gemini') {
+            llm.gemini_endpoint = document.getElementById('geminiEndpoint').value.trim() || 'https://generativelanguage.googleapis.com/v1beta/openai';
+            llm.gemini_model = document.getElementById('geminiModel').value.trim() || 'gemini-2.5-flash';
         } else {
             llm.anthropic_model = document.getElementById('anthropicModel').value.trim();
         }
@@ -555,6 +600,9 @@ var Settings = (function() {
         } else if (currentProvider === 'groq') {
             var groqKey = document.getElementById('groqApiKey').value.trim();
             if (groqKey) payload.api_keys = { groq: groqKey };
+        } else if (currentProvider === 'gemini') {
+            var geminiKey = document.getElementById('geminiApiKey').value.trim();
+            if (geminiKey) payload.api_keys = { gemini: geminiKey };
         }
         saveConfig(payload, 'llmSaveIndicator');
     }

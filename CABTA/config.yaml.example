@@ -11,15 +11,18 @@ api_keys:
   greynoise: ""           # https://viz.greynoise.io/account/api-key
   urlscan: ""             # https://urlscan.io/user/profile/
   groq: ""                # https://console.groq.com/keys
+  gemini: ""              # https://aistudio.google.com/app/apikey
 
 # LLM Configuration (Optional - for AI-powered analysis)
 llm:
-  provider: "ollama"      # Options: ollama, groq, anthropic
+  provider: "ollama"      # Options: ollama, groq, anthropic, gemini
   ollama_model: "llama3.1:8b"
   ollama_endpoint: "http://localhost:11434"
   groq_model: "openai/gpt-oss-20b"
   groq_endpoint: "https://api.groq.com/openai/v1"
   anthropic_model: "claude-sonnet-4-20250514"
+  gemini_model: "gemini-2.5-flash"
+  gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
 
 # Analysis Settings
 analysis:

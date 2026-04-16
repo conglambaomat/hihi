@@ -37,6 +37,7 @@ API_KEY_CATALOG = [
     {'key': 'triage', 'label': 'Triage', 'placeholder': 'API key'},
     {'key': 'threatzone', 'label': 'ThreatZone', 'placeholder': 'API key'},
     {'key': 'joesandbox', 'label': 'Joe Sandbox', 'placeholder': 'API key'},
+    {'key': 'gemini', 'label': 'Google Gemini', 'placeholder': 'API key'},
     {'key': 'abusech', 'label': 'abuse.ch / ThreatFox', 'placeholder': 'Auth-Key'},
 ]
 
@@ -163,6 +164,25 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
                 'Anthropic is selected as the LLM provider, but the API key is missing.'
             ),
             'error': None if has_key else 'Anthropic API key not configured.',
+        })
+        return _apply_runtime_llm_signal(result, runtime_signal)
+
+    if provider == 'gemini':
+        has_key = is_valid_api_key(api_keys.get('gemini')) or is_valid_api_key(llm_cfg.get('api_key'))
+        result.update({
+            'configured_model': llm_cfg.get('gemini_model', llm_cfg.get('model', 'gemini-2.5-flash')),
+            'endpoint': str(
+                llm_cfg.get('gemini_endpoint', llm_cfg.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'))
+            ).rstrip('/'),
+            'available': has_key,
+            'model_available': has_key,
+            'status': 'configured' if has_key else 'degraded',
+            'message': (
+                'Gemini is configured for AISA agent and analyst-assist workflows.'
+                if has_key else
+                'Gemini is selected as the LLM provider, but the API key is missing.'
+            ),
+            'error': None if has_key else 'Gemini API key not configured.',
         })
         return _apply_runtime_llm_signal(result, runtime_signal)
 

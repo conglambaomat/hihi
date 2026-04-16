@@ -62,6 +62,17 @@ class LLMAnalyzer:
         self.groq_endpoint = llm_config.get('groq_endpoint', llm_config.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_config.get('groq_model', llm_config.get('model', 'openai/gpt-oss-20b'))
 
+        # Gemini settings (Google OpenAI-compatible endpoint)
+        self.gemini_key = (
+            get_valid_key(config.get('api_keys', {}), 'gemini')
+            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
+        )
+        self.gemini_endpoint = llm_config.get(
+            'gemini_endpoint',
+            llm_config.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+        ).rstrip('/')
+        self.gemini_model = llm_config.get('gemini_model', llm_config.get('model', 'gemini-2.5-flash'))
+
         self.timeout = aiohttp.ClientTimeout(total=120)  # Longer timeout for local LLM
         self.provider_runtime_status = {
             "provider": self.provider,
@@ -491,6 +502,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return self.anthropic_model
         if self.provider == 'groq':
             return self.groq_model
+        if self.provider == 'gemini':
+            return self.gemini_model
         return self.ollama_model
 
     async def _call_provider_api(self, prompt: str) -> Optional[Dict]:
@@ -501,6 +514,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return await self._call_anthropic_api(prompt)
         if self.provider == 'groq':
             return await self._call_groq_api(prompt)
+        if self.provider == 'gemini':
+            return await self._call_gemini_api(prompt)
 
         logger.error("[LLM] Unsupported provider configured: %s", self.provider)
         return {'error': f'Unsupported LLM provider: {self.provider}'}
@@ -645,6 +660,77 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                 error=f'Groq request failed: {e}',
             )
             logger.error(f"[LLM] Groq API call failed: {e}")
+            return None
+
+    async def _call_gemini_api(self, prompt: str) -> Optional[Dict]:
+        """
+        Call Google's Gemini API through the OpenAI-compatible chat completions endpoint.
+
+        Args:
+            prompt: Analysis prompt
+
+        Returns:
+            Parsed JSON response or None
+        """
+        if not self.gemini_key:
+            self._record_runtime_status(
+                available=False,
+                error='Gemini API key not configured',
+            )
+            logger.warning("[LLM] No Gemini API key configured")
+            return {'error': 'No Gemini API key configured'}
+
+        try:
+            logger.info(f"[LLM] Calling Gemini ({self.gemini_model})...")
+
+            headers = {
+                'Authorization': f'Bearer {self.gemini_key}',
+                'Content-Type': 'application/json',
+            }
+
+            payload = {
+                'model': self.gemini_model,
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'stream': False,
+            }
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f'{self.gemini_endpoint}/chat/completions',
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self._record_runtime_status(
+                            available=True,
+                            http_status=response.status,
+                        )
+                        choices = data.get('choices', [])
+                        message = choices[0].get('message', {}) if choices else {}
+                        response_text = message.get('content', '')
+                        if not response_text:
+                            logger.warning("[LLM] Gemini returned an empty response")
+                            return None
+                        return self._parse_json_response_text(response_text)
+
+                    body = await response.text()
+                    self._record_runtime_status(
+                        available=False,
+                        error=f'Gemini HTTP {response.status}: {body[:200]}',
+                        http_status=response.status,
+                    )
+                    logger.error(f"[LLM] Gemini API error {response.status}: {body[:200]}")
+                    return None
+
+        except Exception as e:
+            self._record_runtime_status(
+                available=False,
+                error=f'Gemini request failed: {e}',
+            )
+            logger.error(f"[LLM] Gemini API call failed: {e}")
             return None
     
     async def _call_anthropic_api(self, prompt: str) -> Optional[Dict]:
