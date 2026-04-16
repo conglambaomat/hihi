@@ -46,13 +46,20 @@ def is_valid_api_key(key: Optional[str]) -> bool:
         'YYY',
         'ZZZ',
         'TEST',
-        'EXAMPLE'
+        'EXAMPLE',
+        'VT-LIVE-',
+        'GSK-LIVE-',
+        'SK-LIVE-',
     ]
     
     key_upper = key.upper()
     for pattern in placeholder_patterns:
         if pattern in key_upper:
             return False
+
+    # Common fake/demo suffixes used in examples or local walkthroughs.
+    if key_upper.endswith('12345678'):
+        return False
     
     # Check minimum length (most API keys are at least 10 chars)
     if len(key) < 10:

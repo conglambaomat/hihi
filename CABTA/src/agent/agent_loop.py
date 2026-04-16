@@ -22,6 +22,7 @@ from .agent_store import AgentStore
 from .profiles import AgentProfileRegistry
 from .specialist_supervisor import SpecialistSupervisor
 from .tool_registry import ToolRegistry
+from ..utils.api_key_validator import get_valid_key, is_valid_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +146,12 @@ class AgentLoop:
         self.provider = llm_cfg.get('provider', 'ollama')
         self.ollama_endpoint = llm_cfg.get('ollama_endpoint', llm_cfg.get('base_url', 'http://localhost:11434'))
         self.ollama_model = llm_cfg.get('ollama_model', llm_cfg.get('model', 'llama3.1:8b'))
-        self.anthropic_key = config.get('api_keys', {}).get('anthropic', '')
+        self.anthropic_key = get_valid_key(config.get('api_keys', {}), 'anthropic') or ''
         self.anthropic_model = llm_cfg.get('anthropic_model', llm_cfg.get('model', 'claude-sonnet-4-20250514'))
-        self.groq_key = config.get('api_keys', {}).get('groq', '') or llm_cfg.get('api_key', '')
+        self.groq_key = (
+            get_valid_key(config.get('api_keys', {}), 'groq')
+            or (llm_cfg.get('api_key', '') if is_valid_api_key(llm_cfg.get('api_key', '')) else '')
+        )
         self.groq_endpoint = llm_cfg.get('groq_endpoint', llm_cfg.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_cfg.get('groq_model', llm_cfg.get('model', 'openai/gpt-oss-20b'))
         self.timeout = aiohttp.ClientTimeout(total=120)

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 import logging
 
+from ..utils.api_key_validator import get_valid_key
+
 logger = logging.getLogger(__name__)
 class LLMAnalyzer:
     """
@@ -49,11 +51,14 @@ class LLMAnalyzer:
         self.ollama_model = llm_config.get('ollama_model', llm_config.get('model', 'llama3.1:8b'))
         
         # Anthropic settings (fallback)
-        self.anthropic_key = config.get('api_keys', {}).get('anthropic', '')
+        self.anthropic_key = get_valid_key(config.get('api_keys', {}), 'anthropic') or ''
         self.anthropic_model = llm_config.get('anthropic_model', llm_config.get('model', 'claude-sonnet-4-20250514'))
 
         # Groq settings (OpenAI-compatible API for open-weight/open-source models)
-        self.groq_key = config.get('api_keys', {}).get('groq', '') or llm_config.get('api_key', '')
+        self.groq_key = (
+            get_valid_key(config.get('api_keys', {}), 'groq')
+            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
+        )
         self.groq_endpoint = llm_config.get('groq_endpoint', llm_config.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
         self.groq_model = llm_config.get('groq_model', llm_config.get('model', 'openai/gpt-oss-20b'))
 
@@ -285,9 +290,15 @@ Be specific and reference the tool findings in your analysis."""
                 'size_bytes': file_data.get('size_bytes', 0),
                 'sha256': file_data.get('sha256', 'N/A')[:64],
                 'hash_score': file_data.get('hash_score', 0),
+                'system_verdict': file_data.get('system_verdict', file_data.get('verdict', 'UNKNOWN')),
                 'architecture': file_data.get('architecture', 'N/A'),
                 'signed': file_data.get('signature', {}).get('signed', False),
-                'packer': file_data.get('packer_detection', {}).get('packer', 'None'),
+                'packer': (
+                    file_data.get('packer_detection', {}).get('packer')
+                    or ', '.join(file_data.get('packer_detection', {}).get('packers', [])[:2])
+                    or ', '.join(file_data.get('packer_detection', {}).get('protectors', [])[:2])
+                    or 'None'
+                ),
                 'packer_confidence': file_data.get('packer_detection', {}).get('confidence', 'N/A'),
                 'entropy': file_data.get('entropy', 0),
                 'entropy_category': file_data.get('entropy_category', 'unknown'),
@@ -389,6 +400,10 @@ File Information:
 - Type: Text File
 - Size: {context['size_bytes']:,} bytes
 
+Deterministic System Verdict:
+- System Verdict: {context['system_verdict']}
+- Composite Score: {context['composite_score']}/100
+
 {c2_section}
 
 {ip_section}
@@ -399,8 +414,6 @@ File Information:
 {f"Credential Indicators: {len(creds)} potential credential leaks" if creds else ""}
 
 {ioc_section}
-
-Composite Score: {context['composite_score']}/100
 
 Based on the above analysis, provide your professional threat assessment in JSON format:
 {{
@@ -414,7 +427,7 @@ Based on the above analysis, provide your professional threat assessment in JSON
     ]
 }}
 
-Be specific and reference the actual IOC findings in your analysis."""
+The deterministic system verdict is authoritative. Your JSON verdict must not be less severe than the system verdict when the composite score already indicates MALICIOUS or SUSPICIOUS. Explain the evidence; do not silently downgrade it."""
 
     def _build_standard_file_prompt(self, file_data: Dict, context: Dict) -> str:
         """Build standard LLM prompt for binary/script files."""
@@ -425,6 +438,10 @@ File Information:
 - Type: {context['file_type']}
 - Size: {context['size_bytes']:,} bytes
 - SHA256: {context['sha256']}
+
+Deterministic System Verdict:
+- System Verdict: {context['system_verdict']}
+- Composite Score: {context['composite_score']}/100
 
 Threat Intelligence:
 - Hash Score: {context['hash_score']}/100
@@ -454,8 +471,6 @@ Embedded IOC Analysis:
 {f"- Malicious IPs: {', '.join(context['malicious_ips'])}" if context['malicious_ips'] else ""}
 {f"- Malicious Domains: {', '.join(context['malicious_domains'])}" if context['malicious_domains'] else ""}
 
-Composite Score: {context['composite_score']}/100
-
 Based on the above tool analysis, provide your professional assessment in JSON format:
 {{
     "verdict": "MALICIOUS/SUSPICIOUS/CLEAN",
@@ -468,7 +483,7 @@ Based on the above tool analysis, provide your professional assessment in JSON f
     ]
 }}
 
-Be specific and reference the tool findings in your analysis."""
+The deterministic system verdict is authoritative. Your JSON verdict must not be less severe than the system verdict when the composite score already indicates MALICIOUS or SUSPICIOUS. Explain the evidence; do not silently downgrade it."""
     
     def _active_model_name(self) -> str:
         """Return the effective model name for the current provider."""

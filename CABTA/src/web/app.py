@@ -37,11 +37,18 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 CONFIG_FILE = PROJECT_ROOT / 'config.yaml'
 
 
-def _load_config() -> dict:
-    """Load configuration from config.yaml (or return sensible defaults)."""
+def _load_config(config_file: Path | None = None) -> dict:
+    """Load configuration from the provided config file (or sensible defaults)."""
+    active_config_file = Path(config_file) if config_file else CONFIG_FILE
     try:
         from src.utils.config import load_config
-        cfg = load_config(str(CONFIG_FILE) if CONFIG_FILE.is_file() else None)
+        from src.utils.config_history import snapshot_config
+        cfg = load_config(str(active_config_file) if active_config_file.is_file() else None)
+        if active_config_file.is_file():
+            try:
+                snapshot_config(active_config_file, reason="startup snapshot")
+            except Exception as history_exc:
+                logger.warning("[WEB] Config history snapshot skipped: %s", history_exc)
         logger.info("[WEB] Configuration loaded for CABTA")
         return cfg
     except Exception as exc:
@@ -94,8 +101,9 @@ async def _lifespan(app: FastAPI):
             pass
 
 
-def create_app() -> FastAPI:
+def create_app(config_file: str | Path | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
+    active_config_file = Path(config_file).expanduser().resolve() if config_file else CONFIG_FILE
 
     app = FastAPI(
         title='AISA',
@@ -139,7 +147,8 @@ def create_app() -> FastAPI:
     app.state.tool_registry = None
 
     # Load configuration
-    config = apply_runtime_config_bridges(_load_config())
+    config = apply_runtime_config_bridges(_load_config(active_config_file))
+    app.state.config_file = active_config_file
     app.state.config = config
     app.state.web_provider = WebDataProvider(config)
     app.state.agent_profiles = None

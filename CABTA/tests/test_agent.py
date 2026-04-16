@@ -2019,10 +2019,42 @@ class TestSandboxIntegration:
         assert "manual" in result["note"].lower()
 
     def test_api_key_alias_supports_legacy_and_new_sandbox_names(self):
-        integration = SandboxIntegration(config={"api_keys": {"joesandbox": "abc123", "hybridanalysis": "def456"}})
+        integration = SandboxIntegration(config={"api_keys": {"joesandbox": "joesandbox_key_12345", "hybridanalysis": "hybridanalysis_key_12345"}})
 
-        assert integration._get_api_key("joe_sandbox", "joesandbox") == "abc123"
-        assert integration._get_api_key("hybrid_analysis", "hybridanalysis") == "def456"
+        assert integration._get_api_key("joe_sandbox", "joesandbox") == "joesandbox_key_12345"
+        assert integration._get_api_key("hybrid_analysis", "hybridanalysis") == "hybridanalysis_key_12345"
+
+    def test_aggregate_results_promote_behavioral_signal_into_summary_score(self):
+        integration = SandboxIntegration(config={"api_keys": {}})
+
+        summary = integration._aggregate_sandbox_results(
+            {
+                "hybrid_analysis": {"found": False},
+                "virustotal_behavior": {
+                    "found": True,
+                    "report_url": "https://example.test/report",
+                    "behaviors": ["drops_payload", "beaconing"],
+                    "network_activity": {
+                        "dns_lookups": [{"hostname": "evil.test"}],
+                        "ip_traffic": [{"destination_ip": "185.220.101.45"}],
+                        "http_conversations": [{"url": "http://evil.test/payload"}],
+                    },
+                    "processes_created": [{"name": "powershell.exe"}],
+                    "files_written": [{"path": "C:/Temp/payload.exe"}],
+                    "registry_keys": [{"key": "HKCU\\Software\\Run"}],
+                    "mitre_attck": [{"id": "T1059"}],
+                },
+                "anyrun": {"found": False},
+                "joe_sandbox": {"found": False},
+            }
+        )
+
+        assert summary["available_reports"] == 1
+        assert summary["threat_score"] >= 40
+        assert summary["score"] == summary["threat_score"]
+        assert summary["verdict"] == "SUSPICIOUS"
+        assert "T1059" in summary["mitre_techniques"]
+        assert "drops_payload" in summary["signatures"]
 
 
 # ====================================================================== #
@@ -2137,9 +2169,15 @@ class TestMCPClientManager:
 
     def test_resolve_stdio_command_maps_project_relative_python(self):
         resolved = MCPClientManager._resolve_stdio_command(r".\.venv\Scripts\python.exe")
-        expected = (_PROJECT_ROOT / ".venv" / "Scripts" / "python.exe").resolve()
-        assert Path(resolved) == expected
-        assert expected.exists()
+        resolved_path = Path(resolved).resolve()
+        expected_candidates = {
+            (_PROJECT_ROOT / ".venv" / "bin" / "python").resolve(),
+            (_PROJECT_ROOT / ".venv" / "bin" / "python3").resolve(),
+            (_PROJECT_ROOT / ".venv" / "Scripts" / "python.exe").resolve(),
+            Path(sys.executable).resolve(),
+        }
+        assert resolved_path in expected_candidates
+        assert resolved_path.exists()
 
 
 # ====================================================================== #
@@ -2965,11 +3003,21 @@ class TestNewAgentTools:
 class TestSettingsAPI:
     """Test GET/POST /api/config/settings."""
 
-    def test_get_settings(self):
-        from starlette.testclient import TestClient
-        from src.web.app import create_app
+    @staticmethod
+    def _create_app_with_temp_config(tmp_path):
+        from src.web.app import PROJECT_ROOT, create_app
 
-        app = create_app()
+        temp_config = tmp_path / "config.yaml"
+        temp_config.write_text(
+            (PROJECT_ROOT / "config.yaml.example").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        return create_app(config_file=temp_config)
+
+    def test_get_settings(self, tmp_path):
+        from starlette.testclient import TestClient
+
+        app = self._create_app_with_temp_config(tmp_path)
         client = TestClient(app)
         resp = client.get("/api/config/settings")
         assert resp.status_code == 200
@@ -2978,9 +3026,8 @@ class TestSettingsAPI:
 
     def test_post_settings(self, tmp_path):
         from starlette.testclient import TestClient
-        from src.web.app import create_app
 
-        app = create_app()
+        app = self._create_app_with_temp_config(tmp_path)
         client = TestClient(app)
         resp = client.post("/api/config/settings", json={
             "agent": {"max_steps": 100},
@@ -2990,12 +3037,14 @@ class TestSettingsAPI:
         assert data.get("status") == "saved"
         assert "live runtime" in data.get("message", "").lower()
 
-    def test_post_settings_refreshes_live_runtime_api_keys_and_agent_provider(self):
+    def test_post_settings_refreshes_live_runtime_api_keys_and_agent_provider(self, tmp_path):
         from starlette.testclient import TestClient
-        from src.web.app import create_app
 
-        app = create_app()
+        app = self._create_app_with_temp_config(tmp_path)
         client = TestClient(app)
+        vt_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        groq_key = "gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
+        abusech_key = "abusech_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         resp = client.post("/api/config/settings", json={
             "llm": {
                 "provider": "groq",
@@ -3003,33 +3052,33 @@ class TestSettingsAPI:
                 "groq_model": "openai/gpt-oss-20b",
             },
             "api_keys": {
-                "virustotal": "vt-live-12345678",
-                "groq": "gsk-live-12345678",
-                "abusech": "abusech-live-12345678",
+                "virustotal": vt_key,
+                "groq": groq_key,
+                "abusech": abusech_key,
             },
         })
         assert resp.status_code == 200
-        assert app.state.ioc_investigator.threat_intel.api_keys["virustotal"] == "vt-live-12345678"
-        assert app.state.malware_analyzer.threat_intel.api_keys["virustotal"] == "vt-live-12345678"
-        assert app.state.agent_loop.groq_key == "gsk-live-12345678"
+        assert app.state.ioc_investigator.threat_intel.api_keys["virustotal"] == vt_key
+        assert app.state.malware_analyzer.threat_intel.api_keys["virustotal"] == vt_key
+        assert app.state.agent_loop.groq_key == groq_key
 
         ti_server = next(s for s in app.state.config["mcp_servers"] if s["name"] == "threat-intel-free")
-        assert ti_server["env"]["ABUSECH_AUTH_KEY"] == "abusech-live-12345678"
+        assert ti_server["env"]["ABUSECH_AUTH_KEY"] == abusech_key
 
-    def test_post_settings_can_clear_api_key_and_runtime_bridge(self):
+    def test_post_settings_can_clear_api_key_and_runtime_bridge(self, tmp_path):
         from starlette.testclient import TestClient
-        from src.web.app import create_app
 
-        app = create_app()
+        app = self._create_app_with_temp_config(tmp_path)
         client = TestClient(app)
 
+        abusech_key = "abusech_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         seed_resp = client.post("/api/config/settings", json={
             "api_keys": {
-                "abusech": "abusech-live-12345678",
+                "abusech": abusech_key,
             },
         })
         assert seed_resp.status_code == 200
-        assert app.state.config["api_keys"]["abusech"] == "abusech-live-12345678"
+        assert app.state.config["api_keys"]["abusech"] == abusech_key
 
         clear_resp = client.post("/api/config/settings", json={
             "api_keys": {
@@ -3042,11 +3091,10 @@ class TestSettingsAPI:
         ti_server = next(s for s in app.state.config["mcp_servers"] if s["name"] == "threat-intel-free")
         assert ti_server["env"]["ABUSECH_AUTH_KEY"] == ""
 
-    def test_get_settings_masks_api_keys(self):
+    def test_get_settings_masks_api_keys(self, tmp_path):
         from starlette.testclient import TestClient
-        from src.web.app import create_app
 
-        app = create_app()
+        app = self._create_app_with_temp_config(tmp_path)
         client = TestClient(app)
         resp = client.get("/api/config/settings")
         data = resp.json()
@@ -3070,7 +3118,7 @@ class TestSettingsAPI:
             },
             'api_keys': {
                 **app.state.config.get('api_keys', {}),
-                'groq': 'gsk-test-key',
+                'groq': 'gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456',
             },
         }
         app.state.web_provider.config = app.state.config
@@ -3135,7 +3183,7 @@ class TestSettingsAPI:
             },
             'api_keys': {
                 **app.state.config.get('api_keys', {}),
-                'groq': 'gsk-test-key',
+                'groq': 'gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456',
             },
         }
         app.state.web_provider.config = app.state.config
@@ -3604,11 +3652,11 @@ class TestAgentLoop:
                     "provider": "anthropic",
                     "anthropic_model": "claude-sonnet-4-20250514",
                 },
-                "api_keys": {"anthropic": "sk-test-key"},
+                "api_keys": {"anthropic": "sk_runtime_key_abcdefghijklmnopqrstuvwxyz123456"},
             },
         )
         assert loop.provider == "anthropic"
-        assert loop.anthropic_key == "sk-test-key"
+        assert loop.anthropic_key == "sk_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         assert loop.anthropic_model == "claude-sonnet-4-20250514"
 
     # ---- Groq provider config ---------------------------------------- #
@@ -3621,11 +3669,11 @@ class TestAgentLoop:
                     "groq_endpoint": "https://api.groq.com/openai/v1",
                     "groq_model": "openai/gpt-oss-20b",
                 },
-                "api_keys": {"groq": "gsk-test-key", "anthropic": ""},
+                "api_keys": {"groq": "gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456", "anthropic": ""},
             },
         )
         assert loop.provider == "groq"
-        assert loop.groq_key == "gsk-test-key"
+        assert loop.groq_key == "gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         assert loop.groq_model == "openai/gpt-oss-20b"
         assert loop.groq_endpoint == "https://api.groq.com/openai/v1"
 

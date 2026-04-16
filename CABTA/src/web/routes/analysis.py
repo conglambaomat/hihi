@@ -77,24 +77,32 @@ def _run_file_analysis_bg(mgr, job_id: str, file_path: str) -> None:
         from src.tools.malware_analyzer import MalwareAnalyzer
         config = _load_config()
         analyzer = MalwareAnalyzer(config)
+        analysis_cfg = config.get('analysis', {}) if isinstance(config, dict) else {}
+        analysis_timeout = float(analysis_cfg.get('timeout_seconds', 300) or 300)
+        last_step = {'message': 'Initializing analysis pipeline...'}
 
-        mgr.update_progress(job_id, 10, 'Computing file hashes...')
-        mgr.update_progress(job_id, 15, 'Running PE analysis...')
-        mgr.update_progress(job_id, 25, 'Analyzing strings (FLOSS)...')
-        mgr.update_progress(job_id, 35, 'Running YARA rules...')
-        mgr.update_progress(job_id, 45, 'Computing entropy...')
-        mgr.update_progress(job_id, 55, 'Querying sandbox APIs...')
+        def _on_progress(percent: int, message: str) -> None:
+            last_step['message'] = message
+            mgr.update_progress(job_id, percent, message)
 
-        result = asyncio.run(analyzer.analyze(file_path))
+        if hasattr(analyzer, 'set_progress_callback'):
+            analyzer.set_progress_callback(_on_progress)
+
+        mgr.update_progress(job_id, 8, last_step['message'])
+
+        result = asyncio.run(
+            asyncio.wait_for(analyzer.analyze(file_path), timeout=analysis_timeout)
+        )
 
         verdict = result.get('verdict', 'UNKNOWN')
         score = result.get('composite_score', result.get('threat_score', 0))
 
-        mgr.update_progress(job_id, 85, 'Generating MITRE ATT&CK mapping...')
-        mgr.update_progress(job_id, 90, 'Generating detection rules...')
         mgr.update_progress(job_id, 95, 'Saving results...')
         mgr.complete_job(job_id, result, verdict=verdict, score=score)
 
+    except asyncio.TimeoutError:
+        logger.error("[FILE-BG] Analysis timed out for %s after configured timeout", job_id)
+        mgr.fail_job(job_id, f"Analysis timed out while {last_step['message']}")
     except Exception as e:
         logger.error(f"[FILE-BG] Analysis failed for {job_id}: {e}")
         mgr.fail_job(job_id, str(e))
@@ -290,6 +298,7 @@ async def get_analysis(request: Request, analysis_id: str):
 async def get_analysis_status(request: Request, analysis_id: str):
     """Get analysis progress."""
     provider = request.app.state.web_provider
+    mgr = request.app.state.analysis_manager
     job = provider.get_job(request.app, analysis_id)
     if job is None:
         raise HTTPException(status_code=404, detail='Analysis not found')
@@ -304,6 +313,7 @@ async def get_analysis_status(request: Request, analysis_id: str):
         'score': job.get('score'),
         'confidence': job.get('confidence'),
         'mode': job.get('mode'),
+        'progress_log': mgr.get_progress_history(analysis_id),
     }
 
 

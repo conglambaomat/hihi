@@ -7,6 +7,8 @@ import hashlib
 from typing import Dict, Optional, List
 import logging
 
+from ..utils.api_key_validator import get_valid_key
+
 logger = logging.getLogger(__name__)
 class SandboxIntegration:
     """
@@ -23,6 +25,7 @@ class SandboxIntegration:
         self.config = config
         self.api_keys = config.get('api_keys', {})
         self.timeout = aiohttp.ClientTimeout(total=30)
+        self._progress_callback = None
         
         # Sandbox endpoints
         self.endpoints = {
@@ -32,12 +35,64 @@ class SandboxIntegration:
             'joesandbox': 'https://jbxcloud.joesecurity.org/api'
         }
 
+    def set_progress_callback(self, callback) -> None:
+        """Register a callback for provider-level sandbox lookup progress."""
+        self._progress_callback = callback
+
+    def _emit_progress(self, provider: str, status: str) -> None:
+        callback = self._progress_callback
+        if not callback:
+            return
+        try:
+            callback(str(provider), str(status))
+        except Exception as exc:
+            logger.debug("[SANDBOX] Progress callback failed: %s", exc)
+
     def _get_api_key(self, *names: str) -> str:
         for name in names:
-            value = self.api_keys.get(name, '')
+            value = get_valid_key(self.api_keys, name)
             if value:
                 return value
         return ''
+
+    @staticmethod
+    def _normalize_verdict(verdict: Optional[str]) -> str:
+        return str(verdict or '').strip().lower()
+
+    @classmethod
+    def _score_from_verdict(cls, verdict: Optional[str]) -> int:
+        normalized = cls._normalize_verdict(verdict)
+        if normalized in {'malicious', 'malware', 'infected'}:
+            return 90
+        if normalized in {'suspicious', 'high_risk'}:
+            return 65
+        if normalized in {'clean', 'benign'}:
+            return 0
+        return 0
+
+    @staticmethod
+    def _estimate_behavior_score(report: Dict) -> int:
+        """Convert behavior-only reports into a bounded suspiciousness score."""
+        behavior_count = len(report.get('behaviors', []) or [])
+        processes = len(report.get('processes_created', []) or [])
+        files_touched = len(report.get('files_written', []) or []) + len(report.get('files_deleted', []) or [])
+        registry_keys = len(report.get('registry_keys', []) or [])
+        network = report.get('network_activity', {}) or {}
+        network_events = (
+            len(network.get('dns_lookups', []) or [])
+            + len(network.get('ip_traffic', []) or [])
+            + len(network.get('http_conversations', []) or [])
+        )
+        mitre = len(report.get('mitre_attck', []) or [])
+
+        total_signals = behavior_count + processes + files_touched + registry_keys + network_events + mitre
+        if total_signals <= 0:
+            return 0
+
+        # Behavior lookups are informative, but without a provider verdict they
+        # should generally contribute "suspicious" rather than an automatic
+        # malicious score.
+        return min(68, 12 + (min(total_signals, 14) * 4))
     
     async def check_file_sandboxes(self, file_hash: str) -> Dict:
         """
@@ -70,32 +125,58 @@ class SandboxIntegration:
             self._check_anyrun(file_hash),
             self._check_joe_sandbox(file_hash)
         ]
+        for provider in ('hybrid_analysis', 'virustotal_behavior', 'anyrun', 'joe_sandbox'):
+            self._emit_progress(provider, 'querying')
         
         sandbox_results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Hybrid Analysis
         if not isinstance(sandbox_results[0], Exception) and sandbox_results[0]:
             results['hybrid_analysis'] = sandbox_results[0]
+            self._emit_progress(
+                'hybrid_analysis',
+                'found report' if sandbox_results[0].get('found') else sandbox_results[0].get('error', 'no report'),
+            )
             if sandbox_results[0].get('found'):
                 results['summary']['available_reports'] += 1
+        elif isinstance(sandbox_results[0], Exception):
+            self._emit_progress('hybrid_analysis', 'error')
         
         # VirusTotal Behavior
         if not isinstance(sandbox_results[1], Exception) and sandbox_results[1]:
             results['virustotal_behavior'] = sandbox_results[1]
+            self._emit_progress(
+                'virustotal_behavior',
+                'found report' if sandbox_results[1].get('found') else sandbox_results[1].get('error', 'no report'),
+            )
             if sandbox_results[1].get('found'):
                 results['summary']['available_reports'] += 1
+        elif isinstance(sandbox_results[1], Exception):
+            self._emit_progress('virustotal_behavior', 'error')
         
         # ANY.RUN
         if not isinstance(sandbox_results[2], Exception) and sandbox_results[2]:
             results['anyrun'] = sandbox_results[2]
+            self._emit_progress(
+                'anyrun',
+                sandbox_results[2].get('status', 'found report' if sandbox_results[2].get('found') else 'no report'),
+            )
             if sandbox_results[2].get('found'):
                 results['summary']['available_reports'] += 1
+        elif isinstance(sandbox_results[2], Exception):
+            self._emit_progress('anyrun', 'error')
         
         # Joe Sandbox
         if not isinstance(sandbox_results[3], Exception) and sandbox_results[3]:
             results['joe_sandbox'] = sandbox_results[3]
+            self._emit_progress(
+                'joe_sandbox',
+                'found report' if sandbox_results[3].get('found') else sandbox_results[3].get('error', 'no report'),
+            )
             if sandbox_results[3].get('found'):
                 results['summary']['available_reports'] += 1
+        elif isinstance(sandbox_results[3], Exception):
+            self._emit_progress('joe_sandbox', 'error')
         
         # Aggregate behaviors
         results['summary'] = self._aggregate_sandbox_results(results)
@@ -150,7 +231,7 @@ class SandboxIntegration:
     
     async def _check_virustotal_behavior(self, file_hash: str) -> Dict:
         """Check VirusTotal for behavior analysis."""
-        api_key = self.api_keys.get('virustotal', '')
+        api_key = self._get_api_key('virustotal')
         if not api_key:
             return {'error': 'API key not configured'}
         
@@ -254,53 +335,86 @@ class SandboxIntegration:
             'available_reports': 0,
             'verdict': 'UNKNOWN',
             'behaviors': set(),
+            'signatures': set(),
             'network_activity': {
                 'domains': set(),
                 'ips': set(),
                 'urls': set()
             },
             'mitre_techniques': set(),
-            'report_urls': []
+            'report_urls': [],
+            'threat_score': 0,
+            'score': 0,
         }
-        
+        provider_scores: List[int] = []
+
         # Hybrid Analysis
         ha = results.get('hybrid_analysis', {})
         if ha.get('found'):
             summary['available_reports'] += 1
             summary['report_urls'].append(ha.get('report_url'))
-            
-            if ha.get('verdict') in ['malicious', 'suspicious']:
+
+            ha_score = int(ha.get('threat_score') or self._score_from_verdict(ha.get('verdict')))
+            if ha_score > 0:
+                provider_scores.append(ha_score)
+
+            if self._normalize_verdict(ha.get('verdict')) in {'malicious', 'suspicious'}:
                 summary['verdict'] = 'MALICIOUS'
-            
-            summary['behaviors'].update(ha.get('behaviors', []))
-            
+
+            behaviors = [str(item) for item in ha.get('behaviors', []) if item]
+            summary['behaviors'].update(behaviors)
+            summary['signatures'].update(behaviors)
+
             network = ha.get('network_activity', {})
             summary['network_activity']['domains'].update(network.get('domains', []))
             summary['network_activity']['ips'].update(network.get('ips', []))
-            
+            summary['network_activity']['urls'].update(network.get('urls', []))
+
             summary['mitre_techniques'].update(ha.get('mitre_attck', []))
-        
+
         # VirusTotal Behavior
         vt = results.get('virustotal_behavior', {})
         if vt.get('found'):
             summary['available_reports'] += 1
             summary['report_urls'].append(vt.get('report_url'))
-            
-            summary['behaviors'].update(vt.get('behaviors', []))
-            
+
+            vt_behaviors = [str(item) for item in vt.get('behaviors', []) if item]
+            summary['behaviors'].update(vt_behaviors)
+            summary['signatures'].update(vt_behaviors)
+
             network = vt.get('network_activity', {})
             summary['network_activity']['domains'].update([d.get('hostname') for d in network.get('dns_lookups', [])])
             summary['network_activity']['ips'].update([ip.get('destination_ip') for ip in network.get('ip_traffic', [])])
-            
-            summary['mitre_techniques'].update([t.get('id') for t in vt.get('mitre_attck', [])])
-        
+            summary['network_activity']['urls'].update(
+                [http.get('url') for http in network.get('http_conversations', []) if isinstance(http, dict)]
+            )
+
+            mitre = [t.get('id') for t in vt.get('mitre_attck', []) if isinstance(t, dict) and t.get('id')]
+            summary['mitre_techniques'].update(mitre)
+            vt_score = self._estimate_behavior_score(vt)
+            if vt_score > 0:
+                provider_scores.append(vt_score)
+
+        if provider_scores:
+            peak_score = max(provider_scores)
+            summary['threat_score'] = peak_score
+            summary['score'] = peak_score
+            if summary['verdict'] != 'MALICIOUS':
+                if peak_score >= 70:
+                    summary['verdict'] = 'MALICIOUS'
+                elif peak_score >= 40 or summary['available_reports'] > 0:
+                    summary['verdict'] = 'SUSPICIOUS'
+        elif summary['available_reports'] > 0:
+            summary['verdict'] = 'SUSPICIOUS'
+
         # Convert sets to lists
         summary['behaviors'] = list(summary['behaviors'])
+        summary['signatures'] = list(summary['signatures'])
         summary['network_activity']['domains'] = list(summary['network_activity']['domains'])
         summary['network_activity']['ips'] = list(summary['network_activity']['ips'])
         summary['network_activity']['urls'] = list(summary['network_activity']['urls'])
         summary['mitre_techniques'] = list(summary['mitre_techniques'])
-        
+
         return summary
     
     # ==================== AUTO-SUBMIT FUNCTIONALITY () ====================
@@ -375,7 +489,7 @@ class SandboxIntegration:
     
     async def _submit_to_virustotal(self, file_data: bytes, file_name: str) -> Dict:
         """Submit file to VirusTotal for scanning."""
-        api_key = self.api_keys.get('virustotal', '')
+        api_key = self._get_api_key('virustotal')
         if not api_key:
             return {'error': 'VirusTotal API key not configured'}
         

@@ -948,7 +948,11 @@
                 }
 
                 if (callbacks.onProgress) {
-                    callbacks.onProgress({ percent: Math.max(15, pct), message: msg });
+                    callbacks.onProgress({
+                        percent: Math.max(15, pct),
+                        message: msg,
+                        progressLog: statusData.progress_log || []
+                    });
                 }
 
                 setTimeout(function () {
@@ -2068,6 +2072,15 @@
             var llm = res.llm_analysis;
             var llmHtml = '';
             if (typeof llm === 'object') {
+                if (res.verdict) {
+                    var sysVColor = res.verdict.toUpperCase() === 'MALICIOUS' ? 'danger' : (res.verdict.toUpperCase() === 'SUSPICIOUS' ? 'warning' : (res.verdict.toUpperCase() === 'CLEAN' ? 'success' : 'secondary'));
+                    llmHtml += '<div class="text-center mb-3">';
+                    llmHtml += '<div class="d-inline-flex align-items-center gap-3 p-3" style="background:rgba(var(--bs-' + sysVColor + '-rgb,220,53,69),0.08);border:1px solid rgba(var(--bs-' + sysVColor + '-rgb,220,53,69),0.2);border-radius:12px;">';
+                    llmHtml += '<i class="bi bi-shield-check" style="font-size:1.6rem;color:var(--bs-' + sysVColor + ');"></i>';
+                    llmHtml += '<div><div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;opacity:0.7;">System Verdict</div>';
+                    llmHtml += '<span class="badge bg-' + sysVColor + ' fs-6">' + escHtml(res.verdict) + '</span>';
+                    llmHtml += '</div></div></div>';
+                }
                 /* Verdict badge */
                 if (llm.verdict) {
                     var llmVColor = llm.verdict.toUpperCase() === 'MALICIOUS' ? 'danger' : (llm.verdict.toUpperCase() === 'SUSPICIOUS' ? 'warning' : (llm.verdict.toUpperCase() === 'CLEAN' ? 'success' : 'secondary'));
@@ -2120,6 +2133,12 @@
         if ((typeof rules === 'object' && !Array.isArray(rules) && Object.keys(rules).length > 0) || (Array.isArray(rules) && rules.length > 0)) {
             var drHtml = '';
             var ruleUid = 0;
+            var ruleCatalog = {
+                kql: { label: 'KQL', desc: 'Microsoft Defender / Sentinel hunt', icon: 'bi-shield-check', accent: 'info' },
+                spl: { label: 'Splunk SPL', desc: 'Splunk search', icon: 'bi-search', accent: 'warning' },
+                sigma: { label: 'Sigma', desc: 'Portable detection rule', icon: 'bi-file-earmark-code', accent: 'success' },
+                yara: { label: 'YARA', desc: 'File signature rule', icon: 'bi-bug', accent: 'danger' }
+            };
 
             var ruleMap = {};
             if (Array.isArray(rules)) {
@@ -2133,26 +2152,52 @@
 
             var ruleTypes = Object.keys(ruleMap);
             if (ruleTypes.length > 0) {
+                drHtml += '<div class="detection-rule-summary">';
+                drHtml += '<div class="detection-rule-summary-title"><i class="bi bi-code-square me-2"></i>Generated Detection Rules</div>';
+                drHtml += '<div class="detection-rule-summary-subtitle">Rules are built from stable file artifacts such as hashes, filename, IOC pivots, and suspicious strings extracted during analysis.</div>';
+                drHtml += '</div>';
                 drHtml += '<ul class="nav nav-pills sub-tabs mb-3" id="detectionSubTabs" role="tablist">';
                 ruleTypes.forEach(function (rt, idx) {
+                    var meta = ruleCatalog[rt.toLowerCase()] || {
+                        label: rt.toUpperCase(),
+                        desc: 'Generated rule',
+                        icon: 'bi-code-square',
+                        accent: 'secondary'
+                    };
                     var tabId = 'det-' + rt.toLowerCase().replace(/[^a-z0-9]/g, '');
                     drHtml += '<li class="nav-item" role="presentation">';
                     drHtml += '<button class="nav-link' + (idx === 0 ? ' active' : '') + '" id="tab-' + tabId + '" data-bs-toggle="pill" data-bs-target="#panel-' + tabId + '" type="button" role="tab">';
-                    drHtml += '<i class="bi bi-code-square me-1"></i>' + escHtml(rt.toUpperCase());
+                    drHtml += '<i class="bi ' + meta.icon + ' me-1"></i>' + escHtml(meta.label);
                     drHtml += '</button></li>';
                 });
                 drHtml += '</ul>';
 
                 drHtml += '<div class="tab-content">';
                 ruleTypes.forEach(function (rt, idx) {
+                    var meta = ruleCatalog[rt.toLowerCase()] || {
+                        label: rt.toUpperCase(),
+                        desc: 'Generated rule',
+                        icon: 'bi-code-square',
+                        accent: 'secondary'
+                    };
                     var tabId = 'det-' + rt.toLowerCase().replace(/[^a-z0-9]/g, '');
                     var preId = 'rule-pre-' + tabId;
                     var content = ruleMap[rt] || '';
+                    var lineCount;
                     if (typeof content !== 'string') content = JSON.stringify(content, null, 2);
+                    lineCount = content ? content.split(/\r?\n/).length : 0;
                     drHtml += '<div class="tab-pane fade' + (idx === 0 ? ' show active' : '') + '" id="panel-' + tabId + '" role="tabpanel">';
                     drHtml += '<div class="detection-rule-block">';
+                    drHtml += '<div class="detection-rule-toolbar">';
+                    drHtml += '<div class="detection-rule-platform">';
+                    drHtml += '<span class="rule-platform-badge badge-' + meta.accent + '"><i class="bi ' + meta.icon + ' me-1"></i>' + escHtml(meta.label) + '</span>';
+                    drHtml += '<span class="detection-rule-caption">' + escHtml(meta.desc) + '</span>';
+                    drHtml += '</div>';
+                    drHtml += '<div class="detection-rule-actions">';
+                    drHtml += '<span class="detection-rule-lines">' + lineCount + ' lines</span>';
                     drHtml += '<button class="btn-copy-rule" onclick="copyRuleToClipboard(this, \'' + preId + '\')"><i class="bi bi-clipboard"></i> Copy</button>';
-                    drHtml += '<pre id="' + preId + '">' + escHtml(content) + '</pre>';
+                    drHtml += '</div></div>';
+                    drHtml += '<pre id="' + preId + '"><code>' + escHtml(content) + '</code></pre>';
                     drHtml += '</div></div>';
                 });
                 drHtml += '</div>';

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .normalizer import normalize_case, normalize_job
+from ..utils.api_key_validator import is_valid_api_key
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEMO_DATA_DIR = PROJECT_ROOT / "data" / "demo"
@@ -46,7 +47,7 @@ class WebDataProvider:
 
     def _has_api_key(self, *names: str) -> bool:
         api_keys = self._api_keys()
-        return any(bool(api_keys.get(name)) for name in names)
+        return any(is_valid_api_key(api_keys.get(name)) for name in names)
 
     def _mcp_status(self, app: Any) -> Dict[str, Any]:
         mcp_client = getattr(app.state, "mcp_client", None)
@@ -86,6 +87,18 @@ class WebDataProvider:
             return orchestrator.get_sandbox_status() or []
         except Exception:
             return []
+
+    def _has_sandbox_lookup_provider(self) -> bool:
+        return self._has_api_key(
+            "virustotal",
+            "hybrid_analysis",
+            "hybridanalysis",
+            "anyrun",
+            "joe_sandbox",
+            "joesandbox",
+            "triage",
+            "threatzone",
+        )
 
     def feature_status(self, app: Any) -> Dict[str, Dict[str, Any]]:
         cfg = self.config or {}
@@ -133,11 +146,16 @@ class WebDataProvider:
             item.get("id") == "local_static" and item.get("available")
             for item in sandbox_inventory
         )
+        lookup_ready = self._has_sandbox_lookup_provider()
 
         if not sandbox_enabled:
             sandbox_status = {"status": "disabled", "label": "Disabled"}
         elif dynamic_ready:
             sandbox_status = {"status": "enabled", "label": "Ready"}
+        elif static_ready and lookup_ready:
+            sandbox_status = {"status": "degraded", "label": "Static + lookup"}
+        elif lookup_ready:
+            sandbox_status = {"status": "degraded", "label": "Lookup-only"}
         elif static_ready:
             sandbox_status = {"status": "degraded", "label": "Static-only"}
         else:

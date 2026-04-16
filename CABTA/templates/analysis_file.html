@@ -363,38 +363,131 @@
     .contributing-factor:last-child { border-bottom: none; }
 
     /* ===== Detection Rules ===== */
+    .detection-rule-summary {
+        margin-bottom: 14px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: linear-gradient(135deg, rgba(13,110,253,0.10), rgba(13,202,240,0.05));
+    }
+    .detection-rule-summary-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: rgba(245,250,255,0.96);
+        margin-bottom: 4px;
+    }
+    .detection-rule-summary-subtitle {
+        font-size: 0.8rem;
+        line-height: 1.55;
+        color: rgba(223,232,245,0.78);
+    }
     .detection-rule-block {
-        position: relative;
         margin-bottom: 16px;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        overflow: hidden;
+        background: rgba(4,12,24,0.55);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    }
+    .detection-rule-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+        background: rgba(255,255,255,0.03);
+    }
+    .detection-rule-platform,
+    .detection-rule-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    .rule-platform-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        font-size: 0.73rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        border: 1px solid transparent;
+    }
+    .rule-platform-badge.badge-info {
+        background: rgba(13,202,240,0.14);
+        color: #9cecff;
+        border-color: rgba(13,202,240,0.28);
+    }
+    .rule-platform-badge.badge-warning {
+        background: rgba(255,193,7,0.12);
+        color: #ffe089;
+        border-color: rgba(255,193,7,0.24);
+    }
+    .rule-platform-badge.badge-success {
+        background: rgba(25,135,84,0.14);
+        color: #8bf0c0;
+        border-color: rgba(25,135,84,0.28);
+    }
+    .rule-platform-badge.badge-danger {
+        background: rgba(220,53,69,0.14);
+        color: #ffb0b9;
+        border-color: rgba(220,53,69,0.28);
+    }
+    .rule-platform-badge.badge-secondary {
+        background: rgba(173,181,189,0.12);
+        color: #d8e0e8;
+        border-color: rgba(173,181,189,0.24);
+    }
+    .detection-rule-caption {
+        font-size: 0.78rem;
+        color: rgba(226,236,247,0.72);
+    }
+    .detection-rule-lines {
+        font-size: 0.75rem;
+        color: rgba(226,236,247,0.68);
+        font-family: 'Cascadia Code', 'Fira Code', monospace;
     }
     .detection-rule-block pre {
-        background: rgba(0,0,0,0.25);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 8px;
-        padding: 14px;
-        font-size: 0.8rem;
+        background: linear-gradient(180deg, rgba(5,14,28,0.94), rgba(8,18,34,0.98));
+        border: 0;
+        border-radius: 0;
+        padding: 16px;
+        font-size: 0.82rem;
         max-height: 400px;
-        overflow-y: auto;
-        color: var(--bs-secondary-color, #adb5bd);
-        white-space: pre-wrap;
-        word-break: break-word;
+        overflow: auto;
+        color: #edf5ff;
+        white-space: pre;
+        line-height: 1.6;
+        tab-size: 4;
         margin: 0;
     }
+    .detection-rule-block pre code {
+        color: inherit;
+        font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
     .btn-copy-rule {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        background: rgba(0,0,0,0.4);
-        border: 1px solid rgba(255,255,255,0.15);
-        color: var(--bs-secondary-color, #adb5bd);
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-size: 0.72rem;
+        position: static;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(6,20,38,0.88);
+        border: 1px solid rgba(125,168,221,0.25);
+        color: rgba(235,244,255,0.92);
+        padding: 6px 11px;
+        border-radius: 8px;
+        font-size: 0.74rem;
         cursor: pointer;
         transition: all 0.2s;
         z-index: 2;
     }
-    .btn-copy-rule:hover { background: rgba(var(--bs-primary-rgb,13,110,253),0.2); color: var(--bs-primary, #0d6efd); }
+    .btn-copy-rule:hover {
+        background: rgba(var(--bs-primary-rgb,13,110,253),0.24);
+        color: #ffffff;
+        border-color: rgba(var(--bs-primary-rgb,13,110,253),0.42);
+    }
     .btn-copy-rule.copied { color: #198754; border-color: #198754; }
 
     /* ===== Sandbox & Dynamic Analysis ===== */
@@ -1126,6 +1219,7 @@
     var progressLog = document.getElementById('fileProgressLog');
     var progressSpinner = document.getElementById('fileProgressSpinner');
     var resultsArea = document.getElementById('fileResults');
+    var lastRenderedProgressCount = 0;
 
     var fileTypeIcon = document.getElementById('fileTypeIcon');
     var fileTypeBadge = document.getElementById('fileTypeBadge');
@@ -1235,10 +1329,30 @@
         progressBar.textContent = pct + '%';
         if (message) {
             progressStatus.textContent = message;
-            var li = document.createElement('li');
-            li.textContent = message;
-            progressLog.appendChild(li);
+            var lastItem = progressLog.lastElementChild;
+            if (!lastItem || lastItem.textContent !== message) {
+                var li = document.createElement('li');
+                li.textContent = message;
+                progressLog.appendChild(li);
+                lastRenderedProgressCount = Math.max(lastRenderedProgressCount, progressLog.childElementCount);
+            }
         }
+    }
+
+    function syncProgressLog(entries) {
+        if (!Array.isArray(entries) || !entries.length) return;
+        for (var i = lastRenderedProgressCount; i < entries.length; i += 1) {
+            var entry = entries[i];
+            var message = entry && entry.message ? String(entry.message) : '';
+            if (!message) continue;
+            var lastItem = progressLog.lastElementChild;
+            if (!lastItem || lastItem.textContent !== message) {
+                var li = document.createElement('li');
+                li.textContent = message;
+                progressLog.appendChild(li);
+            }
+        }
+        lastRenderedProgressCount = Math.max(lastRenderedProgressCount, entries.length);
     }
 
     /**
@@ -1489,12 +1603,14 @@
             progressArea.style.display = 'block';
             resultsArea.style.display = 'none';
             while (progressLog.firstChild) { progressLog.removeChild(progressLog.firstChild); }
+            lastRenderedProgressCount = 0;
             progressBar.classList.remove('bg-danger');
             progressSpinner.style.display = '';
             setProgress(0, 'Uploading file...');
 
             window.startFileAnalysis(currentFile, {
                 onProgress: function (data) {
+                    syncProgressLog(data.progressLog || []);
                     setProgress(data.percent || 0, data.message || '');
                 },
                 onComplete: function (data) {
@@ -1550,6 +1666,7 @@
     var analysisId = params.get('id');
     if (analysisId) {
         progressArea.style.display = 'block';
+        lastRenderedProgressCount = 0;
         setProgress(5, 'Loading analysis...');
         progressSpinner.style.display = '';
 
@@ -1596,6 +1713,7 @@
                     progressSpinner.style.display = 'none';
                     return;
                 }
+                syncProgressLog(statusData.progress_log || []);
                 setProgress(statusData.progress || 10, statusData.current_step || 'Resuming...');
             })
             .catch(function (err) {

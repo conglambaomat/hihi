@@ -70,6 +70,7 @@ htmlcov/
 
 # --- Local Settings ---
 .claude/
+.config-history/
 
 # --- OS Files ---
 .DS_Store

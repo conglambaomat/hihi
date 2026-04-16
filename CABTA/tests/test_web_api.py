@@ -45,6 +45,17 @@ class TestAnalysisManager:
         assert job['progress'] == 50
         assert job['current_step'] == 'Scanning with YARA...'
 
+    def test_progress_history_keeps_distinct_messages(self):
+        job_id = self.mgr.create_job('file', {'sha256': 'abc'})
+        self.mgr.update_progress(job_id, 20, 'Hash intel: VirusTotal - querying')
+        self.mgr.update_progress(job_id, 20, 'Hash intel: VirusTotal - querying')
+        self.mgr.update_progress(job_id, 22, 'Hash intel: ThreatFox - querying')
+        history = self.mgr.get_progress_history(job_id)
+        assert [item['message'] for item in history] == [
+            'Hash intel: VirusTotal - querying',
+            'Hash intel: ThreatFox - querying',
+        ]
+
     def test_complete_job(self):
         job_id = self.mgr.create_job('ioc', {'value': 'evil.com'})
         result = {'verdict': 'MALICIOUS', 'score': 85}

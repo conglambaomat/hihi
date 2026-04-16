@@ -7,7 +7,7 @@ Author: Ugur Ates
 """
 
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 import logging
 from ..integrations.threat_intel import ThreatIntelligence
 from ..integrations.llm_analyzer import LLMAnalyzer
@@ -128,12 +128,14 @@ class IOCInvestigator:
 
         return bonus
 
-    async def investigate(self, ioc: str) -> Dict:
+    async def investigate(self, ioc: str, include_llm: Optional[bool] = None) -> Dict:
         """
         Investigate IOC.
 
         Args:
             ioc: Indicator to investigate
+            include_llm: Override whether to run the optional LLM summary.
+                When None, falls back to configuration.
 
         Returns:
             Investigation results
@@ -186,7 +188,11 @@ class IOCInvestigator:
 
         # Get LLM analysis if enabled (non-blocking: failure is OK)
         llm_analysis = {}
-        if self.config.get('analysis', {}).get('enable_llm', True):
+        llm_enabled = self.config.get('analysis', {}).get('enable_llm', True)
+        if include_llm is not None:
+            llm_enabled = include_llm
+
+        if llm_enabled:
             try:
                 llm_analysis = await self.llm_analyzer.analyze_ioc_results(ioc, ioc_type, intel_results)
                 if llm_analysis is None:
@@ -194,6 +200,8 @@ class IOCInvestigator:
             except Exception as llm_err:
                 logger.warning(f"[IOC] LLM analysis failed (non-fatal): {llm_err}")
                 llm_analysis = {'note': f'LLM analysis failed: {llm_err}'}
+        else:
+            llm_analysis = {'note': 'LLM skipped for tool-only IOC investigation'}
 
         # Generate detection rules
         detection_rules = RuleGenerator.generate_ioc_rules(ioc, ioc_type, {'verdict': verdict})

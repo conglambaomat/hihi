@@ -45,6 +45,115 @@ class ThreatIntelligence:
         # Initialize threat feed checker (USOM, etc.)
         from .threat_feeds import ThreatFeeds
         self.threat_feeds = ThreatFeeds(config)
+        self._progress_callback = None
+
+    def set_progress_callback(self, callback) -> None:
+        """Register a best-effort callback for live source-level progress."""
+        self._progress_callback = callback
+
+    def _emit_progress(self, source_name: str, status: str) -> None:
+        callback = self._progress_callback
+        if not callback:
+            return
+        try:
+            callback(str(source_name), str(status))
+        except Exception as exc:
+            logger.debug("[INTEL] Progress callback failed: %s", exc)
+
+    def _get_source_timeout(self, source_name: str, ioc_type: Optional[str] = None) -> float:
+        """
+        Return the per-source timeout budget for interactive IOC lookups.
+
+        File-analysis runs in an interactive web flow, so optional feeds should
+        not be allowed to stall the whole experience for too long. Operators can
+        override these budgets in ``config.yaml`` via
+        ``timeouts.source_timeouts.<source_name>``.
+        """
+        timeouts = self.config.get('timeouts', {}) or {}
+        default_timeout = 15.0
+        try:
+            configured_default = float(timeouts.get('ioc_source_timeout', default_timeout))
+        except (TypeError, ValueError):
+            configured_default = default_timeout
+
+        source_overrides = timeouts.get('source_timeouts', {}) or {}
+        configured = None
+        if ioc_type:
+            configured = source_overrides.get(f'{source_name}_{ioc_type}')
+        if configured is None:
+            configured = source_overrides.get(source_name)
+        if configured is not None:
+            try:
+                return max(0.1, float(configured))
+            except (TypeError, ValueError):
+                logger.debug("[INTEL] Invalid timeout override for %s: %r", source_name, configured)
+
+        normalized_ioc_type = (ioc_type or '').lower()
+        if normalized_ioc_type in {'hash', 'md5', 'sha1', 'sha256'}:
+            interactive_hash_budgets = {
+                'virustotal': 6.0,
+                'alienvault': 5.0,
+                'malwarebazaar': 5.0,
+                'threatfox': 3.0,
+                'triage': 5.0,
+                'threatzone': 5.0,
+            }
+            if source_name in interactive_hash_budgets:
+                return min(configured_default, interactive_hash_budgets[source_name])
+
+        # ThreatFox is valuable enrichment, but not worth blocking the entire
+        # interactive IOC experience for a long time when the upstream is slow.
+        if source_name == 'threatfox':
+            return min(configured_default, 5.0)
+
+        return configured_default
+
+    @staticmethod
+    def _auth_required_result(source_name: str, message: str) -> Dict:
+        return {
+            'source': source_name,
+            'status': '⚠',
+            'query_status': 'auth_required',
+            'found': False,
+            'manual': True,
+            'message': message,
+            'portal': 'https://auth.abuse.ch/',
+            'score': 0,
+        }
+
+    @staticmethod
+    def _progress_state_from_result(result: Dict) -> str:
+        if not isinstance(result, dict):
+            return 'completed'
+
+        if result.get('query_status') == 'auth_required':
+            return 'auth required'
+        if result.get('status') == '✓':
+            return 'flagged'
+        if result.get('error') == 'Timeout':
+            return 'timeout'
+        if result.get('error'):
+            return 'error'
+        return 'completed'
+
+    @staticmethod
+    def _normalize_virustotal_ioc_type(ioc_type: str) -> Optional[str]:
+        """
+        Normalize IOC type aliases to the endpoint families used by VirusTotal.
+
+        CABTA commonly categorizes hashes as ``md5``, ``sha1`` or ``sha256``,
+        while the VirusTotal client historically only accepted ``hash``. That
+        mismatch silently dropped file reputation from file-analysis scoring.
+        """
+        normalized = (ioc_type or '').strip().lower()
+
+        if normalized in {'hash', 'md5', 'sha1', 'sha256'}:
+            return 'hash'
+        if normalized in {'ip', 'ipv4'}:
+            return 'ipv4'
+        if normalized in {'domain', 'url'}:
+            return normalized
+        return None
     
     async def check_virustotal(self, ioc: str, ioc_type: str) -> Dict:
         """
@@ -52,7 +161,7 @@ class ThreatIntelligence:
         
         Args:
             ioc: Indicator to check
-            ioc_type: Type (ipv4, domain, url, hash)
+            ioc_type: Type (ipv4, domain, url, hash, md5, sha1, sha256)
         
         Returns:
             VirusTotal analysis result
@@ -64,14 +173,16 @@ class ThreatIntelligence:
         try:
             headers = {'x-apikey': api_key}
             
+            vt_ioc_type = self._normalize_virustotal_ioc_type(ioc_type)
+
             # Determine endpoint
-            if ioc_type == 'hash':
+            if vt_ioc_type == 'hash':
                 url = f'https://www.virustotal.com/api/v3/files/{ioc}'
-            elif ioc_type == 'ipv4':
+            elif vt_ioc_type == 'ipv4':
                 url = f'https://www.virustotal.com/api/v3/ip_addresses/{ioc}'
-            elif ioc_type == 'domain':
+            elif vt_ioc_type == 'domain':
                 url = f'https://www.virustotal.com/api/v3/domains/{ioc}'
-            elif ioc_type == 'url':
+            elif vt_ioc_type == 'url':
                 import base64
                 url_id = base64.urlsafe_b64encode(ioc.encode()).decode().strip('=')
                 url = f'https://www.virustotal.com/api/v3/urls/{url_id}'
@@ -443,10 +554,17 @@ class ThreatIntelligence:
         try:
             # ThreatFox API - may require API key for authenticated access
             api_key = get_valid_key(self.api_keys, 'threatfox') or get_valid_key(self.api_keys, 'abusech')
+            if not api_key:
+                return self._auth_required_result(
+                    'ThreatFox',
+                    (
+                        'ThreatFox now requires an Auth-Key for live API searches. '
+                        'Set api_keys.threatfox or api_keys.abusech to enable it.'
+                    ),
+                )
             data = {'query': 'search_ioc', 'search_term': ioc}
             headers = {'Content-Type': 'application/json'}
-            if api_key:
-                headers['Auth-Key'] = api_key
+            headers['Auth-Key'] = api_key
 
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(
@@ -477,7 +595,15 @@ class ThreatIntelligence:
 
                         return {'status': '✗', 'found': False, 'score': 0}
                     elif response.status == 401:
-                        return {'status': '⚠', 'found': False, 'message': 'API key required (abuse.ch now requires auth)', 'error': 'HTTP 401', 'score': 0}
+                        return self._auth_required_result(
+                            'ThreatFox',
+                            'ThreatFox rejected the current Auth-Key (HTTP 401). Verify api_keys.threatfox or api_keys.abusech.',
+                        )
+                    elif response.status == 403:
+                        return self._auth_required_result(
+                            'ThreatFox',
+                            'ThreatFox denied the current Auth-Key (HTTP 403). Verify api_keys.threatfox or api_keys.abusech.',
+                        )
                     else:
                         return {'status': '⚠', 'error': f'HTTP {response.status}'}
         
@@ -724,7 +850,7 @@ class ThreatIntelligence:
         
         Args:
             ioc: Indicator to investigate
-            ioc_type: Type (ipv4, domain, url, hash)
+            ioc_type: Type (ipv4, domain, url, hash, md5, sha1, sha256)
         
         Returns:
             Aggregated results from all sources with proper error handling
@@ -837,14 +963,24 @@ class ThreatIntelligence:
         
         async def safe_execute(name: str, coro) -> tuple:
             """Execute with timeout and error handling."""
+            start_time = asyncio.get_running_loop().time()
+            source_timeout = self._get_source_timeout(name, ioc_type)
+            self._emit_progress(name, 'querying')
             try:
-                result = await asyncio.wait_for(coro, timeout=15.0)
+                result = await asyncio.wait_for(coro, timeout=source_timeout)
+                elapsed = asyncio.get_running_loop().time() - start_time
+                state = self._progress_state_from_result(result)
+                self._emit_progress(name, f'{state} ({elapsed:.1f}s)')
                 return name, result
             except asyncio.TimeoutError:
-                logger.warning(f"[INTEL] {name}: Timeout after 15s")
+                logger.warning(f"[INTEL] {name}: Timeout after {source_timeout}s")
+                elapsed = asyncio.get_running_loop().time() - start_time
+                self._emit_progress(name, f'timeout ({elapsed:.1f}s)')
                 return name, {'status': '⚠', 'error': 'Timeout'}
             except Exception as e:
                 logger.error(f"[INTEL] {name} failed: {e}")
+                elapsed = asyncio.get_running_loop().time() - start_time
+                self._emit_progress(name, f'error ({elapsed:.1f}s)')
                 return name, {'status': '⚠', 'error': str(e)}
         
         # Run all tasks concurrently

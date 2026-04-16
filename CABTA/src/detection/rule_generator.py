@@ -1,14 +1,19 @@
 """
 Author: Ugur AtesDetection rule generator for multiple SIEM/EDR platforms."""
 
-from typing import Dict, List
+import hashlib
 import logging
+import re
+from datetime import datetime
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
 class RuleGenerator:
     """
     Generate detection rules for multiple platforms.
-    
+
     Supports:
     - KQL (Microsoft Defender/Sentinel)
     - SPL (Splunk)
@@ -16,17 +21,88 @@ class RuleGenerator:
     - XQL (Cortex XDR)
     - YARA (File signatures)
     """
-    
+
+    @staticmethod
+    def _dedupe_non_empty(values: List[str], limit: Optional[int] = None) -> List[str]:
+        unique: List[str] = []
+        seen = set()
+        for value in values:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            unique.append(text)
+            if limit is not None and len(unique) >= limit:
+                break
+        return unique
+
+    @staticmethod
+    def _flatten_values(value) -> List[str]:
+        if isinstance(value, dict):
+            flattened: List[str] = []
+            for item in value.values():
+                flattened.extend(RuleGenerator._flatten_values(item))
+            return flattened
+        if isinstance(value, list):
+            flattened: List[str] = []
+            for item in value:
+                flattened.extend(RuleGenerator._flatten_values(item))
+            return flattened
+        if value:
+            return [str(value)]
+        return []
+
+    @staticmethod
+    def _safe_rule_id(prefix: str, *parts: str) -> str:
+        seed = "|".join(str(part) for part in parts if part)
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+        return f"{prefix}-{digest}"
+
+    @staticmethod
+    def _sanitize_rule_name(value: str, prefix: str = "CABTA_File") -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "")).strip("_")
+        if not sanitized:
+            sanitized = prefix
+        if not sanitized[0].isalpha():
+            sanitized = f"{prefix}_{sanitized}"
+        return sanitized[:64]
+
+    @staticmethod
+    def _escape_double_quoted(value: str) -> str:
+        return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _escape_single_quoted(value: str) -> str:
+        return str(value).replace("'", "''")
+
+    @staticmethod
+    def _escape_yara_literal(value: str) -> str:
+        cleaned = "".join(ch for ch in str(value or "") if ch.isprintable())
+        cleaned = cleaned.replace("\\", "\\\\").replace('"', '\\"')
+        return cleaned[:96]
+
+    @staticmethod
+    def _is_hash_literal(value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value or ""))
+
+    @staticmethod
+    def _file_magic_condition(file_type: str) -> Optional[str]:
+        return {
+            "pe": "uint16(0) == 0x5A4D",
+            "elf": "uint32(0) == 0x464C457F",
+            "pdf": "uint32(0) == 0x25504446",
+        }.get(str(file_type or "").strip().lower())
+
     @staticmethod
     def generate_ioc_rules(ioc: str, ioc_type: str, context: Dict = None) -> Dict[str, str]:
         """
         Generate detection rules for IOC.
-        
+
         Args:
             ioc: Indicator of Compromise
             ioc_type: Type (ipv4, domain, url, hash)
             context: Additional context (malware family, etc.)
-        
+
         Returns:
             Dict with rules for each platform
         """
@@ -36,29 +112,107 @@ class RuleGenerator:
             'sigma': RuleGenerator._generate_sigma_ioc(ioc, ioc_type, context),
             'xql': RuleGenerator._generate_xql_ioc(ioc, ioc_type, context)
         }
-        
+
         return rules
-    
+
     @staticmethod
     def generate_file_rules(file_data: Dict) -> Dict[str, str]:
         """
         Generate detection rules for malicious file.
-        
+
         Args:
             file_data: File analysis results
-        
+
         Returns:
             Dict with rules for each platform
         """
+        normalized = RuleGenerator._normalize_file_rule_data(file_data)
+
         rules = {
-            'kql': RuleGenerator._generate_kql_file(file_data),
-            'spl': RuleGenerator._generate_spl_file(file_data),
-            'yara': RuleGenerator._generate_yara_file(file_data),
-            'sigma': RuleGenerator._generate_sigma_file(file_data)
+            'kql': RuleGenerator._generate_kql_file(normalized),
+            'spl': RuleGenerator._generate_spl_file(normalized),
+            'yara': RuleGenerator._generate_yara_file(normalized),
+            'sigma': RuleGenerator._generate_sigma_file(normalized)
         }
-        
+
         return rules
-    
+
+    @staticmethod
+    def _normalize_file_rule_data(file_data: Dict) -> Dict:
+        filename = str(file_data.get("filename") or "unknown.bin")
+        file_type = str(file_data.get("file_type") or "").strip().lower()
+        sha256 = str(file_data.get("sha256") or "").strip()
+        sha1 = str(file_data.get("sha1") or "").strip()
+        md5 = str(file_data.get("md5") or "").strip()
+        verdict = str(file_data.get("verdict") or "UNKNOWN").upper()
+
+        malware_family = (
+            file_data.get("malware_family")
+            or next(iter(file_data.get("yara_families", []) or []), "")
+            or next(iter(file_data.get("yara_tags", []) or []), "")
+            or "Unknown"
+        )
+
+        suspicious_literals = []
+        suspicious_literals.extend(RuleGenerator._flatten_values(file_data.get("suspicious_strings")))
+        suspicious_literals.extend(RuleGenerator._flatten_values(file_data.get("interesting_strings")))
+        suspicious_literals.extend(RuleGenerator._flatten_values(file_data.get("suspicious_string_categories")))
+        suspicious_literals.extend(RuleGenerator._flatten_values(file_data.get("registry_keys")))
+        suspicious_literals.extend(RuleGenerator._flatten_values(file_data.get("mutexes")))
+
+        ioc_literals = []
+        ioc_literals.extend(RuleGenerator._flatten_values(file_data.get("iocs")))
+        ioc_literals.extend(RuleGenerator._flatten_values(file_data.get("urls")))
+        ioc_literals.extend(RuleGenerator._flatten_values(file_data.get("domains")))
+        ioc_literals.extend(RuleGenerator._flatten_values(file_data.get("ips")))
+
+        filtered_literals: List[str] = []
+        for item in suspicious_literals:
+            text = re.sub(r"\s+", " ", item).strip()
+            if len(text) < 4 or len(text) > 140 or RuleGenerator._is_hash_literal(text):
+                continue
+            filtered_literals.append(text)
+
+        filtered_iocs: List[str] = []
+        for item in ioc_literals:
+            text = re.sub(r"\s+", " ", item).strip()
+            if len(text) < 4 or len(text) > 140 or RuleGenerator._is_hash_literal(text):
+                continue
+            filtered_iocs.append(text)
+
+        filtered_literals = RuleGenerator._dedupe_non_empty(filtered_literals, limit=10)
+        filtered_iocs = RuleGenerator._dedupe_non_empty(filtered_iocs, limit=8)
+
+        if not filtered_literals and filename and filename != "unknown.bin":
+            filtered_literals = [filename]
+
+        commandline_keywords = (
+            "powershell", "cmd.exe", "rundll32", "regsvr32", "wscript", "cscript",
+            "mshta", "bitsadmin", "curl ", "wget ", "invoke-webrequest",
+            "downloadstring", "downloadfile", "encodedcommand", "-enc", "-nop",
+        )
+        commandline_literals = [
+            item for item in filtered_literals
+            if any(keyword in item.lower() for keyword in commandline_keywords)
+        ]
+
+        return {
+            "filename": filename,
+            "file_type": file_type,
+            "sha256": sha256,
+            "sha1": sha1,
+            "md5": md5,
+            "verdict": verdict,
+            "malware_family": str(malware_family or "Unknown"),
+            "rule_name": RuleGenerator._sanitize_rule_name(
+                malware_family if malware_family and malware_family != "Unknown" else filename
+            ),
+            "rule_id": RuleGenerator._safe_rule_id("cabta-file", sha256, md5, filename, malware_family),
+            "suspicious_literals": filtered_literals,
+            "ioc_literals": filtered_iocs,
+            "commandline_literals": RuleGenerator._dedupe_non_empty(commandline_literals, limit=5),
+        }
+
     @staticmethod
     def _generate_kql_ioc(ioc: str, ioc_type: str, context: Dict) -> str:
         """Generate KQL rule for IOC."""
@@ -69,7 +223,7 @@ DeviceNetworkEvents
 | where RemoteIP == "{ioc}" or InitiatingProcessFileName == "{ioc}"
 | project Timestamp, DeviceName, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessFileName
 | summarize count() by DeviceName, RemoteIP"""
-        
+
         elif ioc_type == 'domain':
             return f"""// KQL - Hunt for Domain: {ioc}
 DeviceNetworkEvents
@@ -77,7 +231,7 @@ DeviceNetworkEvents
 | where RemoteUrl has "{ioc}"
 | project Timestamp, DeviceName, RemoteUrl, InitiatingProcessFileName
 | summarize count() by DeviceName, RemoteUrl"""
-        
+
         elif ioc_type == 'hash':
             return f"""// KQL - Hunt for Hash: {ioc}
 DeviceFileEvents
@@ -85,16 +239,16 @@ DeviceFileEvents
 | where SHA256 == "{ioc}" or SHA1 == "{ioc}" or MD5 == "{ioc}"
 | project Timestamp, DeviceName, FileName, FolderPath, SHA256
 | summarize count() by DeviceName, FileName"""
-        
+
         elif ioc_type == 'url':
             return f"""// KQL - Hunt for URL: {ioc}
 DeviceNetworkEvents
 | where Timestamp > ago(30d)
 | where RemoteUrl == "{ioc}"
 | project Timestamp, DeviceName, RemoteUrl, InitiatingProcessFileName"""
-        
+
         return "// KQL - IOC type not supported"
-    
+
     @staticmethod
     def _generate_spl_ioc(ioc: str, ioc_type: str, context: Dict) -> str:
         """Generate SPL rule for IOC."""
@@ -103,44 +257,40 @@ DeviceNetworkEvents
 index=* earliest=-30d
 | search dest_ip="{ioc}" OR src_ip="{ioc}"
 | stats count by host, dest_ip, src_ip, dest_port"""
-        
+
         elif ioc_type == 'domain':
             return f"""# SPL - Hunt for Domain: {ioc}
 index=* earliest=-30d
 | search url="*{ioc}*" OR domain="*{ioc}*"
 | stats count by host, url, domain"""
-        
+
         elif ioc_type == 'hash':
             return f"""# SPL - Hunt for Hash: {ioc}
 index=* earliest=-30d
 | search hash="{ioc}" OR sha256="{ioc}" OR md5="{ioc}"
 | stats count by host, file_name, file_path, hash"""
-        
+
         return "# SPL - IOC type not supported"
-    
+
     @staticmethod
     def _generate_sigma_ioc(ioc: str, ioc_type: str, context: Dict) -> str:
         """Generate complete SIGMA rule for IOC."""
-        from datetime import datetime
-        
         malware_family = context.get('malware_family', 'Unknown') if context else 'Unknown'
         verdict = context.get('verdict', 'Unknown') if context else 'Unknown'
-        
-        # Determine level based on verdict
         level = 'critical' if verdict == 'MALICIOUS' else 'high' if verdict == 'SUSPICIOUS' else 'medium'
-        
+
         rule = f"""title: Detection of {malware_family} IOC - {ioc}
-id: mcp-soc-{ioc_type}-{hash(ioc) % 10000:04d}
+id: {RuleGenerator._safe_rule_id('cabta-ioc', ioc_type, ioc)}
 status: experimental
 description: Detects network activity related to {verdict} IOC
-author: Ugur Ates
+author: CABTA
 date: {datetime.now().strftime('%Y/%m/%d')}
 references:
-    - https://github.com/ugur-ates/blue-team-assistant
+    - https://github.com/conglambaomat/hihi
 tags:
     - attack.command_and_control
     - attack.t1071"""
-        
+
         if ioc_type == 'ipv4':
             rule += f"""
 logsource:
@@ -156,7 +306,7 @@ fields:
     - dst_ip
     - dst_port
     - action"""
-        
+
         elif ioc_type == 'domain':
             rule += f"""
 logsource:
@@ -169,7 +319,7 @@ fields:
     - query
     - answer
     - src_ip"""
-        
+
         elif ioc_type == 'url':
             rule += f"""
 logsource:
@@ -182,7 +332,7 @@ fields:
     - c-uri
     - cs-host
     - src_ip"""
-        
+
         elif ioc_type in ['sha256', 'md5', 'sha1', 'hash']:
             rule += f"""
 logsource:
@@ -196,9 +346,8 @@ fields:
     - TargetFilename
     - Hashes
     - User"""
-        
+
         else:
-            # Generic fallback
             rule += f"""
 logsource:
     category: network_connection
@@ -208,15 +357,15 @@ detection:
         - query: '{ioc}'
         - url|contains: '{ioc}'
     condition: selection"""
-        
+
         rule += f"""
 falsepositives:
     - Legitimate traffic to this destination
 level: {level}
 """
-        
+
         return rule
-    
+
     @staticmethod
     def _generate_xql_ioc(ioc: str, ioc_type: str, context: Dict) -> str:
         """Generate XQL rule for IOC."""
@@ -226,171 +375,192 @@ dataset = xdr_data
 | filter event_type = NETWORK_CONNECTION and remote_ip = "{ioc}"
 | fields agent_hostname, remote_ip, remote_port, process_name
 | limit 100"""
-        
+
         elif ioc_type == 'domain':
             return f"""// XQL - Hunt for Domain: {ioc}
 dataset = xdr_data
 | filter event_type = DNS_QUERY and dns_query_name contains "{ioc}"
 | fields agent_hostname, dns_query_name, process_name
 | limit 100"""
-        
+
         return "// XQL - IOC type not supported"
-    
+
     @staticmethod
     def _generate_kql_file(file_data: Dict) -> str:
         """Generate KQL rule for file."""
-        sha256 = file_data.get('sha256', '')
-        filename = file_data.get('filename', '')
-        
-        return f"""// KQL - Hunt for Malicious File
+        clauses = []
+        if file_data.get('sha256'):
+            clauses.append(f'SHA256 == "{RuleGenerator._escape_double_quoted(file_data["sha256"])}"')
+        if file_data.get('sha1'):
+            clauses.append(f'SHA1 == "{RuleGenerator._escape_double_quoted(file_data["sha1"])}"')
+        if file_data.get('md5'):
+            clauses.append(f'MD5 == "{RuleGenerator._escape_double_quoted(file_data["md5"])}"')
+        if file_data.get('filename'):
+            clauses.append(f'FileName =~ "{RuleGenerator._escape_double_quoted(file_data["filename"])}"')
+
+        predicate = " or ".join(clauses) if clauses else "false"
+        return f"""// KQL - Hunt for analyzed file
+// Primary artifacts: hash and filename
 DeviceFileEvents
 | where Timestamp > ago(30d)
-| where SHA256 == "{sha256}" or FileName == "{filename}"
+| where {predicate}
 | project Timestamp, DeviceName, FileName, FolderPath, SHA256, InitiatingProcessFileName
-| summarize count() by DeviceName, FileName, FolderPath"""
-    
+| summarize Hits=count(), FirstSeen=min(Timestamp), LastSeen=max(Timestamp) by DeviceName, FileName, FolderPath, SHA256
+| order by Hits desc, LastSeen desc"""
+
     @staticmethod
     def _generate_spl_file(file_data: Dict) -> str:
         """Generate SPL rule for file."""
-        sha256 = file_data.get('sha256', '')
-        filename = file_data.get('filename', '')
-        
-        return f"""# SPL - Hunt for Malicious File
+        predicates = []
+        if file_data.get('sha256'):
+            predicates.append(f'sha256="{RuleGenerator._escape_double_quoted(file_data["sha256"])}"')
+        if file_data.get('sha1'):
+            predicates.append(f'sha1="{RuleGenerator._escape_double_quoted(file_data["sha1"])}"')
+        if file_data.get('md5'):
+            predicates.append(f'md5="{RuleGenerator._escape_double_quoted(file_data["md5"])}"')
+        if file_data.get('filename'):
+            predicates.append(f'file_name="{RuleGenerator._escape_double_quoted(file_data["filename"])}"')
+
+        search_clause = " OR ".join(predicates) if predicates else "file_name=*"
+        return f"""# SPL - Hunt for analyzed file
 index=* earliest=-30d
-| search (sha256="{sha256}" OR file_name="{filename}")
-| stats count by host, file_name, file_path, sha256"""
-    
+| search ({search_clause})
+| stats count AS hits earliest(_time) AS first_seen latest(_time) AS last_seen by host, file_name, file_path, sha256, sha1, md5
+| convert ctime(first_seen) ctime(last_seen)
+| sort - hits - last_seen"""
+
     @staticmethod
     def _generate_yara_file(file_data: Dict) -> str:
         """Generate comprehensive YARA rule for file."""
-        from datetime import datetime
-        
         filename = file_data.get('filename', 'unknown')
         sha256 = file_data.get('sha256', '')
         md5 = file_data.get('md5', '')
+        file_type = file_data.get('file_type', '')
         malware_family = file_data.get('malware_family', 'Unknown')
-        
-        # Clean filename for rule name
-        rule_name = filename.replace('.', '_').replace('-', '_').replace(' ', '_')
-        
-        # Extract suspicious strings from analysis
-        indicators = file_data.get('suspicious_indicators', [])
-        iocs = file_data.get('iocs', [])
-        
-        rule = f"""rule BTA_{rule_name} {{
+
+        string_lines: List[str] = []
+        condition_terms: List[str] = []
+        strong_refs: List[str] = []
+        ioc_refs: List[str] = []
+        behavior_refs: List[str] = []
+
+        for i, indicator in enumerate(file_data.get('suspicious_literals', [])[:8]):
+            escaped = RuleGenerator._escape_yara_literal(indicator)
+            if not escaped:
+                continue
+            string_lines.append(f'        $str_{i} = "{escaped}" ascii wide nocase')
+            strong_refs.append(f"$str_{i}")
+
+        for i, ioc in enumerate(file_data.get('ioc_literals', [])[:6]):
+            escaped = RuleGenerator._escape_yara_literal(ioc)
+            if not escaped:
+                continue
+            string_lines.append(f'        $ioc_{i} = "{escaped}" ascii wide nocase')
+            ioc_refs.append(f"$ioc_{i}")
+
+        if file_type in {"script", "text"} or file_data.get("commandline_literals"):
+            for name, pattern in (
+                ("beh_0", r"/powershell(\.exe)?\s+.*(-enc|EncodedCommand|DownloadString|DownloadFile|Invoke-WebRequest)/ nocase"),
+                ("beh_1", r"/(wscript|cscript|mshta|rundll32|regsvr32)\.exe/i"),
+            ):
+                string_lines.append(f"        ${name} = {pattern}")
+                behavior_refs.append(f"${name}")
+
+        if strong_refs and ioc_refs:
+            condition_terms.append("(1 of ($str_*) and 1 of ($ioc_*))")
+        if strong_refs:
+            condition_terms.append("2 of ($str_*)" if len(strong_refs) >= 2 else strong_refs[0])
+        if ioc_refs:
+            condition_terms.append("any of ($ioc_*)")
+        if behavior_refs:
+            condition_terms.append("1 of ($beh_*)")
+
+        if not string_lines:
+            fallback = RuleGenerator._escape_yara_literal(filename)
+            string_lines.append(f'        $str_0 = "{fallback}" ascii wide nocase')
+            condition_terms = ["$str_0"]
+
+        magic_condition = RuleGenerator._file_magic_condition(file_type)
+        joined_condition = " or ".join(condition_terms) if condition_terms else "$str_0"
+        final_condition = f"{magic_condition} and ({joined_condition})" if magic_condition else joined_condition
+
+        rule = f"""rule {file_data.get('rule_name') or RuleGenerator._sanitize_rule_name(filename)} {{
     meta:
         description = "Auto-generated rule for {filename}"
-        author = "Blue Team Assistant"
+        author = "CABTA"
         date = "{datetime.now().strftime('%Y-%m-%d')}"
         hash_sha256 = "{sha256}"
         hash_md5 = "{md5}"
         malware_family = "{malware_family}"
         severity = "high"
-        reference = "https://github.com/ugur-ates/blue-team-assistant"
-    
+        reference = "https://github.com/conglambaomat/hihi"
+
     strings:
-        // File hashes
-        $hash_sha256 = "{sha256}" ascii wide nocase
-        $hash_md5 = "{md5}" ascii wide nocase
 """
-        
-        # Add suspicious strings
-        for i, indicator in enumerate(indicators[:10]):
-            # Escape special characters
-            escaped = str(indicator).replace('\\', '\\\\').replace('"', '\\"')[:50]
-            rule += f'        $sus_{i} = "{escaped}" ascii wide nocase\n'
-        
-        # Add IOCs
-        for i, ioc in enumerate(iocs[:5]):
-            escaped = str(ioc).replace('\\', '\\\\').replace('"', '\\"')[:50]
-            rule += f'        $ioc_{i} = "{escaped}" ascii wide nocase\n'
-        
-        # Add common malicious patterns
-        rule += """
-        // Common malicious patterns
-        $ps_encoded = /powershell.*-e(nc(odedcommand)?)?/i
-        $ps_bypass = /powershell.*-ex(ec(utionpolicy)?)?.*bypass/i
-        $ps_hidden = /powershell.*-w(indowstyle)?.*hidden/i
-        $ps_download = /(downloadstring|downloadfile|invoke-webrequest)/i
-        $vba_shell = /Shell\\s*\\(|WScript\\.Shell/i
-        $vba_exec = /\\.Run\\s*\\(|\\.Exec\\s*\\(/i
-    
+        for line in string_lines:
+            rule += line + "\n"
+
+        rule += f"""
+
     condition:
-        (
-            $hash_sha256 or $hash_md5
-        ) or (
-            2 of ($sus_*) and 1 of ($ioc_*)
-        ) or (
-            3 of ($ps_*)
-        ) or (
-            $vba_shell and $vba_exec
-        )
+        {final_condition}
 }}
 """
-        
         return rule
-    
+
     @staticmethod
     def _generate_sigma_file(file_data: Dict) -> str:
         """Generate SIGMA rule for file detection."""
-        from datetime import datetime
-        
         filename = file_data.get('filename', 'unknown')
-        sha256 = file_data.get('sha256', '')
-        md5 = file_data.get('md5', '')
         malware_family = file_data.get('malware_family', 'Unknown')
-        indicators = file_data.get('suspicious_indicators', [])
-        
+        verdict = file_data.get('verdict', 'UNKNOWN')
+        level = 'high' if verdict == 'MALICIOUS' else 'medium' if verdict == 'SUSPICIOUS' else 'low'
+        hash_values = [value for value in [file_data.get('sha256'), file_data.get('sha1'), file_data.get('md5')] if value]
+        filename_escaped = RuleGenerator._escape_single_quoted(filename)
+
         rule = f"""title: Detection of {malware_family} - {filename}
-id: mcp-soc-file-{hash(sha256) % 10000:04d}
+id: {file_data.get('rule_id')}
 status: experimental
-description: Detects execution or presence of potentially malicious file
-author: Ugur Ates
+description: Detects presence of an analyzed file based on stable file artifacts extracted by CABTA
+author: CABTA
 date: {datetime.now().strftime('%Y/%m/%d')}
 references:
-    - https://github.com/ugur-ates/blue-team-assistant
+    - https://github.com/conglambaomat/hihi
 tags:
     - attack.execution
     - attack.defense_evasion
-    - attack.t1059
     - attack.t1027
 
 logsource:
-    category: process_creation
+    category: file_event
     product: windows
 
 detection:
-    selection_hash:
-        - Hashes|contains: '{sha256}'
-        - Hashes|contains: '{md5}'
-    selection_filename:
-        - Image|endswith: '\\\\{filename}'
-        - OriginalFileName: '{filename}'"""
-        
-        if indicators:
-            rule += """
-    selection_commandline:
-        CommandLine|contains:"""
-            for ind in indicators[:5]:
-                escaped = str(ind)[:50].replace("'", "''")
-                rule += f"\n            - '{escaped}'"
-        
-        rule += """
-    
-    condition: selection_hash or selection_filename"""
-        
-        if indicators:
-            rule += " or selection_commandline"
-        
-        rule += f"""
-
-falsepositives:
-    - Legitimate administrative tools
-    - Software updates
-
-level: high
 """
-        
+        if hash_values:
+            rule += """    selection_hash:
+        Hashes|contains:
+"""
+            for hash_value in hash_values:
+                rule += f"            - '{RuleGenerator._escape_single_quoted(hash_value)}'\n"
+
+        rule += f"""    selection_filename:
+        - TargetFilename|endswith: '\\\\{filename_escaped}'
+        - OriginalFileName: '{filename_escaped}'
+
+    condition: 1 of selection_*
+fields:
+    - TargetFilename
+    - Hashes
+    - Image
+    - User
+    - ComputerName
+falsepositives:
+    - Legitimate internal distribution of the same file
+    - Security team testing with a known sample
+
+level: {level}
+"""
         return rule
     
     @staticmethod

@@ -56,8 +56,8 @@ def test_provider_build_demo_job_result_applies_input_filename(mock_config):
 
 
 def test_provider_live_sources_distinguish_configured_available_and_manual(mock_config):
-    mock_config['api_keys']['shodan'] = 'test_shodan_key'
-    mock_config['api_keys']['urlscan'] = 'test_urlscan_key'
+    mock_config['api_keys']['shodan'] = 'shodan_key_prod_abcdef12345'
+    mock_config['api_keys']['urlscan'] = 'urlscan_key_prod_abcdef12345'
     provider = WebDataProvider(mock_config)
     app = SimpleNamespace(state=SimpleNamespace(mcp_client=None, sandbox_orchestrator=None, agent_loop=None))
 
@@ -76,6 +76,7 @@ def test_provider_live_sources_distinguish_configured_available_and_manual(mock_
 def test_feature_status_marks_static_only_sandbox_and_missing_groq_key_as_degraded(mock_config):
     mock_config['llm'] = {'provider': 'groq'}
     mock_config['analysis']['enable_sandbox'] = True
+    mock_config['api_keys']['virustotal'] = ''
     provider = WebDataProvider(mock_config)
 
     sandbox = SimpleNamespace(
@@ -97,3 +98,30 @@ def test_feature_status_marks_static_only_sandbox_and_missing_groq_key_as_degrad
     assert status['llm']['status'] == 'degraded'
     assert status['sandbox']['status'] == 'degraded'
     assert status['sandbox']['label'] == 'Static-only'
+
+
+def test_feature_status_distinguishes_lookup_only_sandbox_from_execution_ready(mock_config):
+    mock_config['analysis']['enable_sandbox'] = True
+    mock_config['api_keys']['virustotal'] = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    provider = WebDataProvider(mock_config)
+
+    sandbox = SimpleNamespace(
+        get_sandbox_status=lambda: [
+            {'id': 'docker', 'available': False},
+            {'id': 'vm', 'available': False},
+            {'id': 'local_static', 'available': False},
+            {'id': 'cloud_api', 'available': False},
+        ]
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            mcp_client=None,
+            sandbox_orchestrator=sandbox,
+            agent_loop=None,
+        )
+    )
+
+    status = provider.feature_status(app)
+
+    assert status['sandbox']['status'] == 'degraded'
+    assert status['sandbox']['label'] == 'Lookup-only'

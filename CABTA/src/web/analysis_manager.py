@@ -36,6 +36,7 @@ class AnalysisManager:
         self._lock = threading.Lock()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._progress_history: Dict[str, List[Dict[str, Any]]] = {}
         self._init_db()
 
     # ------------------------------------------------------------------ #
@@ -53,6 +54,7 @@ class AnalysisManager:
         params_json = json.dumps(params, default=str)
 
         with self._lock:
+            self._progress_history[job_id] = []
             conn = self._connect()
             conn.execute(
                 """INSERT INTO analysis_jobs
@@ -111,6 +113,21 @@ class AnalysisManager:
     ) -> None:
         """Update job progress (0-100) and current step."""
         with self._lock:
+            history = self._progress_history.setdefault(job_id, [])
+            entry = {
+                'progress': min(progress, 100),
+                'message': current_step,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+            if tool_name:
+                entry['tool_name'] = tool_name
+            if tool_source:
+                entry['tool_source'] = tool_source
+            if not history or history[-1].get('message') != current_step:
+                history.append(entry)
+                if len(history) > 200:
+                    del history[:-200]
+
             conn = self._connect()
             conn.execute(
                 """UPDATE analysis_jobs
@@ -132,6 +149,14 @@ class AnalysisManager:
         if tool_source:
             msg['tool_source'] = tool_source
         self._notify(job_id, msg)
+
+    def get_progress_history(self, job_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return recent progress events for a job."""
+        with self._lock:
+            history = list(self._progress_history.get(job_id, []))
+        if limit and len(history) > limit:
+            return history[-limit:]
+        return history
 
     def complete_job(
         self,

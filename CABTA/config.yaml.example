@@ -27,6 +27,8 @@ analysis:
   timeout_seconds: 300    # Analysis timeout
   enable_sandbox: true    # Enable sandbox integration
   enable_yara: true       # Enable YARA scanning
+  llm_timeout_seconds: 25 # Limit the final AI summary so deterministic analysis still completes
+  text_max_scan_mb: 3     # For very large text/log files, scan head+tail up to this total size
 
 # Output Settings
 output:

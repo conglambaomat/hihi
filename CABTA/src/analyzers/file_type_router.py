@@ -175,6 +175,10 @@ class FileTypeRouter:
         b'\x1f\x8b': FileType.ARCHIVE,  # GZIP
         b'\xd0\xcf\x11\xe0': FileType.OFFICE,  # OLE (old Office)
     }
+
+    SCRIPT_EXTENSIONS = {
+        ext for ext, file_type in EXTENSION_MAP.items() if file_type == FileType.SCRIPT
+    }
     
     @staticmethod
     def detect_file_type(file_path: str) -> Tuple[FileType, Dict]:
@@ -248,17 +252,31 @@ class FileTypeRouter:
         except Exception as e:
             logger.warning(f"[ROUTER] Magic byte detection failed: {e}")
         
-        # 2. Magic library check
+        # 2. High-signal script extension override
+        #
+        # Script files frequently come back from libmagic as generic
+        # ``text/plain``. If we let that win, CABTA routes malicious scripts
+        # into the text analyzer instead of the dedicated script analyzer.
+        ext = metadata['extension']
+        if ext in FileTypeRouter.SCRIPT_EXTENSIONS:
+            metadata['detection_method'] = 'extension'
+            return (FileType.SCRIPT, metadata)
+
+        # 3. Magic library check
         if MAGIC_AVAILABLE:
             try:
                 mime = magic.from_file(file_path, mime=True)
                 file_magic = magic.from_file(file_path)
                 metadata['mime_type'] = mime
                 metadata['magic_description'] = file_magic
-                
+                deferred_text_mime = None
+
                 # Check MIME patterns
                 for pattern, file_type in FileTypeRouter.MIME_PATTERNS.items():
                     if pattern in mime:
+                        if file_type == FileType.TEXT and mime in {'text/plain', 'text/x-log'}:
+                            deferred_text_mime = mime
+                            continue
                         metadata['detection_method'] = 'libmagic_mime'
                         logger.info(f"[ROUTER] Detected {file_type.value} by MIME: {mime}")
                         return (file_type, metadata)
@@ -276,18 +294,21 @@ class FileTypeRouter:
                 if 'Mach-O' in file_magic:
                     metadata['detection_method'] = 'libmagic_desc'
                     return (FileType.MACHO, metadata)
-                
+
+                if deferred_text_mime:
+                    metadata['deferred_mime_type'] = deferred_text_mime
+
             except Exception as e:
                 logger.warning(f"[ROUTER] libmagic detection failed: {e}")
-        
-        # 3. Extension-based fallback
+
+        # 4. Extension-based fallback
         if metadata['extension'] in FileTypeRouter.EXTENSION_MAP:
             metadata['detection_method'] = 'extension'
             file_type = FileTypeRouter.EXTENSION_MAP[metadata['extension']]
             logger.info(f"[ROUTER] Detected {file_type.value} by extension: {metadata['extension']}")
             return (file_type, metadata)
-        
-        # 4. Script detection by content
+
+        # 5. Script detection by content
         try:
             with open(file_path, 'rb') as f:
                 start = f.read(512)
@@ -300,25 +321,33 @@ class FileTypeRouter:
                 return (FileType.SCRIPT, metadata)
             
             # PowerShell detection
-            if b'param(' in start.lower() or b'function ' in start.lower():
-                if b'$' in start:  # PowerShell variable
+            lowered = start.lower()
+            if (
+                b'param(' in lowered or b'function ' in lowered
+                or b'invoke-' in lowered or b'new-object' in lowered
+            ):
+                if b'$' in start or b'powershell' in lowered:
                     metadata['detection_method'] = 'content_heuristic'
                     return (FileType.SCRIPT, metadata)
-            
+
             # VBScript detection
-            if b'dim ' in start.lower() or b'sub ' in start.lower():
+            if (
+                b'dim ' in lowered or b'sub ' in lowered or b'end sub' in lowered
+                or b'createobject(' in lowered or b'wscript.' in lowered
+                or b'cscript.' in lowered or b'msgbox' in lowered
+            ):
                 metadata['detection_method'] = 'content_heuristic'
                 return (FileType.SCRIPT, metadata)
-            
+
             # Batch file detection
-            if b'@echo off' in start.lower() or b'rem ' in start.lower():
+            if b'@echo off' in lowered or b'rem ' in lowered or b'setlocal' in lowered:
                 metadata['detection_method'] = 'content_heuristic'
                 return (FileType.SCRIPT, metadata)
-        
+
         except Exception as e:
             logger.warning(f"[ROUTER] Content detection failed: {e}")
-        
-        # 5. Check if it's a text/readable file before declaring unknown
+
+        # 6. Check if it's a text/readable file before declaring unknown
         try:
             with open(file_path, 'rb') as f:
                 sample = f.read(4096)
@@ -331,7 +360,7 @@ class FileTypeRouter:
         except Exception:
             pass
 
-        # 6. Unknown - but check if potentially firmware (high entropy binary)
+        # 7. Unknown - but check if potentially firmware (high entropy binary)
         metadata['detection_method'] = 'unknown'
         return (FileType.UNKNOWN, metadata)
     

@@ -203,9 +203,93 @@ class TextFileAnalyzer:
         (r'^0\.', 'Reserved'),
     ]
 
-    def __init__(self):
+    def __init__(self, config: Optional[Dict] = None):
         """Initialize text analyzer."""
+        self.config = config or {}
+        self._progress_callback = None
         self._compile_patterns()
+
+    def set_progress_callback(self, callback) -> None:
+        """Register a best-effort callback for sub-stage progress updates."""
+        self._progress_callback = callback
+
+    def _emit_progress(self, percent: int, message: str) -> None:
+        callback = self._progress_callback
+        if not callback:
+            return
+        try:
+            callback(int(percent), str(message))
+        except Exception as exc:
+            logger.debug("[TEXT] Progress callback failed: %s", exc)
+
+    def _text_scan_limit_bytes(self) -> int:
+        """Return the maximum number of bytes to scan for large text files."""
+        analysis_cfg = self.config.get('analysis', {}) if isinstance(self.config, dict) else {}
+        configured = analysis_cfg.get('text_max_scan_mb', 3)
+        try:
+            scan_mb = float(configured)
+        except (TypeError, ValueError):
+            scan_mb = 3.0
+        scan_mb = max(0.25, scan_mb)
+        return int(scan_mb * 1024 * 1024)
+
+    def _read_with_fallback(self, file_path: str, max_bytes: Optional[int] = None, offset: int = 0) -> str:
+        """Read a text chunk with forgiving decoding."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as handle:
+                if offset:
+                    handle.seek(offset)
+                return handle.read(max_bytes)
+        except Exception:
+            with open(file_path, 'r', encoding='latin-1', errors='ignore') as handle:
+                if offset:
+                    handle.seek(offset)
+                return handle.read(max_bytes)
+
+    def _load_scan_content(self, file_path: str) -> Tuple[str, Dict]:
+        """
+        Load content for analysis.
+
+        Large text/log files are sampled using a head+tail strategy so the
+        interactive web workflow stays responsive while still preserving both
+        the beginning and end of the artifact, which is where headers, configs,
+        beacons, and recent log activity often live.
+        """
+        path = Path(file_path)
+        total_bytes = path.stat().st_size
+        limit_bytes = self._text_scan_limit_bytes()
+
+        if total_bytes <= limit_bytes:
+            content = self._read_with_fallback(file_path)
+            return content, {
+                'truncated': False,
+                'strategy': 'full',
+                'scanned_bytes': total_bytes,
+                'total_bytes': total_bytes,
+                'scan_limit_bytes': limit_bytes,
+            }
+
+        head_bytes = max(limit_bytes // 2, 1)
+        tail_bytes = max(limit_bytes - head_bytes, 1)
+        head = self._read_with_fallback(file_path, max_bytes=head_bytes, offset=0)
+
+        tail_offset = max(total_bytes - tail_bytes, 0)
+        tail = self._read_with_fallback(file_path, max_bytes=tail_bytes, offset=tail_offset)
+
+        marker = (
+            "\n\n[... CABTA TEXT ANALYZER TRUNCATED MIDDLE CONTENT FOR INTERACTIVE SCAN ...]\n\n"
+        )
+        content = head + marker + tail
+        scanned_bytes = min(total_bytes, head_bytes + tail_bytes)
+        return content, {
+            'truncated': True,
+            'strategy': 'head_tail',
+            'scanned_bytes': scanned_bytes,
+            'total_bytes': total_bytes,
+            'scan_limit_bytes': limit_bytes,
+            'head_bytes': head_bytes,
+            'tail_bytes': tail_bytes,
+        }
 
     def _compile_patterns(self):
         """Pre-compile regex patterns for performance."""
@@ -687,15 +771,10 @@ class TextFileAnalyzer:
 
             # Read file content
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
+                self._emit_progress(8, 'Loading text content...')
+                content, scan_scope = self._load_scan_content(file_path)
             except Exception as e:
-                # Try with different encoding
-                try:
-                    with open(file_path, 'r', encoding='latin-1') as f:
-                        content = f.read()
-                except Exception as e2:
-                    return {'error': f'Cannot read file: {e2}'}
+                return {'error': f'Cannot read file: {e}'}
 
             if not content or not content.strip():
                 return {
@@ -704,6 +783,12 @@ class TextFileAnalyzer:
                     'threat_indicators': [],
                     'note': 'Empty or blank file',
                     'threat_score': 0,
+                    'scan_scope': scan_scope if 'scan_scope' in locals() else {
+                        'truncated': False,
+                        'strategy': 'full',
+                        'scanned_bytes': 0,
+                        'total_bytes': 0,
+                    },
                 }
 
             # File basic stats
@@ -715,21 +800,26 @@ class TextFileAnalyzer:
             # ==================== RUN ALL ANALYSES ====================
 
             # 1. IOC Extraction
+            self._emit_progress(24, 'Extracting IPs, URLs, domains, and hashes...')
             ip_addresses = self._extract_ips(content)
             urls = self._extract_urls(content)
             domains = self._extract_domains(content)
             hashes = self._extract_hashes(content)
 
             # 2. C2 Pattern Detection
+            self._emit_progress(44, 'Detecting C2 and malware patterns...')
             c2_patterns = self._detect_c2_patterns(content)
 
             # 3. Encoded Content Detection
+            self._emit_progress(58, 'Inspecting encoded or obfuscated content...')
             encoded_content = self._detect_encoded_content(content)
 
             # 4. Credential Leak Detection
+            self._emit_progress(70, 'Checking for credentials and secrets...')
             credential_indicators = self._detect_credentials(content)
 
             # 5. Email extraction
+            self._emit_progress(80, 'Extracting email addresses and CVEs...')
             email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
             emails = list(set(email_pattern.findall(content)))
 
@@ -751,6 +841,7 @@ class TextFileAnalyzer:
             }
 
             # Calculate threat score
+            self._emit_progress(90, 'Calculating threat score and summary...')
             threat_score, verdict, contributing_factors = self._calculate_threat_score(analysis)
 
             # Aggregate IOCs for investigation
@@ -817,7 +908,9 @@ class TextFileAnalyzer:
                     'characters': char_count,
                     'words': word_count,
                     'entropy': round(overall_entropy, 3),
+                    'total_bytes': scan_scope.get('total_bytes', path.stat().st_size),
                 },
+                'scan_scope': scan_scope,
 
                 # IOC Data
                 'ip_addresses': ip_addresses,
@@ -859,6 +952,13 @@ class TextFileAnalyzer:
                 },
                 'suspicious_string_categories': [f['severity'].upper() for f in c2_patterns if f['severity'] in ('critical', 'high')],
             }
+
+            if scan_scope.get('truncated'):
+                result['analysis_note'] = (
+                    f"Large text file scan truncated for interactive analysis. "
+                    f"Scanned {scan_scope['scanned_bytes']:,} of {scan_scope['total_bytes']:,} bytes "
+                    f"using {scan_scope['strategy']} sampling."
+                )
 
             logger.info(f"[TEXT] Analysis complete: {verdict} (score: {threat_score}/100)")
             logger.info(f"[TEXT] Found: {summary['total_ips']} IPs, {summary['total_urls']} URLs, "

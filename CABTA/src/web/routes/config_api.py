@@ -13,6 +13,8 @@ import aiohttp
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from src.utils.api_key_validator import is_valid_api_key
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DEFAULT_APPROVAL_TOOLS = ['sandbox_submit']
@@ -131,7 +133,7 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
     }
 
     if provider == 'groq':
-        has_key = bool(api_keys.get('groq') or llm_cfg.get('api_key'))
+        has_key = is_valid_api_key(api_keys.get('groq')) or is_valid_api_key(llm_cfg.get('api_key'))
         result.update({
             'configured_model': llm_cfg.get('groq_model', llm_cfg.get('model', 'openai/gpt-oss-20b')),
             'endpoint': str(llm_cfg.get('groq_endpoint', llm_cfg.get('base_url', 'https://api.groq.com/openai/v1'))).rstrip('/'),
@@ -148,7 +150,7 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
         return _apply_runtime_llm_signal(result, runtime_signal)
 
     if provider == 'anthropic':
-        has_key = bool(api_keys.get('anthropic'))
+        has_key = is_valid_api_key(api_keys.get('anthropic'))
         result.update({
             'configured_model': llm_cfg.get('anthropic_model', llm_cfg.get('model', 'claude-sonnet-4-20250514')),
             'endpoint': 'https://api.anthropic.com/v1',
@@ -398,8 +400,9 @@ async def save_settings(request: Request):
     """Save application settings to config.yaml."""
     from pathlib import Path
 
-    project_root = Path(__file__).parent.parent.parent.parent
-    config_file = project_root / 'config.yaml'
+    config_file = Path(
+        getattr(request.app.state, 'config_file', Path(__file__).parent.parent.parent.parent / 'config.yaml')
+    )
 
     body = await request.json()
 
@@ -446,14 +449,26 @@ async def save_settings(request: Request):
     try:
         import yaml
         from src.utils.config import merge_with_defaults
+        from src.utils.config_history import snapshot_config
         from src.web.runtime_refresh import (
             apply_runtime_config_bridges,
             reconnect_startup_mcp_servers,
             refresh_runtime_components,
         )
+        pre_save_snapshot = None
+        if config_file.exists():
+            try:
+                pre_save_snapshot = snapshot_config(config_file, reason='pre-web-settings-save')
+            except Exception as history_exc:
+                logger.warning("[CONFIG] Pre-save config snapshot failed: %s", history_exc)
         config_file.parent.mkdir(parents=True, exist_ok=True)
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(existing, f, default_flow_style=False, allow_unicode=True)
+        post_save_snapshot = None
+        try:
+            post_save_snapshot = snapshot_config(config_file, reason='post-web-settings-save')
+        except Exception as history_exc:
+            logger.warning("[CONFIG] Post-save config snapshot failed: %s", history_exc)
         merged = apply_runtime_config_bridges(merge_with_defaults(existing))
         request.app.state.config = merged
         request.app.state.web_provider.config = merged
@@ -461,7 +476,14 @@ async def save_settings(request: Request):
             await reconnect_startup_mcp_servers(request.app)
         await refresh_runtime_components(request.app, merged)
         logger.info("[CONFIG] Settings saved to %s", config_file)
-        return {'status': 'saved', 'message': 'Settings saved and applied to the live runtime.'}
+        return {
+            'status': 'saved',
+            'message': 'Settings saved and applied to the live runtime.',
+            'config_history': {
+                'before': pre_save_snapshot,
+                'after': post_save_snapshot,
+            },
+        }
     except Exception as exc:
         logger.error("[CONFIG] Failed to save settings: %s", exc)
         return {'error': str(exc)}

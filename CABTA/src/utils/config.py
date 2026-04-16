@@ -109,7 +109,9 @@ def get_default_config() -> Dict[str, Any]:
             'max_archive_depth': 3,
             'max_file_size_mb': 100,
             'enable_sandboxes': False,
-            'enable_llm': True
+            'enable_llm': True,
+            'llm_timeout_seconds': 25,
+            'text_max_scan_mb': 3,
         },
         'llm': {
             'provider': 'ollama',
