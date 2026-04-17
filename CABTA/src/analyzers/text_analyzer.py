@@ -293,6 +293,44 @@ class TextFileAnalyzer:
 
     def _compile_patterns(self):
         """Pre-compile regex patterns for performance."""
+        self._compiled_extract = {
+            'ip': re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'),
+            'url': re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE),
+            'domain': re.compile(
+                r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+'
+                r'(?:com|net|org|io|info|biz|xyz|top|club|tk|ml|ga|cf|gq|ru|cn|br|de|uk|fr|it|au|ca|nl|se|no|fi|dk|pl|cz|sk|hu|ro|bg|ua|kz|us|gov|mil|edu)\b',
+                re.IGNORECASE,
+            ),
+            'email': re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
+            'cve': re.compile(r'CVE-\d{4}-\d{4,7}', re.IGNORECASE),
+            'port_suffix': re.compile(r':(\d{1,5})'),
+        }
+        self._compiled_hashes = {
+            'md5': re.compile(r'\b[a-fA-F0-9]{32}\b'),
+            'sha1': re.compile(r'\b[a-fA-F0-9]{40}\b'),
+            'sha256': re.compile(r'\b[a-fA-F0-9]{64}\b'),
+        }
+        self._hex_chars = set('0123456789abcdefABCDEF')
+        self._suspicious_ports = set(self.NETWORK_PATTERNS['suspicious_ports']['ports'])
+        self._c2_context_keywords = (
+            'c2', 'c&c', 'command', 'control', 'beacon', 'callback',
+            'implant', 'payload', 'shell', 'reverse', 'connect', 'listener',
+        )
+        self._suspicious_tlds = (
+            '.tk', '.ml', '.ga', '.cf', '.gq', '.top', '.xyz', '.club',
+            '.work', '.bid', '.download', '.win', '.stream', '.racing', '.ru', '.cn',
+        )
+        self._whitelist_domains = {
+            'microsoft.com', 'google.com', 'github.com', 'w3.org',
+            'schema.org', 'apple.com', 'mozilla.org', 'wikipedia.org',
+            'example.com', 'localhost.com',
+        }
+        self._suspicious_paths = (
+            '/admin', '/shell', '/cmd', '/exec', '/upload', '/gate',
+            '/panel', '/login.php', '/post.php', '/beacon', '/c2',
+            '.exe', '.ps1', '.bat', '.vbs', '.hta', '.dll',
+        )
+
         self._compiled_c2 = {}
         for name, info in self.C2_PATTERNS.items():
             try:
@@ -316,54 +354,64 @@ class TextFileAnalyzer:
 
     def _is_private_ip(self, ip: str) -> bool:
         """Check if IP is in private range."""
-        for pattern, _ in self.PRIVATE_RANGES:
-            if re.match(pattern, ip):
-                return True
-        return False
+        return (
+            ip.startswith('10.')
+            or ip.startswith('127.')
+            or ip.startswith('169.254.')
+            or ip.startswith('192.168.')
+            or ip.startswith('0.')
+            or (
+                ip.startswith('172.')
+                and len(ip.split('.')) >= 2
+                and ip.split('.')[1].isdigit()
+                and 16 <= int(ip.split('.')[1]) <= 31
+            )
+        )
 
     def _extract_ips(self, content: str) -> List[Dict]:
         """Extract and classify IP addresses."""
-        ip_pattern = re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b')
-        found = ip_pattern.findall(content)
+        matches = list(self._compiled_extract['ip'].finditer(content))
+        if not matches:
+            return []
+
+        counts = Counter(match.group(0) for match in matches)
 
         results = []
         seen = set()
-        for ip in found:
+        for match in matches:
+            ip = match.group(0)
             if ip in seen:
                 continue
             seen.add(ip)
 
             is_private = self._is_private_ip(ip)
+            start, end = match.span()
 
-            # Check for port association
-            port_match = re.search(re.escape(ip) + r':(\d{1,5})', content)
+            # Check for immediate IP:port association without rescanning the whole file
+            port_match = self._compiled_extract['port_suffix'].match(content[end:end + 6])
             port = int(port_match.group(1)) if port_match else None
 
-            # Check context (what's around the IP?)
-            context_pattern = re.compile(r'.{0,50}' + re.escape(ip) + r'.{0,50}', re.DOTALL)
-            context_matches = context_pattern.findall(content)
-            context = context_matches[0].strip() if context_matches else ''
+            # Check context using a local slice instead of a regex over the full content
+            context = content[max(0, start - 50):min(len(content), end + 50)].strip()
 
             # Determine suspiciousness
             suspicious = False
             reasons = []
 
             if not is_private:
-                # Check if IP is used with HTTP
-                if re.search(r'https?://' + re.escape(ip), content):
+                prefix = content[max(0, start - 8):start].lower()
+                if prefix.endswith('http://') or prefix.endswith('https://'):
                     suspicious = True
                     reasons.append('HTTP connection to raw IP')
 
                 # Check if IP has a suspicious port
-                if port and port in self.NETWORK_PATTERNS['suspicious_ports']['ports']:
+                if port and port in self._suspicious_ports:
                     suspicious = True
                     reasons.append(f'Suspicious port {port}')
 
                 # Check if in C2 context
-                c2_context_keywords = ['c2', 'c&c', 'command', 'control', 'beacon', 'callback',
-                                       'implant', 'payload', 'shell', 'reverse', 'connect', 'listener']
                 context_lower = context.lower()
-                for kw in c2_context_keywords:
+                for kw in self._c2_context_keywords:
                     if kw in context_lower:
                         suspicious = True
                         reasons.append(f'C2 context keyword: {kw}')
@@ -376,26 +424,23 @@ class TextFileAnalyzer:
                 'suspicious': suspicious,
                 'reasons': reasons,
                 'context': context[:100],
-                'occurrences': content.count(ip)
+                'occurrences': counts[ip]
             })
 
         return results
 
     def _extract_urls(self, content: str) -> List[Dict]:
         """Extract and classify URLs."""
-        url_pattern = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
-        found = url_pattern.findall(content)
+        matches = list(self._compiled_extract['url'].finditer(content))
+        if not matches:
+            return []
 
-        # Whitelist for non-suspicious URLs
-        whitelist_domains = {
-            'microsoft.com', 'google.com', 'github.com', 'w3.org',
-            'schema.org', 'apple.com', 'mozilla.org', 'wikipedia.org',
-        }
+        cleaned_urls = [match.group(0).rstrip('.,;:)') for match in matches]
+        counts = Counter(cleaned_urls)
 
         results = []
         seen = set()
-        for url in found:
-            url_clean = url.rstrip('.,;:)')
+        for url_clean in cleaned_urls:
             if url_clean in seen:
                 continue
             seen.add(url_clean)
@@ -417,26 +462,21 @@ class TextFileAnalyzer:
                     reasons.append('URL with raw IP address')
 
                 # Check for suspicious TLDs
-                suspicious_tlds = ['.tk', '.ml', '.ga', '.cf', '.gq', '.top', '.xyz', '.club',
-                                   '.work', '.bid', '.download', '.win', '.stream', '.racing']
-                for tld in suspicious_tlds:
+                for tld in self._suspicious_tlds:
                     if host.endswith(tld):
                         suspicious = True
                         reasons.append(f'Suspicious TLD: {tld}')
                         break
 
                 # Check for suspicious paths
-                suspicious_paths = ['/admin', '/shell', '/cmd', '/exec', '/upload', '/gate',
-                                    '/panel', '/login.php', '/post.php', '/beacon', '/c2',
-                                    '.exe', '.ps1', '.bat', '.vbs', '.hta', '.dll']
-                for sp in suspicious_paths:
+                for sp in self._suspicious_paths:
                     if sp in path.lower():
                         suspicious = True
                         reasons.append(f'Suspicious path: {sp}')
                         break
 
                 # Skip whitelisted
-                is_whitelisted = any(host.endswith(d) for d in whitelist_domains)
+                is_whitelisted = any(host.endswith(d) for d in self._whitelist_domains)
 
             except Exception:
                 is_whitelisted = False
@@ -448,24 +488,28 @@ class TextFileAnalyzer:
                 'suspicious': suspicious,
                 'is_whitelisted': is_whitelisted if 'is_whitelisted' in dir() else False,
                 'reasons': reasons,
-                'occurrences': content.count(url_clean[:50])
+                'occurrences': counts[url_clean]
             })
 
         return results
 
     def _extract_domains(self, content: str) -> List[Dict]:
         """Extract domains not already part of URLs."""
-        domain_pattern = re.compile(r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|info|biz|xyz|top|club|tk|ml|ga|cf|gq|ru|cn|br|de|uk|fr|it|au|ca|nl|se|no|fi|dk|pl|cz|sk|hu|ro|bg|ua|kz|us|gov|mil|edu)\b', re.IGNORECASE)
-        found = domain_pattern.findall(content)
+        matches = list(self._compiled_extract['domain'].finditer(content))
+        if not matches:
+            return []
+
+        counts = Counter(match.group(0).lower() for match in matches)
 
         seen = set()
         results = []
-        whitelist = {'microsoft.com', 'google.com', 'github.com', 'w3.org', 'example.com',
-                     'localhost.com', 'schema.org', 'apple.com', 'mozilla.org'}
 
-        for domain in found:
-            domain_lower = domain.lower()
-            if domain_lower in seen or domain_lower in whitelist:
+        for match in matches:
+            domain_lower = match.group(0).lower()
+            if domain_lower in seen or domain_lower in self._whitelist_domains:
+                continue
+            prefix = content[max(0, match.start() - 8):match.start()].lower()
+            if '://' in prefix:
                 continue
             seen.add(domain_lower)
 
@@ -473,9 +517,7 @@ class TextFileAnalyzer:
             reasons = []
 
             # Suspicious TLDs
-            suspicious_tlds = ['.tk', '.ml', '.ga', '.cf', '.gq', '.top', '.xyz', '.club',
-                               '.work', '.bid', '.ru', '.cn']
-            for tld in suspicious_tlds:
+            for tld in self._suspicious_tlds:
                 if domain_lower.endswith(tld):
                     suspicious = True
                     reasons.append(f'Suspicious TLD: {tld}')
@@ -498,24 +540,20 @@ class TextFileAnalyzer:
                 'domain': domain_lower,
                 'suspicious': suspicious,
                 'reasons': reasons,
-                'occurrences': content.lower().count(domain_lower)
+                'occurrences': counts[domain_lower]
             })
 
         return results
 
     def _extract_hashes(self, content: str) -> List[Dict]:
         """Extract file hashes."""
-        hash_patterns = {
-            'md5': (r'\b[a-fA-F0-9]{32}\b', 32),
-            'sha1': (r'\b[a-fA-F0-9]{40}\b', 40),
-            'sha256': (r'\b[a-fA-F0-9]{64}\b', 64),
-        }
-
         results = []
         seen = set()
 
-        for hash_type, (pattern, expected_len) in hash_patterns.items():
-            for match in re.finditer(pattern, content):
+        for hash_type, compiled in self._compiled_hashes.items():
+            matches = list(compiled.finditer(content))
+            counts = Counter(match.group(0) for match in matches)
+            for match in matches:
                 value = match.group()
                 if value in seen:
                     continue
@@ -523,16 +561,16 @@ class TextFileAnalyzer:
                 # Avoid false positives: check it's not part of a longer hex string
                 start = match.start()
                 end = match.end()
-                if start > 0 and content[start-1] in '0123456789abcdefABCDEF':
+                if start > 0 and content[start-1] in self._hex_chars:
                     continue
-                if end < len(content) and content[end] in '0123456789abcdefABCDEF':
+                if end < len(content) and content[end] in self._hex_chars:
                     continue
 
                 seen.add(value)
                 results.append({
                     'hash': value,
                     'type': hash_type,
-                    'occurrences': content.count(value)
+                    'occurrences': counts[value]
                 })
 
         return results
@@ -800,10 +838,12 @@ class TextFileAnalyzer:
             # ==================== RUN ALL ANALYSES ====================
 
             # 1. IOC Extraction
-            self._emit_progress(24, 'Extracting IPs, URLs, domains, and hashes...')
+            self._emit_progress(24, 'Extracting IP addresses and network endpoints...')
             ip_addresses = self._extract_ips(content)
+            self._emit_progress(30, 'Extracting URLs and domains...')
             urls = self._extract_urls(content)
             domains = self._extract_domains(content)
+            self._emit_progress(36, 'Extracting file hashes and indicators...')
             hashes = self._extract_hashes(content)
 
             # 2. C2 Pattern Detection
@@ -820,12 +860,10 @@ class TextFileAnalyzer:
 
             # 5. Email extraction
             self._emit_progress(80, 'Extracting email addresses and CVEs...')
-            email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
-            emails = list(set(email_pattern.findall(content)))
+            emails = list(set(self._compiled_extract['email'].findall(content)))
 
             # 6. CVE extraction
-            cve_pattern = re.compile(r'CVE-\d{4}-\d{4,7}', re.IGNORECASE)
-            cves = list(set(cve_pattern.findall(content)))
+            cves = list(set(self._compiled_extract['cve'].findall(content)))
 
             # ==================== BUILD ANALYSIS RESULT ====================
             analysis = {

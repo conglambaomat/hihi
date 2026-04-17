@@ -913,7 +913,9 @@
                 }
 
                 var pct = statusData.progress || 0;
-                var msg = statusData.current_step || 'Analyzing...';
+                var progressLog = statusData.progress_log || [];
+                var latestLog = progressLog.length ? progressLog[progressLog.length - 1] : null;
+                var msg = (latestLog && latestLog.message) || statusData.current_step || 'Analyzing...';
 
                 if (statusData.status === 'completed' || statusData.status === 'complete') {
                     return apiFetch('/api/analysis/' + analysisId).then(function (fullResult) {
@@ -951,7 +953,7 @@
                     callbacks.onProgress({
                         percent: Math.max(15, pct),
                         message: msg,
-                        progressLog: statusData.progress_log || []
+                        progressLog: progressLog
                     });
                 }
 

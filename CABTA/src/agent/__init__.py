@@ -3,6 +3,9 @@ from .agent_state import AgentPhase, AgentState
 from .agent_store import AgentStore
 from .tool_registry import ToolRegistry
 from .correlation import CorrelationEngine
+from .entity_resolver import EntityResolver
+from .evidence_graph import EvidenceGraph
+from .hypothesis_manager import HypothesisManager
 from .memory import InvestigationMemory
 from .playbook_engine import PlaybookEngine
 
@@ -24,5 +27,6 @@ except Exception:  # pragma: no cover - optional runtime dependency path
 __all__ = [
     'AgentPhase', 'AgentState', 'AgentStore', 'ToolRegistry', 'AgentLoop',
     'MCPClientManager', 'SandboxOrchestrator', 'CorrelationEngine',
-    'InvestigationMemory', 'PlaybookEngine',
+    'InvestigationMemory', 'PlaybookEngine', 'HypothesisManager',
+    'EntityResolver', 'EvidenceGraph',
 ]

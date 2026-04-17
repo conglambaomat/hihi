@@ -56,6 +56,11 @@ class AgentState:
     active_specialist: Optional[str] = None
     specialist_index: int = 0
     specialist_handoffs: List[Dict[str, Any]] = field(default_factory=list)
+    reasoning_state: Dict[str, Any] = field(default_factory=dict)
+    entity_state: Dict[str, Any] = field(default_factory=dict)
+    evidence_state: Dict[str, Any] = field(default_factory=dict)
+    deterministic_decision: Dict[str, Any] = field(default_factory=dict)
+    agentic_explanation: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ------------------------------------------------------------------ #
@@ -154,6 +159,11 @@ class AgentState:
             "active_specialist": self.active_specialist,
             "specialist_index": self.specialist_index,
             "specialist_handoffs": self.specialist_handoffs,
+            "reasoning_state": self.reasoning_state,
+            "entity_state": self.entity_state,
+            "evidence_state": self.evidence_state,
+            "deterministic_decision": self.deterministic_decision,
+            "agentic_explanation": self.agentic_explanation,
             "collaboration_mode": "multi_agent" if len(self.specialist_team) > 1 else "single_agent",
             "created_at": self.created_at,
             "is_terminal": self.is_terminal(),

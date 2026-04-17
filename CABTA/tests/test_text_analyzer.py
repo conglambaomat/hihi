@@ -37,6 +37,8 @@ def test_text_analyzer_emits_substage_progress_messages(tmp_path):
     assert result["verdict"] in {"CLEAN", "SUSPICIOUS", "MALICIOUS"}
     messages = [message for _, message in progress]
     assert any("Loading text content" in message for message in messages)
-    assert any("Extracting IPs, URLs, domains, and hashes" in message for message in messages)
+    assert any("Extracting IP addresses and network endpoints" in message for message in messages)
+    assert any("Extracting URLs and domains" in message for message in messages)
+    assert any("Extracting file hashes and indicators" in message for message in messages)
     assert any("Detecting C2 and malware patterns" in message for message in messages)
     assert any("Calculating threat score and summary" in message for message in messages)

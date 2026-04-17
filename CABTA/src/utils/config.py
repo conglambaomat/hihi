@@ -89,6 +89,14 @@ def get_default_config() -> Dict[str, Any]:
             'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
             'groq': os.environ.get('GROQ_API_KEY', ''),
             'gemini': os.environ.get('GEMINI_API_KEY', ''),
+            'openrouter': os.environ.get('OPENROUTER_API_KEY', ''),
+        },
+        'agent': {
+            'max_steps': 50,
+            'auto_enrich_timeout_seconds': 12,
+            'chat_tool_cap': 14,
+            'chat_prompt_findings_limit': 5,
+            'chat_auto_enrich_limit': 1,
         },
         'rate_limits': {
             'virustotal': {'requests_per_minute': 4},
@@ -115,7 +123,9 @@ def get_default_config() -> Dict[str, Any]:
             'text_max_scan_mb': 3,
         },
         'llm': {
-            'provider': 'ollama',
+            'provider': 'openrouter',
+            'auto_failover': False,
+            'fallback_providers': [],
             'ollama_endpoint': 'http://localhost:11434',
             'ollama_model': 'llama3.1:8b',
             'anthropic_model': 'claude-sonnet-4-20250514',
@@ -123,6 +133,8 @@ def get_default_config() -> Dict[str, Any]:
             'groq_model': 'openai/gpt-oss-20b',
             'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
             'gemini_model': 'gemini-2.5-flash',
+            'openrouter_endpoint': 'https://openrouter.ai/api/v1',
+            'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
         },
         'output': {
             'report_format': 'html',

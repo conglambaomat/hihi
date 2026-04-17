@@ -116,6 +116,11 @@ class WebDataProvider:
 
         if not provider:
             llm_status = {"status": "disabled", "label": "Disabled"}
+        elif provider == "openrouter":
+            llm_status = {
+                "status": "configured" if self._has_api_key("openrouter") else "degraded",
+                "label": "OpenRouter" if self._has_api_key("openrouter") else "OpenRouter (key missing)",
+            }
         elif provider == "groq":
             llm_status = {
                 "status": "configured" if self._has_api_key("groq") else "degraded",

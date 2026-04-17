@@ -145,6 +145,7 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
             agent_profiles=getattr(app.state, "agent_profiles", None),
             workflow_registry=getattr(app.state, "workflow_registry", None),
             governance_store=getattr(app.state, "governance_store", None),
+            case_store=getattr(app.state, "case_store", None),
         )
     except Exception as exc:
         logger.warning("[CONFIG] AgentLoop refresh failed: %s", exc)

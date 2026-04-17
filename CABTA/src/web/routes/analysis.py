@@ -302,18 +302,24 @@ async def get_analysis_status(request: Request, analysis_id: str):
     job = provider.get_job(request.app, analysis_id)
     if job is None:
         raise HTTPException(status_code=404, detail='Analysis not found')
+    progress_log = mgr.get_progress_history(analysis_id)
+    current_step = (
+        progress_log[-1].get('message')
+        if progress_log and isinstance(progress_log[-1], dict) and progress_log[-1].get('message')
+        else job.get('current_step', '')
+    )
     return {
         'analysis_id': analysis_id,
         'job_id': analysis_id,
         'job_type': job.get('job_type'),
         'status': job.get('status'),
         'progress': job.get('progress', 0),
-        'current_step': job.get('current_step', ''),
+        'current_step': current_step,
         'verdict': job.get('verdict'),
         'score': job.get('score'),
         'confidence': job.get('confidence'),
         'mode': job.get('mode'),
-        'progress_log': mgr.get_progress_history(analysis_id),
+        'progress_log': progress_log,
     }
 
 

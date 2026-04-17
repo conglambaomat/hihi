@@ -10,12 +10,17 @@ api_keys:
   hybrid_analysis: ""     # https://www.hybrid-analysis.com/my-account?tab=api-key
   greynoise: ""           # https://viz.greynoise.io/account/api-key
   urlscan: ""             # https://urlscan.io/user/profile/
+  openrouter: ""          # https://openrouter.ai/keys
   groq: ""                # https://console.groq.com/keys
   gemini: ""              # https://aistudio.google.com/app/apikey
 
 # LLM Configuration (Optional - for AI-powered analysis)
 llm:
-  provider: "ollama"      # Options: ollama, groq, anthropic, gemini
+  provider: "openrouter"  # Options: openrouter, ollama, groq, anthropic, gemini
+  auto_failover: false    # Set true only if you want CABTA to fall back to other providers
+  fallback_providers: []
+  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+  openrouter_endpoint: "https://openrouter.ai/api/v1"
   ollama_model: "llama3.1:8b"
   ollama_endpoint: "http://localhost:11434"
   groq_model: "openai/gpt-oss-20b"
@@ -23,6 +28,14 @@ llm:
   anthropic_model: "claude-sonnet-4-20250514"
   gemini_model: "gemini-2.5-flash"
   gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
+
+# Agent Loop Settings
+agent:
+  max_steps: 50
+  auto_enrich_timeout_seconds: 12
+  chat_tool_cap: 14             # For quick analyst chat questions, expose a smaller tool set to the LLM
+  chat_prompt_findings_limit: 5 # Keep the live chat prompt focused on the most relevant recent evidence
+  chat_auto_enrich_limit: 1     # For simple IOC chat, auto-run only the highest-value enrichment pivot
 
 # Analysis Settings
 analysis:

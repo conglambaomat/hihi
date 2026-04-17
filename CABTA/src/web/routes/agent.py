@@ -67,6 +67,26 @@ def _decorate_session_payload(session: Dict) -> Dict:
         payload['collaboration_mode'] = metadata.get('collaboration_mode')
     if payload.get('lead_agent_profile_id') is None and metadata.get('lead_agent_profile_id') is not None:
         payload['lead_agent_profile_id'] = metadata.get('lead_agent_profile_id')
+    if payload.get('chat_user_message') is None and metadata.get('chat_user_message') is not None:
+        payload['chat_user_message'] = metadata.get('chat_user_message')
+    if payload.get('chat_parent_session_id') is None and metadata.get('chat_parent_session_id') is not None:
+        payload['chat_parent_session_id'] = metadata.get('chat_parent_session_id')
+    if payload.get('reasoning_state') is None and metadata.get('reasoning_state') is not None:
+        payload['reasoning_state'] = metadata.get('reasoning_state')
+    if payload.get('entity_state') is None and metadata.get('entity_state') is not None:
+        payload['entity_state'] = metadata.get('entity_state')
+    if payload.get('evidence_state') is None and metadata.get('evidence_state') is not None:
+        payload['evidence_state'] = metadata.get('evidence_state')
+    if payload.get('deterministic_decision') is None and metadata.get('deterministic_decision') is not None:
+        payload['deterministic_decision'] = metadata.get('deterministic_decision')
+    if payload.get('deterministic_decision_output') is None and metadata.get('deterministic_decision_output') is not None:
+        payload['deterministic_decision_output'] = metadata.get('deterministic_decision_output')
+    if payload.get('agentic_explanation') is None and metadata.get('agentic_explanation') is not None:
+        payload['agentic_explanation'] = metadata.get('agentic_explanation')
+    if payload.get('agentic_explanation_output') is None and metadata.get('agentic_explanation_output') is not None:
+        payload['agentic_explanation_output'] = metadata.get('agentic_explanation_output')
+    if payload.get('root_cause_assessment') is None and metadata.get('root_cause_assessment') is not None:
+        payload['root_cause_assessment'] = metadata.get('root_cause_assessment')
     return payload
 
 

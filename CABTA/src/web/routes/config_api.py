@@ -37,6 +37,7 @@ API_KEY_CATALOG = [
     {'key': 'triage', 'label': 'Triage', 'placeholder': 'API key'},
     {'key': 'threatzone', 'label': 'ThreatZone', 'placeholder': 'API key'},
     {'key': 'joesandbox', 'label': 'Joe Sandbox', 'placeholder': 'API key'},
+    {'key': 'openrouter', 'label': 'OpenRouter', 'placeholder': 'API key'},
     {'key': 'gemini', 'label': 'Google Gemini', 'placeholder': 'API key'},
     {'key': 'abusech', 'label': 'abuse.ch / ThreatFox', 'placeholder': 'Auth-Key'},
 ]
@@ -62,7 +63,7 @@ def _runtime_llm_config(request: Request):
     config = dict(getattr(request.app.state, 'config', {}) or {})
     llm_cfg = config.get('llm', {}) if isinstance(config, dict) else {}
     api_keys = config.get('api_keys', {}) if isinstance(config, dict) else {}
-    provider = str(llm_cfg.get('provider') or 'ollama').strip().lower() or 'ollama'
+    provider = str(llm_cfg.get('provider') or 'openrouter').strip().lower() or 'openrouter'
     return llm_cfg, api_keys, provider
 
 
@@ -71,6 +72,11 @@ def _latest_runtime_llm_signal(request: Request, provider: str):
     signals = []
     for attr in ('agent_loop', 'llm_analyzer'):
         component = getattr(request.app.state, attr, None)
+        signal_map = getattr(component, 'provider_runtime_statuses', None)
+        if isinstance(signal_map, dict):
+            mapped = signal_map.get(provider)
+            if isinstance(mapped, dict) and mapped.get('available') is not None:
+                signals.append(mapped)
         signal = getattr(component, 'provider_runtime_status', None)
         if not isinstance(signal, dict):
             continue
@@ -132,6 +138,23 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
         'model_available': False,
         'available_models': [],
     }
+
+    if provider == 'openrouter':
+        has_key = is_valid_api_key(api_keys.get('openrouter')) or is_valid_api_key(llm_cfg.get('api_key'))
+        result.update({
+            'configured_model': llm_cfg.get('openrouter_model', llm_cfg.get('model', 'nvidia/nemotron-3-super-120b-a12b:free')),
+            'endpoint': str(llm_cfg.get('openrouter_endpoint', llm_cfg.get('base_url', 'https://openrouter.ai/api/v1'))).rstrip('/'),
+            'available': has_key,
+            'model_available': has_key,
+            'status': 'configured' if has_key else 'degraded',
+            'message': (
+                'OpenRouter is configured for AISA agent and analyst-assist workflows.'
+                if has_key else
+                'OpenRouter is selected as the LLM provider, but the API key is missing.'
+            ),
+            'error': None if has_key else 'OpenRouter API key not configured.',
+        })
+        return _apply_runtime_llm_signal(result, runtime_signal)
 
     if provider == 'groq':
         has_key = is_valid_api_key(api_keys.get('groq')) or is_valid_api_key(llm_cfg.get('api_key'))

@@ -231,6 +231,200 @@
     font-weight: 700;
 }
 
+/* ── Reasoning Mirrors ── */
+.reasoning-inline {
+    margin-top: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+}
+.reasoning-inline-text {
+    font-size: 0.72rem;
+    color: var(--text-secondary, #9aa4b2);
+    line-height: 1.35;
+}
+.reasoning-inline-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.32rem;
+}
+.reasoning-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.24rem;
+    padding: 0.12rem 0.42rem;
+    border-radius: 999px;
+    font-size: 0.66rem;
+    background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.18);
+    color: var(--text-primary, #e6edf3);
+}
+.reasoning-chip.warning {
+    background: rgba(245,158,11,0.10);
+    border-color: rgba(245,158,11,0.22);
+    color: #fbbf24;
+}
+.reasoning-chip.success {
+    background: rgba(34,197,94,0.10);
+    border-color: rgba(34,197,94,0.22);
+    color: #4ade80;
+}
+.reasoning-chip.danger {
+    background: rgba(239,68,68,0.10);
+    border-color: rgba(239,68,68,0.22);
+    color: #f87171;
+}
+.reasoning-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.14rem 0.44rem;
+    border-radius: 999px;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    border: 1px solid transparent;
+}
+.reasoning-status-pill.status-supported {
+    background: rgba(34,197,94,0.10);
+    color: #4ade80;
+    border-color: rgba(34,197,94,0.22);
+}
+.reasoning-status-pill.status-open,
+.reasoning-status-pill.status-collecting_evidence,
+.reasoning-status-pill.status-inconclusive {
+    background: rgba(56,189,248,0.10);
+    color: #67e8f9;
+    border-color: rgba(56,189,248,0.22);
+}
+.reasoning-status-pill.status-insufficient_evidence,
+.reasoning-status-pill.status-contradicted {
+    background: rgba(239,68,68,0.10);
+    color: #f87171;
+    border-color: rgba(239,68,68,0.22);
+}
+.reasoning-status-pill.status-monitoring {
+    background: rgba(245,158,11,0.10);
+    color: #fbbf24;
+    border-color: rgba(245,158,11,0.22);
+}
+.reasoning-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0.85rem;
+    margin-top: 1rem;
+}
+.reasoning-panel {
+    background: var(--bg-tertiary, #1a1a2e);
+    border: 1px solid var(--border-color, #30363d);
+    border-radius: 10px;
+    padding: 0.85rem;
+}
+.reasoning-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary, #9aa4b2);
+    font-weight: 700;
+    margin-bottom: 0.55rem;
+}
+.reasoning-panel p {
+    margin-bottom: 0.55rem;
+    line-height: 1.45;
+}
+.reasoning-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+}
+.reasoning-stat {
+    padding: 0.55rem 0.6rem;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.22);
+    border: 1px solid var(--border-color, #30363d);
+}
+.reasoning-stat-label {
+    font-size: 0.63rem;
+    text-transform: uppercase;
+    color: var(--text-muted, #8b949e);
+    letter-spacing: 0.05em;
+    margin-bottom: 0.15rem;
+}
+.reasoning-stat-value {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary, #e6edf3);
+    word-break: break-word;
+}
+.reasoning-mini-list {
+    margin: 0;
+    padding-left: 1rem;
+    display: grid;
+    gap: 0.18rem;
+    color: var(--text-secondary, #c5d1dd);
+    font-size: 0.77rem;
+}
+.reasoning-mini-list li {
+    line-height: 1.4;
+}
+.reasoning-entity-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+.entity-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    padding: 0.2rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    background: rgba(88,166,255,0.08);
+    border: 1px solid rgba(88,166,255,0.18);
+    color: #c9d1d9;
+}
+.relationship-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.relationship-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 0.4rem;
+    align-items: center;
+}
+.relationship-node {
+    padding: 0.3rem 0.45rem;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.24);
+    border: 1px solid var(--border-color, #30363d);
+    color: var(--text-primary, #e6edf3);
+    font-size: 0.72rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.relationship-type {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted, #8b949e);
+}
+.reasoning-empty {
+    padding: 0.75rem;
+    border-radius: 8px;
+    border: 1px dashed var(--border-color, #30363d);
+    color: var(--text-secondary, #9aa4b2);
+    font-size: 0.76rem;
+    line-height: 1.5;
+    background: rgba(148,163,184,0.05);
+}
+
 /* ── Bulk Actions ── */
 .bulk-actions-bar {
     display: none;
@@ -1115,7 +1309,10 @@ var Investigations = (function() {
             tdGoal.className = 'text-truncate';
             tdGoal.style.maxWidth = '300px';
             tdGoal.title = s.goal || '';
-            tdGoal.textContent = (s.goal || 'N/A').substring(0, 80);
+            var goalMain = document.createElement('div');
+            goalMain.textContent = (s.goal || 'N/A').substring(0, 80);
+            tdGoal.appendChild(goalMain);
+            appendCompactReasoning(tdGoal, s);
             tr.appendChild(tdGoal);
 
             // Status badge
@@ -1214,6 +1411,8 @@ var Investigations = (function() {
             metaDiv.appendChild(idSpan);
 
             card.appendChild(metaDiv);
+
+            appendCompactReasoning(card, s);
 
             // Actions
             var actDiv = el('div', 'card-actions');
@@ -1337,6 +1536,7 @@ var Investigations = (function() {
                 goalP.appendChild(goalStrong);
                 goalP.appendChild(document.createTextNode(data.goal || 'N/A'));
                 td.appendChild(goalP);
+                appendCompactReasoning(td, data);
 
                 if (data.result || data.summary) {
                     var resP = document.createElement('p');
@@ -1448,6 +1648,257 @@ var Investigations = (function() {
         badge.appendChild(icon('bi ' + iconCls + ' me-1'));
         badge.appendChild(document.createTextNode(v || 'UNKNOWN'));
         return badge;
+    }
+
+    function formatLabel(value) {
+        return String(value || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, function(ch) { return ch.toUpperCase(); });
+    }
+
+    function formatConfidence(value) {
+        if (value === null || value === undefined || value === '') return '-';
+        var n = Number(value);
+        if (!isFinite(n)) return String(value);
+        if (n <= 1) n = n * 100;
+        return Math.round(n) + '%';
+    }
+
+    function getSessionReasoning(data) {
+        var payload = data || {};
+        var meta = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+        return {
+            deterministic: payload.deterministic_decision || payload.deterministic_decision_output || meta.deterministic_decision || meta.deterministic_decision_output || {},
+            agentic: payload.agentic_explanation || payload.agentic_explanation_output || meta.agentic_explanation || meta.agentic_explanation_output || {},
+            reasoning: payload.reasoning_state || meta.reasoning_state || {},
+            entity: payload.entity_state || meta.entity_state || {},
+            evidence: payload.evidence_state || meta.evidence_state || {},
+            rootCause: payload.root_cause_assessment || meta.root_cause_assessment || ((payload.agentic_explanation || meta.agentic_explanation || {}).root_cause_assessment) || {}
+        };
+    }
+
+    function getPrimaryHypothesis(reasoning) {
+        var hypotheses = reasoning && Array.isArray(reasoning.hypotheses) ? reasoning.hypotheses : [];
+        if (!hypotheses.length) return null;
+        hypotheses.sort(function(a, b) { return (b.confidence || 0) - (a.confidence || 0); });
+        return hypotheses[0];
+    }
+
+    function buildReasoningStatusPill(status) {
+        var normalized = String(status || 'open').toLowerCase();
+        var pill = el('span', 'reasoning-status-pill status-' + normalized, formatLabel(normalized));
+        return pill;
+    }
+
+    function buildReasoningChip(text, variant, iconCls) {
+        var chip = el('span', 'reasoning-chip' + (variant ? ' ' + variant : ''));
+        if (iconCls) chip.appendChild(icon(iconCls));
+        chip.appendChild(document.createTextNode(text));
+        return chip;
+    }
+
+    function appendCompactReasoning(container, session) {
+        var ctx = getSessionReasoning(session);
+        var primaryHypothesis = getPrimaryHypothesis(ctx.reasoning);
+        var rootCause = ctx.rootCause || {};
+        var verdict = String((ctx.deterministic || {}).verdict || '').toUpperCase();
+        var summary = rootCause.summary || rootCause.primary_root_cause || (primaryHypothesis && primaryHypothesis.statement) || '';
+
+        if (!summary && !verdict && !primaryHypothesis) return;
+
+        var wrap = el('div', 'reasoning-inline');
+        if (summary) {
+            var summaryDiv = el('div', 'reasoning-inline-text', summary.substring(0, 180));
+            if (summary.length > 180) summaryDiv.textContent = summary.substring(0, 177) + '...';
+            wrap.appendChild(summaryDiv);
+        }
+
+        var meta = el('div', 'reasoning-inline-meta');
+        if (verdict) {
+            var verdictChip = buildReasoningChip('Verdict: ' + verdict, verdict === 'MALICIOUS' ? 'danger' : verdict === 'SUSPICIOUS' ? 'warning' : 'success', 'bi bi-shield');
+            meta.appendChild(verdictChip);
+        }
+        if (rootCause.status) meta.appendChild(buildReasoningStatusPill(rootCause.status));
+        if (primaryHypothesis) meta.appendChild(buildReasoningChip('Hypotheses: ' + ((ctx.reasoning.hypotheses || []).length || 1), '', 'bi bi-lightbulb'));
+        var entities = ctx.entity && ctx.entity.entities && typeof ctx.entity.entities === 'object' ? Object.keys(ctx.entity.entities).length : 0;
+        if (entities) meta.appendChild(buildReasoningChip('Entities: ' + entities, '', 'bi bi-diagram-2'));
+        var missing = ctx.agentic && Array.isArray(ctx.agentic.missing_evidence) ? ctx.agentic.missing_evidence.length : 0;
+        if (missing) meta.appendChild(buildReasoningChip('Missing: ' + missing, 'warning', 'bi bi-question-circle'));
+        if (meta.childNodes.length) wrap.appendChild(meta);
+        container.appendChild(wrap);
+    }
+
+    function buildSessionReasoningTab(data, sid) {
+        var ctx = getSessionReasoning(data);
+        var wrapper = document.createElement('div');
+        var deterministic = ctx.deterministic || {};
+        var agentic = ctx.agentic || {};
+        var reasoning = ctx.reasoning || {};
+        var entityState = ctx.entity || {};
+        var rootCause = ctx.rootCause || {};
+        var hypotheses = Array.isArray(reasoning.hypotheses) ? reasoning.hypotheses.slice().sort(function(a, b) { return (b.confidence || 0) - (a.confidence || 0); }) : [];
+        var entities = entityState && typeof entityState.entities === 'object' ? Object.keys(entityState.entities).map(function(key) { return entityState.entities[key]; }) : [];
+        var relationships = entityState && Array.isArray(entityState.relationships) ? entityState.relationships : [];
+        var missingEvidence = Array.isArray(agentic.missing_evidence) ? agentic.missing_evidence : (Array.isArray(reasoning.missing_evidence) ? reasoning.missing_evidence : []);
+        var nextPivots = Array.isArray(agentic.recommended_next_pivots) ? agentic.recommended_next_pivots : [];
+        var nextActions = Array.isArray(agentic.recommended_next_actions) ? agentic.recommended_next_actions : [];
+
+        var grid = el('div', 'reasoning-panel-grid');
+
+        var decisionPanel = el('div', 'reasoning-panel');
+        decisionPanel.appendChild(el('div', 'reasoning-panel-title', 'Deterministic Decision')).prepend(icon('bi bi-shield-check'));
+        if (deterministic.verdict || deterministic.score !== undefined || deterministic.severity || deterministic.confidence !== undefined) {
+            var stats = el('div', 'reasoning-stat-grid');
+            [
+                { label: 'Verdict', value: deterministic.verdict || 'N/A', isVerdict: true },
+                { label: 'Score', value: deterministic.score !== undefined ? String(deterministic.score) : '-' },
+                { label: 'Severity', value: formatLabel(deterministic.severity || '-') },
+                { label: 'Confidence', value: formatConfidence(deterministic.confidence) },
+            ].forEach(function(item) {
+                var card = el('div', 'reasoning-stat');
+                card.appendChild(el('div', 'reasoning-stat-label', item.label));
+                var valueDiv = el('div', 'reasoning-stat-value');
+                if (item.isVerdict && item.value && item.value !== 'N/A') valueDiv.appendChild(buildVerdictBadge(item.value));
+                else valueDiv.textContent = item.value;
+                card.appendChild(valueDiv);
+                stats.appendChild(card);
+            });
+            decisionPanel.appendChild(stats);
+            if (Array.isArray(deterministic.policy_flags) && deterministic.policy_flags.length) {
+                var flagsWrap = el('div', 'reasoning-inline-meta');
+                flagsWrap.style.marginTop = '0.55rem';
+                deterministic.policy_flags.forEach(function(flag) {
+                    flagsWrap.appendChild(buildReasoningChip(formatLabel(flag), 'warning', 'bi bi-flag'));
+                });
+                decisionPanel.appendChild(flagsWrap);
+            }
+        } else {
+            decisionPanel.appendChild(el('div', 'reasoning-empty', 'No deterministic decision has been persisted for this session yet.'));
+        }
+        grid.appendChild(decisionPanel);
+
+        var explanationPanel = el('div', 'reasoning-panel');
+        explanationPanel.appendChild(el('div', 'reasoning-panel-title', 'Agentic Explanation')).prepend(icon('bi bi-diagram-3'));
+        if (rootCause.summary || rootCause.primary_root_cause) {
+            if (rootCause.primary_root_cause) {
+                var rc = document.createElement('p');
+                var strong = document.createElement('strong');
+                strong.textContent = rootCause.primary_root_cause;
+                rc.appendChild(strong);
+                explanationPanel.appendChild(rc);
+            }
+            if (rootCause.summary) explanationPanel.appendChild(el('p', '', rootCause.summary));
+            var statusLine = el('div', 'reasoning-inline-meta');
+            if (rootCause.status) statusLine.appendChild(buildReasoningStatusPill(rootCause.status));
+            statusLine.appendChild(buildReasoningChip('Confidence: ' + formatConfidence(agentic.explanation_confidence !== undefined ? agentic.explanation_confidence : rootCause.confidence), '', 'bi bi-speedometer2'));
+            explanationPanel.appendChild(statusLine);
+            var causal = Array.isArray(agentic.causal_chain) ? agentic.causal_chain : [];
+            if (causal.length) {
+                explanationPanel.appendChild(el('div', 'reasoning-stat-label', 'Causal Chain'));
+                var causalList = el('ol', 'reasoning-mini-list');
+                causal.slice(0, 5).forEach(function(item) { causalList.appendChild(el('li', '', item)); });
+                explanationPanel.appendChild(causalList);
+            }
+        } else {
+            explanationPanel.appendChild(el('div', 'reasoning-empty', 'The session has not produced a structured root-cause explanation yet.'));
+        }
+        grid.appendChild(explanationPanel);
+
+        var hypothesesPanel = el('div', 'reasoning-panel');
+        hypothesesPanel.appendChild(el('div', 'reasoning-panel-title', 'Hypotheses')).prepend(icon('bi bi-lightbulb'));
+        if (hypotheses.length) {
+            hypotheses.slice(0, 4).forEach(function(hypothesis) {
+                var section = document.createElement('div');
+                section.style.marginBottom = '0.65rem';
+                var heading = document.createElement('div');
+                heading.style.cssText = 'display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem;margin-bottom:0.28rem;';
+                var statement = el('div', '');
+                statement.style.cssText = 'font-size:0.79rem;font-weight:600;line-height:1.4;';
+                statement.textContent = hypothesis.statement || 'Hypothesis';
+                heading.appendChild(statement);
+                heading.appendChild(buildReasoningStatusPill(hypothesis.status || 'open'));
+                section.appendChild(heading);
+                var meta = el('div', 'reasoning-inline-meta');
+                meta.appendChild(buildReasoningChip('Confidence: ' + formatConfidence(hypothesis.confidence), '', 'bi bi-speedometer2'));
+                meta.appendChild(buildReasoningChip('Support: ' + ((hypothesis.supporting_evidence_refs || []).length || 0), 'success', 'bi bi-plus-circle'));
+                meta.appendChild(buildReasoningChip('Contradict: ' + ((hypothesis.contradicting_evidence_refs || []).length || 0), 'danger', 'bi bi-dash-circle'));
+                section.appendChild(meta);
+                if (Array.isArray(hypothesis.open_questions) && hypothesis.open_questions.length) {
+                    var qList = el('ul', 'reasoning-mini-list');
+                    hypothesis.open_questions.slice(0, 2).forEach(function(question) { qList.appendChild(el('li', '', question)); });
+                    section.appendChild(qList);
+                }
+                hypothesesPanel.appendChild(section);
+            });
+        } else {
+            hypothesesPanel.appendChild(el('div', 'reasoning-empty', 'No structured hypotheses are attached to this session yet.'));
+        }
+        grid.appendChild(hypothesesPanel);
+
+        var entityPanel = el('div', 'reasoning-panel');
+        entityPanel.appendChild(el('div', 'reasoning-panel-title', 'Entity Pivots')).prepend(icon('bi bi-share'));
+        if (entities.length) {
+            var entityWrap = el('div', 'reasoning-entity-wrap');
+            entities.slice(0, 14).forEach(function(entity) {
+                var label = (entity.label || entity.value || entity.id || entity.type || 'entity');
+                entityWrap.appendChild(el('span', 'entity-badge', formatLabel(entity.type || 'entity') + ': ' + label));
+            });
+            entityPanel.appendChild(entityWrap);
+            if (relationships.length) {
+                var relTitle = el('div', 'reasoning-stat-label', 'Relationships');
+                relTitle.style.marginTop = '0.65rem';
+                entityPanel.appendChild(relTitle);
+                var relList = el('div', 'relationship-list');
+                var lookup = {};
+                entities.forEach(function(item) { if (item && item.id) lookup[item.id] = item; });
+                relationships.slice(0, 6).forEach(function(rel) {
+                    var row = el('div', 'relationship-row');
+                    row.appendChild(el('div', 'relationship-node', ((lookup[rel.source] || {}).label || rel.source || 'Unknown')));
+                    row.appendChild(el('div', 'relationship-type', formatLabel(rel.relation || 'linked_to')));
+                    row.appendChild(el('div', 'relationship-node', ((lookup[rel.target] || {}).label || rel.target || 'Unknown')));
+                    relList.appendChild(row);
+                });
+                entityPanel.appendChild(relList);
+            }
+        } else {
+            entityPanel.appendChild(el('div', 'reasoning-empty', 'No normalized entities were persisted for this session.'));
+        }
+        grid.appendChild(entityPanel);
+
+        var nextPanel = el('div', 'reasoning-panel');
+        nextPanel.appendChild(el('div', 'reasoning-panel-title', 'Missing Evidence / Next Pivots')).prepend(icon('bi bi-signpost-split'));
+        if (missingEvidence.length || nextPivots.length || nextActions.length) {
+            if (missingEvidence.length) {
+                nextPanel.appendChild(el('div', 'reasoning-stat-label', 'Missing Evidence'));
+                var missingList = el('ul', 'reasoning-mini-list');
+                missingEvidence.slice(0, 4).forEach(function(item) { missingList.appendChild(el('li', '', item)); });
+                nextPanel.appendChild(missingList);
+            }
+            if (nextPivots.length) {
+                nextPanel.appendChild(el('div', 'reasoning-stat-label', 'Recommended Next Pivots'));
+                var pivotList = el('ul', 'reasoning-mini-list');
+                nextPivots.slice(0, 4).forEach(function(item) { pivotList.appendChild(el('li', '', item)); });
+                nextPanel.appendChild(pivotList);
+            }
+            if (nextActions.length) {
+                nextPanel.appendChild(el('div', 'reasoning-stat-label', 'Recommended Next Actions'));
+                var actionList = el('ul', 'reasoning-mini-list');
+                nextActions.slice(0, 4).forEach(function(item) { actionList.appendChild(el('li', '', item)); });
+                nextPanel.appendChild(actionList);
+            }
+            var linkWrap = el('div', 'mt-3');
+            var continueLink = document.createElement('a');
+            continueLink.href = '/agent/chat?session=' + encodeURIComponent(sid);
+            continueLink.className = 'btn btn-sm btn-outline-primary';
+            continueLink.appendChild(icon('bi bi-chat-dots me-1'));
+            continueLink.appendChild(document.createTextNode('Pivot in Agent Chat'));
+            linkWrap.appendChild(continueLink);
+            nextPanel.appendChild(linkWrap);
+        } else {
+            nextPanel.appendChild(el('div', 'reasoning-empty', 'No missing-evidence or next-pivot guidance was persisted for this session.'));
+        }
+        grid.appendChild(nextPanel);
+
+        wrapper.appendChild(grid);
+        return wrapper;
     }
 
     // ── Helper: build an info card ──
@@ -1599,12 +2050,17 @@ var Investigations = (function() {
 
                 // Tab headers
                 var tabHeaders = el('div', 'detail-tabs');
-                var tabNames = ['Overview', 'Steps', 'Findings'];
-                var tabIds = ['tab-overview', 'tab-steps', 'tab-findings'];
+                var tabNames = ['Overview', 'Reasoning', 'Steps', 'Findings'];
+                var tabIds = ['tab-overview', 'tab-reasoning', 'tab-steps', 'tab-findings'];
                 tabNames.forEach(function(name, tidx) {
                     var tab = el('button', 'detail-tab' + (tidx === 0 ? ' active' : ''), name);
                     if (name === 'Findings') tab.textContent = name + ' (' + findings.length + ')';
                     if (name === 'Steps') tab.textContent = name + ' (' + steps.length + ')';
+                    if (name === 'Reasoning') {
+                        var reasoningCtx = getSessionReasoning(data);
+                        var hypothesisCount = Array.isArray(reasoningCtx.reasoning.hypotheses) ? reasoningCtx.reasoning.hypotheses.length : 0;
+                        tab.textContent = name + ' (' + hypothesisCount + ')';
+                    }
                     tab.setAttribute('data-tab', tabIds[tidx]);
                     tab.addEventListener('click', function() {
                         tabHeaders.querySelectorAll('.detail-tab').forEach(function(t) { t.classList.remove('active'); });
@@ -1702,6 +2158,12 @@ var Investigations = (function() {
                 tabOverview.appendChild(corrBtnDiv);
 
                 tabContainer.appendChild(tabOverview);
+
+                // ════════ TAB: Reasoning ════════
+                var tabReasoning = el('div', 'detail-tab-content');
+                tabReasoning.id = 'tab-reasoning';
+                tabReasoning.appendChild(buildSessionReasoningTab(data, sid));
+                tabContainer.appendChild(tabReasoning);
 
                 // ════════ TAB: Steps ════════
                 var tabSteps = el('div', 'detail-tab-content');

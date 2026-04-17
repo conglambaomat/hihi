@@ -53,6 +53,93 @@ class CaseIntelligenceService:
             "ai_decisions": decisions,
         }
 
+    def build_reasoning_summary(self, case_id: str) -> Optional[Dict[str, Any]]:
+        snapshot = self.build_case_snapshot(case_id)
+        if snapshot is None:
+            return None
+
+        workflow_rows = []
+        workflow_meta_by_session: Dict[str, Dict[str, Any]] = {}
+        for workflow in snapshot["workflows"]:
+            session = workflow["session"]
+            meta = session.get("metadata", {}) if isinstance(session.get("metadata"), dict) else {}
+            workflow_rows.append({
+                "session_id": session.get("id"),
+                "workflow_id": workflow["link"].get("workflow_id") or meta.get("workflow_id") or session.get("playbook_id"),
+                "status": session.get("status"),
+                "created_at": session.get("created_at"),
+                "completed_at": session.get("completed_at"),
+                "summary": session.get("summary"),
+                "reasoning_status": (meta.get("agentic_explanation", {}) or {}).get("reasoning_status"),
+                "root_cause_assessment": meta.get("root_cause_assessment", {}),
+                "deterministic_decision": meta.get("deterministic_decision", {}),
+                "hypothesis_count": len(meta.get("reasoning_state", {}).get("hypotheses", [])) if isinstance(meta.get("reasoning_state"), dict) else 0,
+                "entity_count": len(meta.get("entity_state", {}).get("entities", {})) if isinstance(meta.get("entity_state"), dict) else 0,
+            })
+            workflow_meta_by_session[str(session.get("id"))] = meta
+
+        workflow_rows.sort(
+            key=lambda item: item.get("completed_at") or item.get("created_at") or "",
+        )
+
+        latest_root_cause: Dict[str, Any] = {}
+        latest_root_cause_session_id: Optional[str] = None
+        for event in reversed(snapshot["case"].get("events", [])):
+            payload = event.get("payload", {}) if isinstance(event.get("payload"), dict) else {}
+            candidate = payload.get("root_cause_assessment", {}) if isinstance(payload, dict) else {}
+            if isinstance(candidate, dict) and candidate.get("primary_root_cause"):
+                latest_root_cause = candidate
+                latest_root_cause_session_id = payload.get("session_id")
+                break
+
+        selected_workflow = None
+        if latest_root_cause_session_id:
+            for workflow in reversed(workflow_rows):
+                if workflow.get("session_id") == latest_root_cause_session_id:
+                    selected_workflow = workflow
+                    break
+        if selected_workflow is None:
+            for workflow in reversed(workflow_rows):
+                if workflow.get("root_cause_assessment") or workflow.get("deterministic_decision") or workflow.get("hypothesis_count") or workflow.get("entity_count"):
+                    selected_workflow = workflow
+                    break
+        if selected_workflow is None:
+            selected_workflow = workflow_rows[-1] if workflow_rows else None
+
+        latest_meta: Dict[str, Any] = {}
+        if selected_workflow is not None:
+            latest_meta = workflow_meta_by_session.get(str(selected_workflow.get("session_id")), {})
+
+        graph = self.build_graph(case_id) or {"node_count": 0, "edge_count": 0, "nodes": [], "edges": []}
+        timeline = self.build_timeline(case_id) or {"event_count": 0, "events": []}
+
+        root_cause_assessment = latest_meta.get("root_cause_assessment", {}) if isinstance(latest_meta, dict) else {}
+        if not root_cause_assessment and latest_root_cause:
+            root_cause_assessment = latest_root_cause
+
+        return {
+            "case_id": case_id,
+            "latest_session_id": selected_workflow.get("session_id") if selected_workflow else None,
+            "latest_workflow_id": selected_workflow.get("workflow_id") if selected_workflow else None,
+            "deterministic_decision": latest_meta.get("deterministic_decision", {}) if isinstance(latest_meta, dict) else {},
+            "agentic_explanation": latest_meta.get("agentic_explanation", {}) if isinstance(latest_meta, dict) else {},
+            "reasoning_state": latest_meta.get("reasoning_state", {}) if isinstance(latest_meta, dict) else {},
+            "entity_state": latest_meta.get("entity_state", {}) if isinstance(latest_meta, dict) else {},
+            "evidence_state": latest_meta.get("evidence_state", {}) if isinstance(latest_meta, dict) else {},
+            "root_cause_assessment": root_cause_assessment,
+            "workflow_sessions": workflow_rows,
+            "graph_summary": {
+                "node_count": graph.get("node_count", 0),
+                "edge_count": graph.get("edge_count", 0),
+                "nodes": graph.get("nodes", [])[:24],
+                "edges": graph.get("edges", [])[:32],
+            },
+            "timeline_summary": {
+                "event_count": timeline.get("event_count", 0),
+                "events": timeline.get("events", [])[-18:],
+            },
+        }
+
     def build_graph(self, case_id: str) -> Optional[Dict[str, Any]]:
         snapshot = self.build_case_snapshot(case_id)
         if snapshot is None:
@@ -91,6 +178,65 @@ class CaseIntelligenceService:
         case = snapshot["case"]
         case_node = _ensure_node("case", case["id"], case.get("title", case["id"]), severity=case.get("severity"))
 
+        for event in case.get("events", []):
+            event_payload = event.get("payload", {}) if isinstance(event.get("payload"), dict) else {}
+            event_node = _ensure_node(
+                "case_event",
+                event["id"],
+                event.get("title", event["id"]),
+                event_type=event.get("event_type"),
+            )
+            _add_edge(case_node, event_node, "contains_event", created_at=event.get("created_at"))
+            for entity in self._extract_entities(event_payload):
+                entity_node = _ensure_node(entity["type"], entity["value"], entity["label"])
+                _add_edge(event_node, entity_node, "references")
+            root_cause = event_payload.get("root_cause_assessment", {}) if isinstance(event_payload, dict) else {}
+            if isinstance(root_cause, dict) and root_cause.get("primary_root_cause"):
+                root_node = _ensure_node(
+                    "root_cause",
+                    f"{event['id']}:root_cause",
+                    root_cause.get("primary_root_cause"),
+                    status=root_cause.get("status"),
+                    confidence=root_cause.get("confidence"),
+                )
+                _add_edge(event_node, root_node, "assesses")
+            for hypothesis in event_payload.get("hypotheses", []) if isinstance(event_payload, dict) else []:
+                if not isinstance(hypothesis, dict):
+                    continue
+                hypothesis_node = _ensure_node(
+                    "hypothesis",
+                    str(hypothesis.get("id") or hypothesis.get("statement") or event["id"]),
+                    hypothesis.get("statement", "Hypothesis"),
+                    status=hypothesis.get("status"),
+                    confidence=hypothesis.get("confidence"),
+                )
+                _add_edge(event_node, hypothesis_node, "tracks")
+            for relationship in event_payload.get("entity_relationships", []) if isinstance(event_payload, dict) else []:
+                if not isinstance(relationship, dict):
+                    continue
+                source_id = relationship.get("source")
+                target_id = relationship.get("target")
+                if source_id:
+                    source_kind, _, source_value = str(source_id).partition(":")
+                    source_node = _ensure_node(
+                        source_kind or "entity",
+                        source_value or str(source_id),
+                        source_value or str(source_id),
+                    )
+                else:
+                    source_node = None
+                if target_id:
+                    target_kind, _, target_value = str(target_id).partition(":")
+                    target_node = _ensure_node(
+                        target_kind or "entity",
+                        target_value or str(target_id),
+                        target_value or str(target_id),
+                    )
+                else:
+                    target_node = None
+                if source_node and target_node:
+                    _add_edge(source_node, target_node, relationship.get("relation", "linked_to"))
+
         for analysis in snapshot["analyses"]:
             job = analysis["job"]
             analysis_node = _ensure_node(
@@ -119,6 +265,50 @@ class CaseIntelligenceService:
             for entity in self._extract_entities(session):
                 entity_node = _ensure_node(entity["type"], entity["value"], entity["label"])
                 _add_edge(workflow_node, entity_node, "referenced")
+            root_cause = meta.get("root_cause_assessment", {}) if isinstance(meta, dict) else {}
+            if isinstance(root_cause, dict) and root_cause.get("primary_root_cause"):
+                root_node = _ensure_node(
+                    "root_cause",
+                    f"{session['id']}:root_cause",
+                    root_cause.get("primary_root_cause"),
+                    status=root_cause.get("status"),
+                    confidence=root_cause.get("confidence"),
+                )
+                _add_edge(workflow_node, root_node, "assesses")
+            for hypothesis in meta.get("reasoning_state", {}).get("hypotheses", []) if isinstance(meta.get("reasoning_state"), dict) else []:
+                if not isinstance(hypothesis, dict):
+                    continue
+                hypothesis_node = _ensure_node(
+                    "hypothesis",
+                    hypothesis.get("id", session["id"]),
+                    hypothesis.get("statement", "Hypothesis"),
+                    status=hypothesis.get("status"),
+                    confidence=hypothesis.get("confidence"),
+                )
+                _add_edge(workflow_node, hypothesis_node, "tracks")
+            entity_state = meta.get("entity_state", {}) if isinstance(meta, dict) else {}
+            if isinstance(entity_state, dict):
+                for entity_payload in entity_state.get("entities", {}).values() if isinstance(entity_state.get("entities"), dict) else []:
+                    if not isinstance(entity_payload, dict):
+                        continue
+                    entity_node = _ensure_node(
+                        entity_payload.get("type", "entity"),
+                        entity_payload.get("value", entity_payload.get("id", "entity")),
+                        entity_payload.get("label") or entity_payload.get("value") or entity_payload.get("id", "entity"),
+                    )
+                    _add_edge(workflow_node, entity_node, "normalized_entity")
+                for relationship in entity_state.get("relationships", []) if isinstance(entity_state.get("relationships"), list) else []:
+                    if not isinstance(relationship, dict):
+                        continue
+                    source = relationship.get("source")
+                    target = relationship.get("target")
+                    if not source or not target:
+                        continue
+                    source_kind, _, source_value = str(source).partition(":")
+                    target_kind, _, target_value = str(target).partition(":")
+                    source_node = _ensure_node(source_kind or "entity", source_value or str(source), source_value or str(source))
+                    target_node = _ensure_node(target_kind or "entity", target_value or str(target), target_value or str(target))
+                    _add_edge(source_node, target_node, relationship.get("relation", "linked_to"))
 
         for approval in snapshot["approvals"]:
             approval_node = _ensure_node(
@@ -159,7 +349,16 @@ class CaseIntelligenceService:
 
         case = snapshot["case"]
         events: List[Dict[str, Any]] = []
-        events.extend(case.get("events", []))
+        for case_event in case.get("events", []):
+            payload = case_event.get("payload", {}) if isinstance(case_event.get("payload"), dict) else {}
+            events.append({
+                "id": case_event.get("id"),
+                "type": case_event.get("event_type"),
+                "title": case_event.get("title"),
+                "timestamp": case_event.get("created_at"),
+                "source": "case_event",
+                "payload": payload,
+            })
 
         for analysis in snapshot["analyses"]:
             job = analysis["job"]
@@ -232,6 +431,31 @@ class CaseIntelligenceService:
                     "tool_name": step.get("tool_name"),
                     "step_number": step.get("step_number"),
                 })
+            root_cause = meta.get("root_cause_assessment", {}) if isinstance(meta, dict) else {}
+            if isinstance(root_cause, dict) and root_cause.get("primary_root_cause"):
+                events.append({
+                    "type": "workflow_root_cause_assessed",
+                    "title": root_cause.get("summary") or "Root cause assessment updated",
+                    "timestamp": root_cause.get("assessed_at") or session.get("completed_at") or session.get("created_at"),
+                    "source": "workflow_reasoning",
+                    "session_id": session["id"],
+                    "status": root_cause.get("status"),
+                    "confidence": root_cause.get("confidence"),
+                })
+            evidence_state = meta.get("evidence_state", {}) if isinstance(meta, dict) else {}
+            if isinstance(evidence_state, dict):
+                for event in evidence_state.get("timeline", []) if isinstance(evidence_state.get("timeline"), list) else []:
+                    if not isinstance(event, dict):
+                        continue
+                    events.append({
+                        "type": f"workflow_{event.get('type', 'observation')}",
+                        "title": event.get("title", "Workflow observation"),
+                        "timestamp": event.get("timestamp"),
+                        "source": "workflow_reasoning",
+                        "session_id": session["id"],
+                        "summary": event.get("summary"),
+                        "tool_name": event.get("tool_name"),
+                    })
 
         for approval in snapshot["approvals"]:
             events.append({

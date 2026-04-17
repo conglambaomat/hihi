@@ -366,6 +366,22 @@ class TestFastAPIEndpoints:
         # queued, running, completed, or failed.
         assert r2.json()['status'] in ('queued', 'running', 'completed', 'failed')
 
+    def test_get_analysis_status_prefers_latest_progress_history_message(self):
+        aid = self.app.state.analysis_manager.create_job('file', {'filename': 'demo.log'})
+        self.app.state.analysis_manager.update_progress(aid, 40, 'Running text static analysis...')
+        self.app.state.analysis_manager._progress_history[aid].append({
+            'progress': 44,
+            'message': 'Detecting C2 and malware patterns...',
+            'timestamp': '2026-04-17T00:00:00+00:00',
+        })
+
+        r = self.client.get(f'/api/analysis/{aid}/status')
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data['current_step'] == 'Detecting C2 and malware patterns...'
+        assert data['progress_log'][-1]['message'] == 'Detecting C2 and malware patterns...'
+
     def test_analysis_not_found(self):
         r = self.client.get('/api/analysis/nonexistent')
         assert r.status_code == 404
@@ -516,6 +532,10 @@ class TestFastAPIEndpoints:
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert args[0] == 'Investigate suspicious domain activity'
         assert kwargs['metadata']['agent_profile_id'] == 'investigator'
+        assert kwargs['metadata']['chat_mode'] is True
+        assert kwargs['metadata']['ui_mode'] == 'chat'
+        assert kwargs['metadata']['response_style'] == 'conversational'
+        assert kwargs['metadata']['chat_user_message'] == 'Investigate suspicious domain activity'
 
     def test_chat_follow_up_uses_structured_context_and_preserves_profile(self):
         original_session = self.app.state.agent_store.create_session(
@@ -553,6 +573,27 @@ class TestFastAPIEndpoints:
         assert '(Follow-up to previous investigation:' not in args[0]
         assert kwargs['case_id'] == 'CASE-42'
         assert kwargs['metadata']['agent_profile_id'] == 'phishing_analyst'
+        assert kwargs['metadata']['chat_mode'] is True
+        assert kwargs['metadata']['ui_mode'] == 'chat'
+        assert kwargs['metadata']['response_style'] == 'conversational'
+        assert kwargs['metadata']['chat_user_message'] == 'Pivot on related infrastructure and registrar details.'
+        assert kwargs['metadata']['chat_parent_session_id'] == original_session
+
+    def test_agent_session_payload_flattens_chat_message_metadata(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Continue the previous security investigation using tool-based reasoning.',
+            metadata={
+                'chat_user_message': 'Pivot on the registrar tied to the domain.',
+                'chat_parent_session_id': 'parent-session',
+            },
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{session_id}')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['chat_user_message'] == 'Pivot on the registrar tied to the domain.'
+        assert payload['chat_parent_session_id'] == 'parent-session'
 
     def test_chat_follow_up_strips_legacy_follow_up_wrapper_from_previous_goal(self):
         original_session = self.app.state.agent_store.create_session(

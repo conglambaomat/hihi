@@ -41,7 +41,7 @@ CABTA currently lives inside the `hihi` workspace repository. Clone the workspac
 | **Advanced Malware Analysis** | PE/ELF/Mach-O/APK/Office/PDF/Script/Archive analysis with deep inspection |
 | **Email Forensics** | SPF/DKIM/DMARC validation, BEC detection, phishing scoring, relay chain analysis |
 | **IOC Investigation** | IP, domain, URL, hash, email, CVE lookup across all TI sources with DGA and domain age detection |
-| **AI-Powered Analysis** | Optional LLM providers via Ollama, Groq, Anthropic, or Gemini for threat summarization and context-aware verdicts |
+| **AI-Powered Analysis** | Optional LLM providers via OpenRouter, Ollama, Groq, Anthropic, or Gemini for threat summarization and context-aware verdicts |
 | **Detection Rule Generation** | Auto-generated KQL, Splunk SPL, Sigma, YARA, Snort, FortiMail, Proofpoint, Mimecast rules |
 | **Case Management** | Track investigations, link analyses, add notes |
 | **STIX 2.1 Export** | Export IOCs as STIX bundles with TLP marking |
@@ -200,7 +200,9 @@ api_keys:
 
 # LLM Configuration
 llm:
-  provider: "ollama"           # ollama, groq, anthropic, gemini
+  provider: "openrouter"       # openrouter, ollama, groq, anthropic, gemini
+  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+  openrouter_endpoint: "https://openrouter.ai/api/v1"
   ollama_model: "llama3.1:8b"
   ollama_endpoint: "http://localhost:11434"
   groq_model: "openai/gpt-oss-20b"
@@ -209,6 +211,7 @@ llm:
   gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
 
 api_keys:
+  openrouter: "your-openrouter-api-key"
   groq: "your-groq-api-key"
   gemini: "your-gemini-api-key"
 ```

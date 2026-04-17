@@ -5,7 +5,7 @@ import aiohttp
 import json
 import re
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import logging
 
 from ..utils.api_key_validator import get_valid_key
@@ -73,6 +73,30 @@ class LLMAnalyzer:
         ).rstrip('/')
         self.gemini_model = llm_config.get('gemini_model', llm_config.get('model', 'gemini-2.5-flash'))
 
+        # OpenRouter settings (OpenAI-compatible endpoint)
+        self.openrouter_key = (
+            get_valid_key(config.get('api_keys', {}), 'openrouter')
+            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
+        )
+        self.openrouter_endpoint = llm_config.get(
+            'openrouter_endpoint',
+            llm_config.get('base_url', 'https://openrouter.ai/api/v1'),
+        ).rstrip('/')
+        self.openrouter_model = llm_config.get(
+            'openrouter_model',
+            llm_config.get('model', 'nvidia/nemotron-3-super-120b-a12b:free'),
+        )
+        self.auto_failover = bool(llm_config.get('auto_failover', True))
+
+        configured_fallbacks = llm_config.get('fallback_providers', llm_config.get('fallback_order', []))
+        if isinstance(configured_fallbacks, str):
+            configured_fallbacks = [configured_fallbacks]
+        self.fallback_providers = [
+            str(provider).strip().lower()
+            for provider in (configured_fallbacks or ['groq', 'anthropic'])
+            if str(provider).strip()
+        ]
+
         self.timeout = aiohttp.ClientTimeout(total=120)  # Longer timeout for local LLM
         self.provider_runtime_status = {
             "provider": self.provider,
@@ -82,24 +106,32 @@ class LLMAnalyzer:
             "http_status": None,
             "checked_at": None,
         }
+        self.provider_runtime_statuses: Dict[str, Dict] = {}
 
         logger.info(f"[LLM] Provider: {self.provider} | Model: {self._active_model_name()}")
 
     def _record_runtime_status(
         self,
         *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
         available: bool,
         error: Optional[str] = None,
         http_status: Optional[int] = None,
     ) -> None:
-        self.provider_runtime_status = {
-            "provider": self.provider,
+        provider_name = self._normalize_provider(provider)
+        status = {
+            "provider": provider_name,
+            "model": model or self._active_model_name(provider_name),
             "available": available,
             "status": "ready" if available else "error",
             "error": error,
             "http_status": http_status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+        self.provider_runtime_statuses[provider_name] = status
+        if provider_name == self.provider:
+            self.provider_runtime_status = status
     
     async def analyze_ioc_results(self, ioc: str, ioc_type: str, results: Dict) -> Dict:
         """
@@ -496,29 +528,165 @@ Based on the above tool analysis, provide your professional assessment in JSON f
 
 The deterministic system verdict is authoritative. Your JSON verdict must not be less severe than the system verdict when the composite score already indicates MALICIOUS or SUSPICIOUS. Explain the evidence; do not silently downgrade it."""
     
-    def _active_model_name(self) -> str:
-        """Return the effective model name for the current provider."""
-        if self.provider == 'anthropic':
+    def _normalize_provider(self, provider: Optional[str]) -> str:
+        """Return a normalized provider name."""
+        return str(provider or self.provider or 'ollama').strip().lower() or 'ollama'
+
+    def _is_groq_summary_model_compatible(self, model_name: str) -> bool:
+        """Reject moderation / guard models for analyst-summary chat use."""
+        normalized = str(model_name or '').strip().lower()
+        if not normalized:
+            return False
+        incompatible_tokens = ('prompt-guard', 'safeguard', 'moderation')
+        return not any(token in normalized for token in incompatible_tokens)
+
+    def _resolved_provider_model(self, provider: Optional[str] = None) -> str:
+        """Resolve the effective model for a provider, correcting obvious misconfigurations."""
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'anthropic':
             return self.anthropic_model
-        if self.provider == 'groq':
-            return self.groq_model
-        if self.provider == 'gemini':
+        if provider_name == 'groq':
+            if self._is_groq_summary_model_compatible(self.groq_model):
+                return self.groq_model
+            return 'openai/gpt-oss-20b'
+        if provider_name == 'gemini':
             return self.gemini_model
+        if provider_name == 'openrouter':
+            return self.openrouter_model
         return self.ollama_model
+
+    def _provider_is_configured(self, provider: Optional[str]) -> bool:
+        """Return True when the provider has the credentials required for a live call."""
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'anthropic':
+            return bool(self.anthropic_key)
+        if provider_name == 'groq':
+            return bool(self.groq_key)
+        if provider_name == 'gemini':
+            return bool(self.gemini_key)
+        if provider_name == 'openrouter':
+            return bool(self.openrouter_key)
+        if provider_name == 'ollama':
+            return bool(self.ollama_endpoint)
+        return False
+
+    def _candidate_providers(self) -> List[str]:
+        """Build the ordered provider list for a single summary attempt."""
+        candidates = [self.provider]
+        if not self.auto_failover:
+            return candidates
+
+        for provider in self.fallback_providers:
+            normalized = self._normalize_provider(provider)
+            if normalized in candidates:
+                continue
+            if not self._provider_is_configured(normalized):
+                continue
+            candidates.append(normalized)
+        return candidates
+
+    def _provider_attempt_summary(self, provider: str) -> Dict:
+        """Return a compact status summary for provider-attempt telemetry."""
+        status = dict(self.provider_runtime_statuses.get(provider) or {})
+        return {
+            'provider': provider,
+            'model': status.get('model') or self._resolved_provider_model(provider),
+            'available': status.get('available'),
+            'http_status': status.get('http_status'),
+            'error': status.get('error'),
+            'checked_at': status.get('checked_at'),
+        }
+
+    def _format_failover_reason(self, provider: str) -> str:
+        """Human-readable reason why the primary provider was bypassed."""
+        status = self.provider_runtime_statuses.get(provider) or {}
+        error = str(status.get('error') or 'provider unavailable').strip()
+        http_status = status.get('http_status')
+        compact = error.replace('\n', ' ').strip()
+        if http_status == 429:
+            return f"{provider.title()} quota or rate limit reached"
+        if compact:
+            return compact[:180]
+        return f"{provider.title()} unavailable"
+
+    def _attach_provider_metadata(
+        self,
+        response_data: Dict,
+        *,
+        provider: str,
+        attempts: List[Dict],
+        fallback_from: Optional[str] = None,
+    ) -> Dict:
+        """Annotate a successful LLM response with provider/runtime metadata."""
+        enriched = dict(response_data)
+        actual_model = self._resolved_provider_model(provider)
+        enriched.setdefault('provider', provider)
+        enriched.setdefault('model', actual_model)
+        enriched['provider_attempts'] = attempts
+
+        if fallback_from and provider != fallback_from:
+            failover_note = (
+                f"Primary provider {fallback_from} was unavailable ({self._format_failover_reason(fallback_from)}); "
+                f"used {provider} fallback."
+            )
+            existing_note = str(enriched.get('note') or '').strip()
+            enriched['note'] = f"{failover_note} {existing_note}".strip()
+            enriched['provider_failover'] = True
+            enriched['fallback_from'] = fallback_from
+            enriched['fallback_provider'] = provider
+
+        return enriched
+
+    def _active_model_name(self, provider: Optional[str] = None) -> str:
+        """Return the effective model name for the current provider."""
+        return self._resolved_provider_model(provider)
 
     async def _call_provider_api(self, prompt: str) -> Optional[Dict]:
         """Dispatch prompt to the configured LLM provider."""
-        if self.provider == 'ollama':
-            return await self._call_ollama_api(prompt)
-        if self.provider == 'anthropic':
-            return await self._call_anthropic_api(prompt)
-        if self.provider == 'groq':
-            return await self._call_groq_api(prompt)
-        if self.provider == 'gemini':
-            return await self._call_gemini_api(prompt)
+        primary_provider = self.provider
+        attempts: List[Dict] = []
+        last_error = None
 
-        logger.error("[LLM] Unsupported provider configured: %s", self.provider)
-        return {'error': f'Unsupported LLM provider: {self.provider}'}
+        for provider in self._candidate_providers():
+            result = await self._call_single_provider(provider, prompt)
+            attempts.append(self._provider_attempt_summary(provider))
+
+            if isinstance(result, dict) and not result.get('error'):
+                return self._attach_provider_metadata(
+                    result,
+                    provider=provider,
+                    attempts=attempts,
+                    fallback_from=primary_provider if provider != primary_provider else None,
+                )
+
+            if isinstance(result, dict) and result.get('error'):
+                last_error = str(result.get('error'))
+            else:
+                last_error = str((self.provider_runtime_statuses.get(provider) or {}).get('error') or last_error or '')
+
+        logger.error("[LLM] All configured providers failed. Attempts: %s", attempts)
+        return {
+            'error': last_error or f'Failed to get LLM response from {primary_provider}',
+            'provider': primary_provider,
+            'provider_attempts': attempts,
+        }
+
+    async def _call_single_provider(self, provider: str, prompt: str) -> Optional[Dict]:
+        """Call exactly one provider."""
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'ollama':
+            return await self._call_ollama_api(prompt)
+        if provider_name == 'anthropic':
+            return await self._call_anthropic_api(prompt)
+        if provider_name == 'groq':
+            return await self._call_groq_api(prompt)
+        if provider_name == 'gemini':
+            return await self._call_gemini_api(prompt)
+        if provider_name == 'openrouter':
+            return await self._call_openrouter_api(prompt)
+
+        logger.error("[LLM] Unsupported provider configured: %s", provider_name)
+        return {'error': f'Unsupported LLM provider: {provider_name}'}
 
     def _parse_json_response_text(self, response_text: str) -> Dict:
         """Best-effort JSON extraction for provider responses."""
@@ -556,10 +724,11 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             Parsed JSON response or None
         """
         try:
-            logger.info(f"[LLM] Calling Ollama ({self.ollama_model})...")
+            model = self._resolved_provider_model('ollama')
+            logger.info(f"[LLM] Calling Ollama ({model})...")
             
             payload = {
-                'model': self.ollama_model,
+                'model': model,
                 'prompt': prompt,
                 'stream': False,
                 'format': 'json'  # Request JSON output
@@ -572,21 +741,46 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
+                        self._record_runtime_status(
+                            provider='ollama',
+                            model=model,
+                            available=True,
+                            http_status=response.status,
+                        )
                         response_text = data.get('response', '')
                         
                         return self._parse_json_response_text(response_text)
                     else:
                         body = await response.text()
+                        self._record_runtime_status(
+                            provider='ollama',
+                            model=model,
+                            available=False,
+                            error=f'Ollama HTTP {response.status}: {body[:200]}',
+                            http_status=response.status,
+                        )
                         logger.error(f"[LLM] Ollama API error {response.status}: {body[:200]}")
                         return None
 
         except aiohttp.ClientConnectorError:
+            self._record_runtime_status(
+                provider='ollama',
+                model=self._resolved_provider_model('ollama'),
+                available=False,
+                error=f'Ollama not reachable at {self.ollama_endpoint}',
+            )
             logger.error(
                 f"[LLM] Cannot connect to Ollama at {self.ollama_endpoint}. "
                 "Is Ollama running? Start it with: ollama serve"
             )
             return None
         except Exception as e:
+            self._record_runtime_status(
+                provider='ollama',
+                model=self._resolved_provider_model('ollama'),
+                available=False,
+                error=f'Ollama request failed: {e}',
+            )
             logger.error(f"[LLM] Ollama API call failed: {e}")
             return None
 
@@ -602,6 +796,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         """
         if not self.groq_key:
             self._record_runtime_status(
+                provider='groq',
+                model=self._resolved_provider_model('groq'),
                 available=False,
                 error='Groq API key not configured',
             )
@@ -609,7 +805,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return {'error': 'No Groq API key configured'}
 
         try:
-            logger.info(f"[LLM] Calling Groq ({self.groq_model})...")
+            model = self._resolved_provider_model('groq')
+            logger.info(f"[LLM] Calling Groq ({model})...")
 
             headers = {
                 'Authorization': f'Bearer {self.groq_key}',
@@ -617,7 +814,7 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             }
 
             payload = {
-                'model': self.groq_model,
+                'model': model,
                 'messages': [
                     {'role': 'user', 'content': prompt}
                 ],
@@ -634,6 +831,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                     if response.status == 200:
                         data = await response.json()
                         self._record_runtime_status(
+                            provider='groq',
+                            model=model,
                             available=True,
                             http_status=response.status,
                         )
@@ -647,6 +846,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
                     body = await response.text()
                     self._record_runtime_status(
+                        provider='groq',
+                        model=model,
                         available=False,
                         error=f'Groq HTTP {response.status}: {body[:200]}',
                         http_status=response.status,
@@ -656,10 +857,95 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
         except Exception as e:
             self._record_runtime_status(
+                provider='groq',
+                model=self._resolved_provider_model('groq'),
                 available=False,
                 error=f'Groq request failed: {e}',
             )
             logger.error(f"[LLM] Groq API call failed: {e}")
+            return None
+
+    async def _call_openrouter_api(self, prompt: str) -> Optional[Dict]:
+        """
+        Call OpenRouter's OpenAI-compatible chat completions API.
+
+        Args:
+            prompt: Analysis prompt
+
+        Returns:
+            Parsed JSON response or None
+        """
+        if not self.openrouter_key:
+            self._record_runtime_status(
+                provider='openrouter',
+                model=self._resolved_provider_model('openrouter'),
+                available=False,
+                error='OpenRouter API key not configured',
+            )
+            logger.warning("[LLM] No OpenRouter API key configured")
+            return {'error': 'No OpenRouter API key configured'}
+
+        try:
+            model = self._resolved_provider_model('openrouter')
+            logger.info(f"[LLM] Calling OpenRouter ({model})...")
+
+            headers = {
+                'Authorization': f'Bearer {self.openrouter_key}',
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://localhost',
+                'X-Title': 'CABTA',
+            }
+
+            payload = {
+                'model': model,
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'temperature': 0.2,
+                'stream': False,
+            }
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f'{self.openrouter_endpoint}/chat/completions',
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self._record_runtime_status(
+                            provider='openrouter',
+                            model=model,
+                            available=True,
+                            http_status=response.status,
+                        )
+                        choices = data.get('choices', [])
+                        message = choices[0].get('message', {}) if choices else {}
+                        response_text = message.get('content', '')
+                        if not response_text:
+                            logger.warning("[LLM] OpenRouter returned an empty response")
+                            return None
+                        return self._parse_json_response_text(response_text)
+
+                    body = await response.text()
+                    self._record_runtime_status(
+                        provider='openrouter',
+                        model=model,
+                        available=False,
+                        error=f'OpenRouter HTTP {response.status}: {body[:200]}',
+                        http_status=response.status,
+                    )
+                    logger.error(f"[LLM] OpenRouter API error {response.status}: {body[:200]}")
+                    return None
+
+        except Exception as e:
+            self._record_runtime_status(
+                provider='openrouter',
+                model=self._resolved_provider_model('openrouter'),
+                available=False,
+                error=f'OpenRouter request failed: {e}',
+            )
+            logger.error(f"[LLM] OpenRouter API call failed: {e}")
             return None
 
     async def _call_gemini_api(self, prompt: str) -> Optional[Dict]:
@@ -674,6 +960,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         """
         if not self.gemini_key:
             self._record_runtime_status(
+                provider='gemini',
+                model=self._resolved_provider_model('gemini'),
                 available=False,
                 error='Gemini API key not configured',
             )
@@ -681,7 +969,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return {'error': 'No Gemini API key configured'}
 
         try:
-            logger.info(f"[LLM] Calling Gemini ({self.gemini_model})...")
+            model = self._resolved_provider_model('gemini')
+            logger.info(f"[LLM] Calling Gemini ({model})...")
 
             headers = {
                 'Authorization': f'Bearer {self.gemini_key}',
@@ -689,7 +978,7 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             }
 
             payload = {
-                'model': self.gemini_model,
+                'model': model,
                 'messages': [
                     {'role': 'user', 'content': prompt}
                 ],
@@ -705,6 +994,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                     if response.status == 200:
                         data = await response.json()
                         self._record_runtime_status(
+                            provider='gemini',
+                            model=model,
                             available=True,
                             http_status=response.status,
                         )
@@ -718,6 +1009,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
                     body = await response.text()
                     self._record_runtime_status(
+                        provider='gemini',
+                        model=model,
                         available=False,
                         error=f'Gemini HTTP {response.status}: {body[:200]}',
                         http_status=response.status,
@@ -727,6 +1020,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
         except Exception as e:
             self._record_runtime_status(
+                provider='gemini',
+                model=self._resolved_provider_model('gemini'),
                 available=False,
                 error=f'Gemini request failed: {e}',
             )
@@ -745,6 +1040,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         """
         if not self.anthropic_key:
             self._record_runtime_status(
+                provider='anthropic',
+                model=self._resolved_provider_model('anthropic'),
                 available=False,
                 error='Anthropic API key not configured',
             )
@@ -752,7 +1049,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return {'error': 'No Anthropic API key configured'}
         
         try:
-            logger.info(f"[LLM] Calling Anthropic ({self.anthropic_model})...")
+            model = self._resolved_provider_model('anthropic')
+            logger.info(f"[LLM] Calling Anthropic ({model})...")
             
             headers = {
                 'anthropic-version': '2023-06-01',
@@ -761,7 +1059,7 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             }
             
             payload = {
-                'model': self.anthropic_model,
+                'model': model,
                 'max_tokens': 2000,
                 'messages': [
                     {'role': 'user', 'content': prompt}
@@ -777,6 +1075,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                     if response.status == 200:
                         data = await response.json()
                         self._record_runtime_status(
+                            provider='anthropic',
+                            model=model,
                             available=True,
                             http_status=response.status,
                         )
@@ -789,6 +1089,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                             return self._parse_json_response_text(text)
                     else:
                         self._record_runtime_status(
+                            provider='anthropic',
+                            model=model,
                             available=False,
                             error=f'Anthropic HTTP {response.status}',
                             http_status=response.status,
@@ -798,6 +1100,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
         except Exception as e:
             self._record_runtime_status(
+                provider='anthropic',
+                model=self._resolved_provider_model('anthropic'),
                 available=False,
                 error=f'Anthropic request failed: {e}',
             )

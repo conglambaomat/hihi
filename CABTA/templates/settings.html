@@ -91,7 +91,10 @@
                 <div class="mb-3">
                     <label class="form-label">Provider</label>
                     <div class="provider-toggle" id="providerToggle">
-                        <button type="button" class="toggle-option active" data-value="ollama" onclick="Settings.setProvider('ollama')">
+                        <button type="button" class="toggle-option active" data-value="openrouter" onclick="Settings.setProvider('openrouter')">
+                            <i class="bi bi-diagram-3 me-1"></i>OpenRouter
+                        </button>
+                        <button type="button" class="toggle-option" data-value="ollama" onclick="Settings.setProvider('ollama')">
                             <i class="bi bi-pc-display me-1"></i>Ollama
                         </button>
                         <button type="button" class="toggle-option" data-value="groq" onclick="Settings.setProvider('groq')">
@@ -106,7 +109,36 @@
                     </div>
                 </div>
 
-                <div id="ollamaFields">
+                <div id="openrouterFields">
+                    <div class="mb-3">
+                        <label class="form-label">OpenRouter API Key</label>
+                        <div class="api-key-field">
+                            <input type="password" id="openrouterApiKey" class="form-control pe-5"
+                                placeholder="sk-or-v1-..."
+                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('openrouterApiKey', this)">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">OpenRouter Endpoint</label>
+                        <input type="url" id="openrouterEndpoint" class="form-control" value="https://openrouter.ai/api/v1"
+                            placeholder="https://openrouter.ai/api/v1"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Model Name</label>
+                        <input type="text" id="openrouterModel" class="form-control" value="nvidia/nemotron-3-super-120b-a12b:free"
+                            placeholder="e.g. nvidia/nemotron-3-super-120b-a12b:free"
+                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
+                        <div class="small text-muted mt-2">
+                            OpenRouter uses an OpenAI-compatible API. This CABTA build is configured to use <code>nvidia/nemotron-3-super-120b-a12b:free</code> for both agent chat and analysis summaries.
+                        </div>
+                    </div>
+                </div>
+
+                <div id="ollamaFields" style="display:none;">
                     <div class="mb-3">
                         <label class="form-label">Ollama Endpoint URL</label>
                         <input type="url" id="ollamaEndpoint" class="form-control" value="http://localhost:11434"
@@ -376,7 +408,7 @@
 {% block scripts %}
 <script>
 var Settings = (function() {
-    var currentProvider = 'ollama';
+    var currentProvider = 'openrouter';
     var apiKeyCatalog = [
         {% for item in api_key_catalog %}
         { key: '{{ item.key }}', label: '{{ item.label }}', fieldId: 'apiKey_{{ item.key }}' }{% if not loop.last %},{% endif %}
@@ -412,11 +444,14 @@ var Settings = (function() {
             .then(function(cfg) {
                 // LLM settings
                 var llm = cfg.llm || {};
-                var provider = llm.provider || 'ollama';
+                var provider = llm.provider || 'openrouter';
                 setProvider(provider);
 
                 if (llm.ollama_endpoint || llm.base_url) {
                     document.getElementById('ollamaEndpoint').value = llm.ollama_endpoint || llm.base_url || '';
+                }
+                if (llm.openrouter_endpoint || (provider === 'openrouter' && llm.base_url)) {
+                    document.getElementById('openrouterEndpoint').value = llm.openrouter_endpoint || llm.base_url || '';
                 }
                 var savedModel = llm.ollama_model || llm.model || 'llama3.1:8b';
                 if (provider === 'ollama') {
@@ -439,6 +474,9 @@ var Settings = (function() {
                 }
                 if (llm.anthropic_model) {
                     document.getElementById('anthropicModel').value = llm.anthropic_model;
+                }
+                if (llm.openrouter_model || (provider === 'openrouter' && llm.model)) {
+                    document.getElementById('openrouterModel').value = llm.openrouter_model || llm.model || 'nvidia/nemotron-3-super-120b-a12b:free';
                 }
                 if (llm.groq_endpoint || (provider === 'groq' && llm.base_url)) {
                     document.getElementById('groqEndpoint').value = llm.groq_endpoint || llm.base_url || '';
@@ -473,6 +511,9 @@ var Settings = (function() {
                 if (keys.groq && keys.groq.length > 0) {
                     document.getElementById('groqApiKey').placeholder = 'Configured (' + keys.groq + ')';
                 }
+                if (keys.openrouter && keys.openrouter.length > 0) {
+                    document.getElementById('openrouterApiKey').placeholder = 'Configured (' + keys.openrouter + ')';
+                }
                 if (keys.anthropic && keys.anthropic.length > 0) {
                     document.getElementById('anthropicApiKey').placeholder = 'Configured (' + keys.anthropic + ')';
                 }
@@ -503,6 +544,7 @@ var Settings = (function() {
                 btn.classList.remove('active');
             }
         });
+        document.getElementById('openrouterFields').style.display = provider === 'openrouter' ? '' : 'none';
         document.getElementById('ollamaFields').style.display = provider === 'ollama' ? '' : 'none';
         document.getElementById('groqFields').style.display = provider === 'groq' ? '' : 'none';
         document.getElementById('anthropicFields').style.display = provider === 'anthropic' ? '' : 'none';
@@ -580,7 +622,10 @@ var Settings = (function() {
 
     function saveLLM() {
         var llm = { provider: currentProvider };
-        if (currentProvider === 'ollama') {
+        if (currentProvider === 'openrouter') {
+            llm.openrouter_endpoint = document.getElementById('openrouterEndpoint').value.trim() || 'https://openrouter.ai/api/v1';
+            llm.openrouter_model = document.getElementById('openrouterModel').value.trim() || 'nvidia/nemotron-3-super-120b-a12b:free';
+        } else if (currentProvider === 'ollama') {
             llm.ollama_endpoint = document.getElementById('ollamaEndpoint').value.trim();
             llm.ollama_model = document.getElementById('ollamaModel').value;
         } else if (currentProvider === 'groq') {
@@ -594,7 +639,10 @@ var Settings = (function() {
         }
         var payload = { llm: llm };
         // If Anthropic key provided, send it via api_keys
-        if (currentProvider === 'anthropic') {
+        if (currentProvider === 'openrouter') {
+            var openrouterKey = document.getElementById('openrouterApiKey').value.trim();
+            if (openrouterKey) payload.api_keys = { openrouter: openrouterKey };
+        } else if (currentProvider === 'anthropic') {
             var key = document.getElementById('anthropicApiKey').value.trim();
             if (key) payload.api_keys = { anthropic: key };
         } else if (currentProvider === 'groq') {

@@ -3156,6 +3156,33 @@ class TestSettingsAPI:
         assert data["available"] is True
         assert data["configured_model"] == "openai/gpt-oss-20b"
 
+    def test_llm_health_reports_active_openrouter_provider(self):
+        from starlette.testclient import TestClient
+        from src.web.app import create_app
+
+        app = create_app()
+        app.state.config = {
+            **app.state.config,
+            'llm': {
+                'provider': 'openrouter',
+                'openrouter_endpoint': 'https://openrouter.ai/api/v1',
+                'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
+            },
+            'api_keys': {
+                **app.state.config.get('api_keys', {}),
+                'openrouter': 'sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456',
+            },
+        }
+        app.state.web_provider.config = app.state.config
+
+        client = TestClient(app)
+        resp = client.get("/api/config/llm-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "openrouter"
+        assert data["available"] is True
+        assert data["configured_model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+
     def test_llm_health_reports_active_gemini_provider(self):
         from starlette.testclient import TestClient
         from src.web.app import create_app
@@ -3313,6 +3340,8 @@ def _make_agent_loop(tmp_path, **overrides):
         "agent": {"max_steps": 5},
         "llm": {
             "provider": "ollama",
+            "openrouter_endpoint": "https://openrouter.ai/api/v1",
+            "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
             "ollama_endpoint": "http://localhost:11434",
             "ollama_model": "llama3.1:8b",
             "groq_endpoint": "https://api.groq.com/openai/v1",
@@ -3321,7 +3350,7 @@ def _make_agent_loop(tmp_path, **overrides):
             "gemini_endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
             "gemini_model": "gemini-2.5-flash",
         },
-        "api_keys": {"anthropic": "", "groq": "", "gemini": ""},
+        "api_keys": {"anthropic": "", "groq": "", "gemini": "", "openrouter": ""},
     }
     config.update(overrides.get("config_overrides", {}))
     return AgentLoop(
@@ -3676,6 +3705,98 @@ class TestAgentLoop:
         assert decision["tool"] == "correlate_findings"
         assert isinstance(decision["params"]["findings"], list)
 
+    def test_chat_prefers_direct_response_without_observable(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Xin chao, ban co the giup toi dieu tra SOC khong?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Xin chao, ban co the giup toi dieu tra SOC khong?",
+            max_steps=4,
+        )
+
+        assert loop._chat_prefers_direct_response(state) is True
+
+        state.goal = "Hay dieu tra nhanh domain account-securecheck.com"
+        assert loop._chat_prefers_direct_response(state) is False
+
+    def test_think_chat_capability_question_returns_direct_answer_without_tools(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Neu toi dua cho ban mot domain dang nghi, ban se lam gi?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Neu toi dua cho ban mot domain dang nghi, ban se lam gi?",
+            max_steps=4,
+        )
+        state.transition(AgentPhase.THINKING)
+
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value="I can investigate the domain once you share the exact hostname.",
+        ) as mock_chat:
+            decision = asyncio.run(loop._think(state))
+
+        assert decision is not None
+        assert decision["action"] == "final_answer"
+        assert "exact hostname" in decision["answer"]
+        assert mock_chat.await_args.kwargs["tools_json"] == []
+
+    def test_normalise_decision_accepts_final_answer_for_conversational_chat_without_findings(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Xin chao, ban la ai?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Xin chao, ban la ai?",
+            max_steps=4,
+        )
+
+        decision = loop._normalise_decision(
+            {
+                "action": "final_answer",
+                "answer": "I am your investigation assistant.",
+                "verdict": "UNKNOWN",
+            },
+            state,
+        )
+
+        assert decision["action"] == "final_answer"
+        assert decision["answer"] == "I am your investigation assistant."
+
+    def test_fallback_decision_without_llm_for_conversational_chat_does_not_force_tool(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Xin chao, ban co the lam duoc gi?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Xin chao, ban co the lam duoc gi?",
+            max_steps=4,
+        )
+        loop.provider_runtime_status = {
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        }
+
+        decision = loop._fallback_decision_without_llm(state)
+
+        assert decision["action"] == "final_answer"
+        assert decision["verdict"] == "UNKNOWN"
+        assert "LLM is currently unavailable" in decision["answer"]
+        assert "quota exceeded" in decision["answer"]
+        assert "Please share a concrete IOC" in decision["answer"]
+
     def test_domain_auto_enrichment_uses_fast_correct_contracts(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         loop.tools.register_mcp_tools("osint-tools", [
@@ -3901,6 +4022,28 @@ class TestAgentLoop:
         assert loop.gemini_key == "AIza_runtime_key_abcdefghijklmnopqrstuvwxyz123456"
         assert loop.gemini_model == "gemini-3-flash-preview"
         assert loop.gemini_endpoint == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    def test_openrouter_provider_config(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "openrouter",
+                    "openrouter_endpoint": "https://openrouter.ai/api/v1",
+                    "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
+                },
+                "api_keys": {
+                    "openrouter": "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456",
+                    "anthropic": "",
+                    "groq": "",
+                    "gemini": "",
+                },
+            },
+        )
+        assert loop.provider == "openrouter"
+        assert loop.openrouter_key == "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456"
+        assert loop.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
+        assert loop.openrouter_endpoint == "https://openrouter.ai/api/v1"
 
     # ---- _parse_tool_call_response ----------------------------------- #
     def test_parse_tool_call_response(self, tmp_path):

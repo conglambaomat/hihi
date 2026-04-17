@@ -118,6 +118,46 @@ async def case_graph(request: Request, case_id: str):
     return graph
 
 
+@router.get('/{case_id}/root-cause')
+async def case_root_cause(request: Request, case_id: str):
+    """Return the latest stored root-cause assessment for a case."""
+    store = request.app.state.case_store
+    case = store.get_case(case_id)
+    if case is None:
+        raise HTTPException(404, 'Case not found')
+
+    latest = None
+    for event in reversed(case.get('events', [])):
+        payload = event.get('payload', {}) if isinstance(event.get('payload'), dict) else {}
+        root_cause = payload.get('root_cause_assessment', {}) if isinstance(payload, dict) else {}
+        if isinstance(root_cause, dict) and root_cause.get('primary_root_cause'):
+            latest = {
+                'case_id': case_id,
+                'event_id': event.get('id'),
+                'event_type': event.get('event_type'),
+                'recorded_at': event.get('created_at'),
+                'root_cause_assessment': root_cause,
+                'deterministic_decision': payload.get('deterministic_decision', {}),
+            }
+            break
+
+    if latest is None:
+        return {'case_id': case_id, 'root_cause_assessment': None}
+    return latest
+
+
+@router.get('/{case_id}/reasoning')
+async def case_reasoning(request: Request, case_id: str):
+    """Return the latest case-level reasoning rollup from linked workflow sessions."""
+    intelligence = getattr(request.app.state, 'case_intelligence', None)
+    if intelligence is None:
+        raise HTTPException(503, 'Case intelligence not initialized')
+    summary = intelligence.build_reasoning_summary(case_id)
+    if summary is None:
+        raise HTTPException(404, 'Case not found')
+    return summary
+
+
 @router.get('/{case_id}/approvals')
 async def case_approvals(request: Request, case_id: str):
     """List approvals linked to a case."""

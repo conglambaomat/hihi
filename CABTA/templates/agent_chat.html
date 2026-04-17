@@ -519,6 +519,280 @@
         border: 1px solid rgba(88,166,255,0.2);
     }
 
+    /* ===== Agentic Reasoning Panels ===== */
+    .reasoning-card-body {
+        padding: 0.75rem;
+        font-size: 0.78rem;
+    }
+    .reasoning-empty {
+        padding: 0.75rem;
+        border-radius: 8px;
+        border: 1px dashed var(--border-color);
+        background: rgba(148, 163, 184, 0.06);
+        color: var(--text-secondary);
+        font-size: 0.74rem;
+        line-height: 1.5;
+    }
+    .reasoning-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+    .reasoning-subsection {
+        padding: 0.7rem;
+        border-radius: 8px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+    }
+    .reasoning-subtitle {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin-bottom: 0.45rem;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        font-weight: 700;
+    }
+    .reasoning-summary {
+        color: var(--text-primary);
+        line-height: 1.55;
+        margin-bottom: 0.6rem;
+    }
+    .reasoning-kv-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.45rem;
+    }
+    .reasoning-kv {
+        padding: 0.55rem 0.6rem;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.2);
+        border: 1px solid var(--border-color);
+    }
+    .reasoning-kv-label {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        margin-bottom: 0.18rem;
+    }
+    .reasoning-kv-value {
+        color: var(--text-primary);
+        font-weight: 600;
+        word-break: break-word;
+    }
+    .reasoning-pill-list,
+    .entity-chip-list,
+    .suggestion-chip-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+    .reasoning-pill,
+    .policy-flag-pill,
+    .entity-pivot-chip,
+    .suggestion-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.22rem 0.48rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-color);
+        background: rgba(88,166,255,0.08);
+        color: var(--text-primary);
+        font-size: 0.7rem;
+        line-height: 1.2;
+    }
+    .policy-flag-pill {
+        background: rgba(245,158,11,0.12);
+        border-color: rgba(245,158,11,0.24);
+        color: #fbbf24;
+    }
+    .entity-pivot-chip,
+    .suggestion-chip {
+        cursor: pointer;
+        transition: all 0.15s ease;
+        text-align: left;
+    }
+    .entity-pivot-chip:hover,
+    .suggestion-chip:hover {
+        border-color: var(--color-accent);
+        background: rgba(88,166,255,0.14);
+        color: var(--color-accent);
+    }
+    .reasoning-status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.18rem 0.48rem;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 700;
+        border: 1px solid transparent;
+    }
+    .status-supported {
+        background: rgba(34,197,94,0.12);
+        color: #22c55e;
+        border-color: rgba(34,197,94,0.24);
+    }
+    .status-open,
+    .status-collecting_evidence,
+    .status-inconclusive {
+        background: rgba(56,189,248,0.12);
+        color: #38bdf8;
+        border-color: rgba(56,189,248,0.24);
+    }
+    .status-contradicted,
+    .status-insufficient_evidence {
+        background: rgba(239,68,68,0.12);
+        color: #f87171;
+        border-color: rgba(239,68,68,0.24);
+    }
+    .status-monitoring {
+        background: rgba(245,158,11,0.12);
+        color: #f59e0b;
+        border-color: rgba(245,158,11,0.24);
+    }
+    .hypothesis-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+    }
+    .hypothesis-card {
+        padding: 0.75rem;
+        border-radius: 10px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-tertiary);
+    }
+    .hypothesis-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.45rem;
+    }
+    .hypothesis-statement {
+        font-weight: 600;
+        color: var(--text-primary);
+        line-height: 1.45;
+    }
+    .hypothesis-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-bottom: 0.45rem;
+    }
+    .hypothesis-metric {
+        font-size: 0.68rem;
+        color: var(--text-secondary);
+        padding: 0.16rem 0.42rem;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.22);
+        border: 1px solid var(--border-color);
+    }
+    .mini-list {
+        margin: 0;
+        padding-left: 1rem;
+        color: var(--text-secondary);
+        display: grid;
+        gap: 0.18rem;
+    }
+    .mini-list li {
+        line-height: 1.45;
+    }
+    .mini-list.compact li {
+        font-size: 0.72rem;
+    }
+    .reasoning-section-label {
+        margin: 0.45rem 0 0.25rem 0;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        font-weight: 700;
+    }
+    .relationship-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        margin-top: 0.55rem;
+    }
+    .relationship-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        gap: 0.35rem;
+        align-items: center;
+        font-size: 0.72rem;
+    }
+    .relationship-node {
+        padding: 0.3rem 0.45rem;
+        border-radius: 6px;
+        background: rgba(15, 23, 42, 0.18);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .relationship-type {
+        padding: 0.18rem 0.4rem;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.12);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-color);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 0.62rem;
+        font-weight: 700;
+    }
+    .suggestion-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+    }
+    .suggestion-item {
+        padding: 0.62rem 0.7rem;
+        border-radius: 8px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        line-height: 1.45;
+    }
+    .suggestion-item-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+    }
+    .suggestion-item-label {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        font-weight: 700;
+    }
+    .reasoning-scroll {
+        max-height: 320px;
+        overflow-y: auto;
+        padding-right: 0.1rem;
+    }
+    .causal-chain {
+        margin: 0;
+        padding-left: 1rem;
+        display: grid;
+        gap: 0.28rem;
+        color: var(--text-secondary);
+    }
+    .causal-chain li {
+        line-height: 1.45;
+    }
+
     /* ===== Approval Overlay ===== */
     .approval-overlay {
         display: none;
@@ -644,8 +918,73 @@
 
     <!-- Right Sidebar -->
     <div class="col-lg-3">
-        <!-- Playbooks -->
+        <!-- Deterministic Decision -->
         <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-shield-check me-2 text-accent"></i>Deterministic Decision</h6>
+                <span class="badge bg-secondary" id="decisionStatusBadge" style="font-size:0.65rem;">idle</span>
+            </div>
+            <div class="card-body reasoning-card-body">
+                <div id="deterministicDecisionPanel" class="reasoning-empty">
+                    Start or load an investigation session to see the deterministic score, verdict, severity, confidence, and policy flags.
+                </div>
+            </div>
+        </div>
+
+        <!-- Agentic Explanation -->
+        <div class="card mt-2">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-diagram-3 me-2 text-accent"></i>Agentic Explanation</h6>
+                <span class="badge bg-secondary" id="agenticStatusBadge" style="font-size:0.65rem;">idle</span>
+            </div>
+            <div class="card-body reasoning-card-body">
+                <div id="agenticExplanationPanel" class="reasoning-empty">
+                    Root cause, causal chain, alternative hypotheses, and explanation confidence will appear here once the agent collects evidence.
+                </div>
+            </div>
+        </div>
+
+        <!-- Hypotheses -->
+        <div class="card mt-2">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-lightbulb me-2 text-accent"></i>Hypotheses</h6>
+                <span class="badge bg-secondary" id="hypothesisCountBadge" style="font-size:0.65rem;">0</span>
+            </div>
+            <div class="card-body reasoning-card-body">
+                <div id="hypothesesPanel" class="reasoning-empty">
+                    The lead investigator will keep multiple hypotheses here, with support, contradiction, and open questions attached to each one.
+                </div>
+            </div>
+        </div>
+
+        <!-- Entity Pivots -->
+        <div class="card mt-2">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-share me-2 text-accent"></i>Entity Pivots</h6>
+                <span class="badge bg-secondary" id="entityCountBadge" style="font-size:0.65rem;">0</span>
+            </div>
+            <div class="card-body reasoning-card-body">
+                <div id="entityPivotsPanel" class="reasoning-empty">
+                    Normalized users, hosts, IPs, sessions, and processes will show up here so you can pivot the agent from concrete entities.
+                </div>
+            </div>
+        </div>
+
+        <!-- Missing Evidence / Next Pivots -->
+        <div class="card mt-2">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-signpost-split me-2 text-accent"></i>Missing Evidence / Next Pivots</h6>
+                <span class="badge bg-secondary" id="nextPivotCountBadge" style="font-size:0.65rem;">0</span>
+            </div>
+            <div class="card-body reasoning-card-body">
+                <div id="missingEvidencePanel" class="reasoning-empty">
+                    When evidence is incomplete, CABTA will surface what is still missing and which pivots or next actions are worth asking the agent to investigate.
+                </div>
+            </div>
+        </div>
+
+        <!-- Playbooks -->
+        <div class="card mt-2">
             <div class="card-header d-flex justify-content-between align-items-center py-2">
                 <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-journal-code me-2 text-accent"></i>Playbooks</h6>
                 <span class="badge bg-accent" id="playbookCountBadge" style="font-size:0.65rem;">0</span>
@@ -1098,6 +1437,18 @@ var AgentChat = (function() {
         } catch (e) {
             requestedSessionId = null;
         }
+        resetReasoningPanels();
+        document.addEventListener('click', function(evt) {
+            var entityBtn = evt.target.closest('.entity-pivot-chip');
+            if (entityBtn) {
+                applyPromptSuggestion(buildEntityPivotPrompt(entityBtn.getAttribute('data-entity-type'), entityBtn.getAttribute('data-entity-value') || entityBtn.getAttribute('data-entity-label')));
+                return;
+            }
+            var promptBtn = evt.target.closest('.prompt-suggestion-btn');
+            if (promptBtn) {
+                applyPromptSuggestion(promptBtn.getAttribute('data-prompt'));
+            }
+        });
         loadSessions();
         loadTools();
         loadPlaybooks();
@@ -1108,9 +1459,16 @@ var AgentChat = (function() {
         fetch('/api/config/llm-health')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var provider = String(data.provider || 'ollama').toLowerCase();
+                var provider = String(data.provider || 'openrouter').toLowerCase();
 
-                if (provider === 'ollama' && !data.available) {
+                if (provider === 'openrouter' && !data.available) {
+                    addBubble(
+                        '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
+                        '<strong>OpenRouter is not ready.</strong> Add a valid OpenRouter API key in <a href="/settings">Settings</a> to enable the AI agent.' +
+                        (data.error ? '<br><small>' + esc(data.error) + '</small>' : ''),
+                        'system'
+                    );
+                } else if (provider === 'ollama' && !data.available) {
                     addBubble(
                         '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
                         '<strong>Ollama is not ready.</strong> The AI agent needs a working LLM runtime.' +
@@ -1271,6 +1629,429 @@ var AgentChat = (function() {
         try { return JSON.parse(value); } catch (e) { return fallback; }
     }
 
+    function setHeaderBadge(id, text, variant) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.className = 'badge ' + (variant || 'bg-secondary');
+        el.style.fontSize = '0.65rem';
+        el.textContent = text || 'idle';
+    }
+
+    function badgeVariantForVerdict(verdict) {
+        var normalized = String(verdict || '').toUpperCase();
+        if (normalized === 'MALICIOUS') return 'bg-danger';
+        if (normalized === 'SUSPICIOUS') return 'bg-warning text-dark';
+        if (normalized === 'CLEAN') return 'bg-success';
+        return 'bg-secondary';
+    }
+
+    function badgeVariantForStatus(status) {
+        var normalized = String(status || '').toLowerCase();
+        if (normalized === 'supported') return 'bg-success';
+        if (normalized === 'collecting_evidence' || normalized === 'open' || normalized === 'inconclusive') return 'bg-info text-dark';
+        if (normalized === 'insufficient_evidence' || normalized === 'contradicted') return 'bg-danger';
+        if (normalized === 'monitoring') return 'bg-warning text-dark';
+        return 'bg-secondary';
+    }
+
+    function formatLabel(value) {
+        return String(value || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, function(ch) { return ch.toUpperCase(); });
+    }
+
+    function formatConfidence(value) {
+        if (value === null || value === undefined || value === '') return '-';
+        var numeric = Number(value);
+        if (!isFinite(numeric)) return esc(String(value));
+        if (numeric <= 1) numeric = numeric * 100;
+        return Math.round(numeric) + '%';
+    }
+
+    function renderStatusBadge(status) {
+        var normalized = String(status || 'open').toLowerCase();
+        return '<span class="reasoning-status-badge status-' + esc(normalized) + '">' + esc(formatLabel(normalized)) + '</span>';
+    }
+
+    function renderEmptyPanel(message) {
+        return '<div class="reasoning-empty">' + esc(message) + '</div>';
+    }
+
+    function normalizeSessionContext(data) {
+        var payload = (data && typeof data === 'object') ? data : {};
+        var meta = (payload.metadata && typeof payload.metadata === 'object') ? payload.metadata : {};
+        var deterministic = payload.deterministic_decision || payload.deterministic_decision_output || meta.deterministic_decision || meta.deterministic_decision_output || {};
+        var agentic = payload.agentic_explanation || payload.agentic_explanation_output || meta.agentic_explanation || meta.agentic_explanation_output || {};
+        var reasoning = payload.reasoning_state || meta.reasoning_state || {};
+        var entity = payload.entity_state || meta.entity_state || {};
+        var evidence = payload.evidence_state || meta.evidence_state || {};
+        var rootCause = payload.root_cause_assessment || agentic.root_cause_assessment || meta.root_cause_assessment || {};
+        return {
+            payload: payload,
+            metadata: meta,
+            deterministic: deterministic,
+            agentic: agentic,
+            reasoning: reasoning,
+            entity: entity,
+            evidence: evidence,
+            rootCause: rootCause
+        };
+    }
+
+    function resetReasoningPanels() {
+        setHeaderBadge('decisionStatusBadge', 'idle', 'bg-secondary');
+        setHeaderBadge('agenticStatusBadge', 'idle', 'bg-secondary');
+        setHeaderBadge('hypothesisCountBadge', '0', 'bg-secondary');
+        setHeaderBadge('entityCountBadge', '0', 'bg-secondary');
+        setHeaderBadge('nextPivotCountBadge', '0', 'bg-secondary');
+        var decisionPanel = document.getElementById('deterministicDecisionPanel');
+        var explanationPanel = document.getElementById('agenticExplanationPanel');
+        var hypothesesPanel = document.getElementById('hypothesesPanel');
+        var entityPanel = document.getElementById('entityPivotsPanel');
+        var missingPanel = document.getElementById('missingEvidencePanel');
+        if (decisionPanel) decisionPanel.innerHTML = renderEmptyPanel('Start or load an investigation session to see the deterministic decision.');
+        if (explanationPanel) explanationPanel.innerHTML = renderEmptyPanel('Root cause and causal reasoning will appear here as the lead investigator builds an explanation.');
+        if (hypothesesPanel) hypothesesPanel.innerHTML = renderEmptyPanel('Structured hypotheses will appear here once the session begins.');
+        if (entityPanel) entityPanel.innerHTML = renderEmptyPanel('Entity pivots show up once CABTA normalizes users, hosts, IPs, processes, and sessions from evidence.');
+        if (missingPanel) missingPanel.innerHTML = renderEmptyPanel('Missing evidence and suggested next pivots will appear here when CABTA finds unresolved questions.');
+    }
+
+    function renderReasoningPanels(data) {
+        var ctx = normalizeSessionContext(data);
+        renderDeterministicDecisionPanel(ctx.deterministic);
+        renderAgenticExplanationPanel(ctx.agentic, ctx.rootCause, ctx.evidence);
+        renderHypothesesPanel(ctx.reasoning);
+        renderEntityPivotsPanel(ctx.entity);
+        renderMissingEvidencePanel(ctx.agentic, ctx.reasoning, ctx.rootCause);
+    }
+
+    function renderDeterministicDecisionPanel(decision) {
+        var panel = document.getElementById('deterministicDecisionPanel');
+        if (!panel) return;
+        var verdict = String((decision || {}).verdict || '').toUpperCase();
+        var hasDecision = verdict || decision.score !== undefined || decision.severity || decision.confidence !== undefined;
+        setHeaderBadge('decisionStatusBadge', verdict || 'idle', badgeVariantForVerdict(verdict));
+        if (!hasDecision) {
+            panel.innerHTML = renderEmptyPanel('The deterministic score and verdict will appear after the current evidence has been correlated.');
+            return;
+        }
+
+        var html = '<div class="reasoning-stack">';
+        html += '<div class="reasoning-subsection">';
+        html += '<div class="reasoning-subtitle"><i class="bi bi-shield-check"></i>Decision Snapshot</div>';
+        html += '<div class="reasoning-kv-grid">';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Verdict</div><div class="reasoning-kv-value">';
+        html += verdict ? '<span class="verdict-badge verdict-' + (detectVerdict(verdict) || 'info') + '">' + esc(verdict) + '</span>' : '-';
+        html += '</div></div>';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Score</div><div class="reasoning-kv-value">' + esc(String(decision.score !== undefined ? decision.score : '-')) + '</div></div>';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Severity</div><div class="reasoning-kv-value">' + esc(formatLabel(decision.severity || '-')) + '</div></div>';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Confidence</div><div class="reasoning-kv-value">' + esc(formatConfidence(decision.confidence)) + '</div></div>';
+        html += '</div>';
+        html += '</div>';
+
+        var flags = Array.isArray(decision.policy_flags) ? decision.policy_flags : [];
+        if (flags.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-sliders"></i>Policy Flags</div>';
+            html += '<div class="reasoning-pill-list">';
+            flags.forEach(function(flag) {
+                html += '<span class="policy-flag-pill"><i class="bi bi-flag"></i>' + esc(formatLabel(flag)) + '</span>';
+            });
+            html += '</div></div>';
+        }
+
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+
+    function renderAgenticExplanationPanel(agentic, rootCause, evidence) {
+        var panel = document.getElementById('agenticExplanationPanel');
+        if (!panel) return;
+        var status = String((agentic || {}).reasoning_status || (rootCause || {}).status || '').toLowerCase();
+        setHeaderBadge('agenticStatusBadge', status ? formatLabel(status) : 'idle', badgeVariantForStatus(status));
+        var summary = (rootCause || {}).summary || '';
+        var primaryCause = (rootCause || {}).primary_root_cause || '';
+        var causalChain = Array.isArray((agentic || {}).causal_chain) ? agentic.causal_chain : [];
+        if (!causalChain.length && evidence && Array.isArray(evidence.timeline)) {
+            causalChain = evidence.timeline.slice(-4).map(function(item) { return item.summary || item.title || ''; }).filter(Boolean);
+        }
+        var supportRefs = Array.isArray((agentic || {}).supporting_evidence_refs) ? agentic.supporting_evidence_refs : [];
+        var alternatives = Array.isArray((agentic || {}).alternative_hypotheses) ? agentic.alternative_hypotheses : [];
+
+        if (!summary && !primaryCause && !causalChain.length) {
+            panel.innerHTML = renderEmptyPanel('Agentic explanation will appear once the session has enough structured evidence to propose root cause and causal chain.');
+            return;
+        }
+
+        var html = '<div class="reasoning-stack">';
+        html += '<div class="reasoning-subsection">';
+        html += '<div class="reasoning-subtitle"><i class="bi bi-journal-text"></i>Root Cause</div>';
+        if (primaryCause) html += '<div class="reasoning-summary"><strong>' + esc(primaryCause) + '</strong></div>';
+        if (summary) html += '<div class="reasoning-summary">' + esc(summary) + '</div>';
+        html += '<div class="reasoning-kv-grid">';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Explanation Confidence</div><div class="reasoning-kv-value">' + esc(formatConfidence(agentic.explanation_confidence !== undefined ? agentic.explanation_confidence : rootCause.confidence)) + '</div></div>';
+        html += '<div class="reasoning-kv"><div class="reasoning-kv-label">Assessment Status</div><div class="reasoning-kv-value">' + renderStatusBadge(rootCause.status || status || 'open') + '</div></div>';
+        html += '</div>';
+        html += '</div>';
+
+        if (causalChain.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-bezier2"></i>Causal Chain</div>';
+            html += '<ol class="causal-chain">';
+            causalChain.slice(0, 6).forEach(function(item) {
+                html += '<li>' + esc(item) + '</li>';
+            });
+            html += '</ol></div>';
+        }
+
+        if (supportRefs.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-link-45deg"></i>Supporting Evidence</div>';
+            html += renderEvidenceRefList(supportRefs, 4);
+            html += '</div>';
+        }
+
+        if (alternatives.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-shuffle"></i>Alternative Hypotheses</div>';
+            html += '<ul class="mini-list compact">';
+            alternatives.slice(0, 4).forEach(function(item) {
+                html += '<li>' + esc(item) + '</li>';
+            });
+            html += '</ul></div>';
+        }
+
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+
+    function renderHypothesesPanel(reasoning) {
+        var panel = document.getElementById('hypothesesPanel');
+        if (!panel) return;
+        var hypotheses = Array.isArray((reasoning || {}).hypotheses) ? reasoning.hypotheses : [];
+        setHeaderBadge('hypothesisCountBadge', String(hypotheses.length), hypotheses.length ? 'bg-info text-dark' : 'bg-secondary');
+        if (!hypotheses.length) {
+            panel.innerHTML = renderEmptyPanel('No structured hypotheses yet. The agent will add them after the first evidence-backed observations.');
+            return;
+        }
+
+        var html = '<div class="hypothesis-list reasoning-scroll">';
+        hypotheses.forEach(function(hypothesis) {
+            var supportRefs = Array.isArray(hypothesis.supporting_evidence_refs) ? hypothesis.supporting_evidence_refs : [];
+            var contradictRefs = Array.isArray(hypothesis.contradicting_evidence_refs) ? hypothesis.contradicting_evidence_refs : [];
+            var openQuestions = Array.isArray(hypothesis.open_questions) ? hypothesis.open_questions : [];
+            html += '<div class="hypothesis-card">';
+            html += '<div class="hypothesis-header">';
+            html += '<div class="hypothesis-statement">' + esc(hypothesis.statement || 'Untitled hypothesis') + '</div>';
+            html += renderStatusBadge(hypothesis.status || 'open');
+            html += '</div>';
+            html += '<div class="hypothesis-metrics">';
+            html += '<span class="hypothesis-metric"><i class="bi bi-speedometer2 me-1"></i>' + esc(formatConfidence(hypothesis.confidence)) + '</span>';
+            html += '<span class="hypothesis-metric"><i class="bi bi-plus-circle me-1"></i>' + esc(String(supportRefs.length)) + ' supports</span>';
+            html += '<span class="hypothesis-metric"><i class="bi bi-dash-circle me-1"></i>' + esc(String(contradictRefs.length)) + ' contradicts</span>';
+            html += '<span class="hypothesis-metric"><i class="bi bi-question-circle me-1"></i>' + esc(String(openQuestions.length)) + ' open questions</span>';
+            html += '</div>';
+            if (supportRefs.length) {
+                html += '<div class="reasoning-section-label">Supporting Evidence</div>';
+                html += renderEvidenceRefList(supportRefs, 2);
+            }
+            if (contradictRefs.length) {
+                html += '<div class="reasoning-section-label">Contradicting Evidence</div>';
+                html += renderEvidenceRefList(contradictRefs, 2);
+            }
+            if (openQuestions.length) {
+                html += '<div class="reasoning-section-label">Open Questions</div>';
+                html += '<ul class="mini-list compact">';
+                openQuestions.slice(0, 3).forEach(function(question) {
+                    html += '<li>' + esc(question) + '</li>';
+                });
+                html += '</ul>';
+            }
+            html += '</div>';
+        });
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+
+    function renderEntityPivotsPanel(entityState) {
+        var panel = document.getElementById('entityPivotsPanel');
+        if (!panel) return;
+        var entities = (entityState && typeof entityState.entities === 'object') ? Object.keys(entityState.entities).map(function(key) { return entityState.entities[key]; }) : [];
+        var relationships = Array.isArray(entityState && entityState.relationships) ? entityState.relationships : [];
+        setHeaderBadge('entityCountBadge', String(entities.length), entities.length ? 'bg-info text-dark' : 'bg-secondary');
+        if (!entities.length && !relationships.length) {
+            panel.innerHTML = renderEmptyPanel('Entity pivots appear after CABTA links observed users, hosts, IPs, processes, or sessions from tool output.');
+            return;
+        }
+
+        var lookup = {};
+        entities.forEach(function(entity) {
+            if (entity && entity.id) lookup[entity.id] = entity;
+        });
+
+        var preferredOrder = ['user', 'host', 'ip', 'session', 'process', 'domain', 'url', 'email', 'hash', 'cve'];
+        var grouped = {};
+        entities.forEach(function(entity) {
+            var type = entity.type || 'other';
+            if (!grouped[type]) grouped[type] = [];
+            grouped[type].push(entity);
+        });
+
+        var html = '<div class="reasoning-stack">';
+        html += '<div class="reasoning-subsection">';
+        html += '<div class="reasoning-subtitle"><i class="bi bi-diagram-2"></i>Normalized Entities</div>';
+        html += '<div class="reasoning-scroll">';
+        preferredOrder.concat(Object.keys(grouped).filter(function(type) { return preferredOrder.indexOf(type) === -1; })).forEach(function(type) {
+            var items = grouped[type];
+            if (!items || !items.length) return;
+            html += '<div class="reasoning-section-label">' + esc(formatLabel(type)) + ' (' + items.length + ')</div>';
+            html += '<div class="entity-chip-list">';
+            items.slice(0, 12).forEach(function(entity) {
+                var label = entity.label || entity.value || entity.id || type;
+                html += '<button type="button" class="entity-pivot-chip" data-entity-type="' + esc(type) + '" data-entity-value="' + esc(entity.value || label) + '" data-entity-label="' + esc(label) + '" title="Prefill a pivot question for this entity">';
+                html += '<i class="bi bi-arrow-return-right"></i>' + esc(label);
+                html += '</button>';
+            });
+            html += '</div>';
+        });
+        html += '</div></div>';
+
+        if (relationships.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-share"></i>Entity Relationships</div>';
+            html += '<div class="relationship-list">';
+            relationships.slice(0, 8).forEach(function(relationship) {
+                var source = lookup[relationship.source] || {};
+                var target = lookup[relationship.target] || {};
+                html += '<div class="relationship-row">';
+                html += '<div class="relationship-node" title="' + esc(source.label || source.value || relationship.source || '') + '">' + esc(source.label || source.value || relationship.source || 'Unknown') + '</div>';
+                html += '<div class="relationship-type">' + esc(formatLabel(relationship.relation || 'linked_to')) + '</div>';
+                html += '<div class="relationship-node" title="' + esc(target.label || target.value || relationship.target || '') + '">' + esc(target.label || target.value || relationship.target || 'Unknown') + '</div>';
+                html += '</div>';
+            });
+            html += '</div></div>';
+        }
+
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+
+    function renderMissingEvidencePanel(agentic, reasoning, rootCause) {
+        var panel = document.getElementById('missingEvidencePanel');
+        if (!panel) return;
+        var missing = Array.isArray((agentic || {}).missing_evidence) ? agentic.missing_evidence : [];
+        if (!missing.length && Array.isArray((reasoning || {}).missing_evidence)) missing = reasoning.missing_evidence;
+        var nextPivots = Array.isArray((agentic || {}).recommended_next_pivots) ? agentic.recommended_next_pivots : [];
+        var nextActions = Array.isArray((agentic || {}).recommended_next_actions) ? agentic.recommended_next_actions : [];
+        var total = missing.length + nextPivots.length + nextActions.length;
+        setHeaderBadge('nextPivotCountBadge', String(total), total ? 'bg-warning text-dark' : 'bg-secondary');
+        if (!total) {
+            panel.innerHTML = renderEmptyPanel('CABTA will surface unresolved evidence gaps and next pivots here when the investigation needs more data.');
+            return;
+        }
+
+        var html = '<div class="reasoning-stack">';
+        if (rootCause && rootCause.status === 'insufficient_evidence') {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-exclamation-circle"></i>Current Assessment</div>';
+            html += '<div class="reasoning-summary">The current root-cause assessment is still limited by insufficient evidence. Use the prompts below to pivot the investigation honestly instead of over-claiming.</div>';
+            html += '</div>';
+        }
+
+        if (missing.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-patch-question"></i>Missing Evidence</div>';
+            html += '<div class="suggestion-list">';
+            missing.slice(0, 5).forEach(function(item) {
+                var prompt = buildPromptFromSuggestion(item, 'missing');
+                html += '<div class="suggestion-item">';
+                html += '<div class="suggestion-item-header"><span class="suggestion-item-label">Evidence Gap</span><button type="button" class="suggestion-chip prompt-suggestion-btn" data-prompt="' + esc(prompt) + '"><i class="bi bi-send"></i>Ask Agent</button></div>';
+                html += '<div>' + esc(item) + '</div></div>';
+            });
+            html += '</div></div>';
+        }
+
+        if (nextPivots.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-signpost-2"></i>Recommended Next Pivots</div>';
+            html += '<div class="suggestion-list">';
+            nextPivots.slice(0, 5).forEach(function(item) {
+                var prompt = buildPromptFromSuggestion(item, 'pivot');
+                html += '<div class="suggestion-item">';
+                html += '<div class="suggestion-item-header"><span class="suggestion-item-label">Pivot</span><button type="button" class="suggestion-chip prompt-suggestion-btn" data-prompt="' + esc(prompt) + '"><i class="bi bi-send"></i>Pivot</button></div>';
+                html += '<div>' + esc(item) + '</div></div>';
+            });
+            html += '</div></div>';
+        }
+
+        if (nextActions.length) {
+            html += '<div class="reasoning-subsection">';
+            html += '<div class="reasoning-subtitle"><i class="bi bi-arrow-right-circle"></i>Recommended Next Actions</div>';
+            html += '<div class="suggestion-list">';
+            nextActions.slice(0, 4).forEach(function(item) {
+                var prompt = buildPromptFromSuggestion(item, 'action');
+                html += '<div class="suggestion-item">';
+                html += '<div class="suggestion-item-header"><span class="suggestion-item-label">Action</span><button type="button" class="suggestion-chip prompt-suggestion-btn" data-prompt="' + esc(prompt) + '"><i class="bi bi-send"></i>Use</button></div>';
+                html += '<div>' + esc(item) + '</div></div>';
+            });
+            html += '</div></div>';
+        }
+
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+
+    function renderEvidenceRefList(refs, limit) {
+        var items = Array.isArray(refs) ? refs.slice(0, limit || refs.length) : [];
+        if (!items.length) return '<div class="reasoning-empty">No structured evidence refs yet.</div>';
+        var html = '<ul class="mini-list compact">';
+        items.forEach(function(ref) {
+            var bits = [];
+            if (ref.summary) bits.push(ref.summary);
+            if (ref.tool_name) bits.push('tool: ' + ref.tool_name);
+            if (ref.step_number !== undefined) bits.push('step ' + ref.step_number);
+            html += '<li>' + esc(bits.join(' | ')) + '</li>';
+        });
+        html += '</ul>';
+        return html;
+    }
+
+    function buildEntityPivotPrompt(type, value) {
+        var entityType = String(type || '').toLowerCase();
+        var entityValue = String(value || '').trim();
+        if (!entityValue) return '';
+        if (entityType === 'ip') return 'Investigate which user, host, session, and process are associated with IP ' + entityValue + ', then explain how it affects the current root-cause assessment.';
+        if (entityType === 'user') return 'Investigate which hosts, sessions, processes, and IPs are linked to user ' + entityValue + ', then assess the most likely root cause.';
+        if (entityType === 'host') return 'Investigate which users, sessions, processes, and outbound IPs are associated with host ' + entityValue + ', then summarize the root cause and scope.';
+        if (entityType === 'session') return 'Investigate what user, host, and process activity followed session ' + entityValue + ', and explain whether it supports the current hypotheses.';
+        if (entityType === 'process') return 'Investigate which host, session, user, and IP activity are linked to process ' + entityValue + ', then explain its role in the causal chain.';
+        return 'Pivot on the entity ' + entityValue + ' (' + entityType + ') and explain how it relates to the current hypotheses, evidence, and root cause.';
+    }
+
+    function buildPromptFromSuggestion(text, kind) {
+        var clean = String(text || '').trim();
+        if (!clean) return '';
+        if (kind === 'missing') return 'Collect or correlate the evidence needed to answer this question: ' + clean;
+        if (kind === 'pivot') return 'Pivot the investigation on this question and explain how the result affects the current hypotheses: ' + clean;
+        return 'Use this as the next investigation action and explain the expected evidence impact: ' + clean;
+    }
+
+    function applyPromptSuggestion(prompt) {
+        var text = String(prompt || '').trim();
+        if (!text) return;
+        var input = document.getElementById('chatInput');
+        if (!input) return;
+        input.value = text;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+    }
+
+    function refreshReasoningPanels(sessionKey) {
+        if (!sessionKey) return;
+        fetch('/api/agent/sessions/' + encodeURIComponent(sessionKey))
+            .then(function(r) { return r.json(); })
+            .then(function(data) { renderReasoningPanels(data); })
+            .catch(function() {});
+    }
+
     function updateSessionUrl(id) {
         try {
             var url = new URL(window.location.href);
@@ -1278,6 +2059,13 @@ var AgentChat = (function() {
             else url.searchParams.delete('session');
             history.replaceState({}, '', url.pathname + url.search);
         } catch (e) {}
+    }
+
+    function resetSessionMetrics() {
+        pendingApprovalId = null;
+        toolCallCounter = 0;
+        investigationData = { tools_used: [], iocs_found: [], steps: [], mcp_tools: [] };
+        currentPhase = 'think';
     }
 
     function renderStoredStep(step) {
@@ -1317,10 +2105,15 @@ var AgentChat = (function() {
         var msgs = document.getElementById('chatMessages');
         while (msgs.firstChild) msgs.removeChild(msgs.firstChild);
 
-        if (data.goal) addBubble(data.goal, 'user');
-        (data.steps || []).forEach(renderStoredStep);
+        resetSessionMetrics();
 
         var meta = data.metadata || {};
+        var displayGoal = data.chat_user_message || meta.chat_user_message || data.goal;
+
+        if (displayGoal) addBubble(displayGoal, 'user');
+        (data.steps || []).forEach(renderStoredStep);
+        renderReasoningPanels(data);
+
         maxSteps = data.max_steps || meta.max_steps || Math.max((data.steps || []).length, 1);
         currentStep = data.current_step || meta.current_step || (data.steps || []).length || 0;
         updateProgress(currentStep, maxSteps);
@@ -1351,7 +2144,8 @@ var AgentChat = (function() {
                 (data.sessions || data || []).forEach(function(s) {
                     var opt = document.createElement('option');
                     opt.value = s.session_id || s.id;
-                    var goal = (s.goal || 'Session').substring(0, 35);
+                    var goalSource = s.chat_user_message || ((s.metadata || {}).chat_user_message) || s.goal || 'Session';
+                    var goal = goalSource.substring(0, 35);
                     var statusBadge = s.status === 'completed' ? ' [done]' : s.status === 'active' ? ' [running]' : s.status ? ' [' + s.status + ']' : '';
                     var toolCount = s.tool_count || s.tools_used || '';
                     var mcpCount = s.mcp_tool_count || '';
@@ -1380,9 +2174,7 @@ var AgentChat = (function() {
         hydratedSessionId = null;
         stopTimer();
         hideLiveToolIndicator();
-        toolCallCounter = 0;
-        investigationData = { tools_used: [], iocs_found: [], steps: [], mcp_tools: [] };
-        currentPhase = 'think';
+        resetSessionMetrics();
         document.getElementById('sessionSelect').value = '';
         document.getElementById('exportBtn').style.display = 'none';
         document.getElementById('elapsedTime').textContent = '';
@@ -1393,6 +2185,7 @@ var AgentChat = (function() {
         welcome.innerHTML = '<i class="bi bi-shield-lock me-1"></i>New session started. Describe your investigation goal.';
         msgs.appendChild(welcome);
         updateProgress(0, 0);
+        resetReasoningPanels();
         selectedPlaybook = null;
         document.querySelectorAll('.playbook-item').forEach(function(el) { el.classList.remove('selected'); });
         document.getElementById('chatInput').placeholder = 'e.g. Investigate IP 45.33.32.156 for C2 activity...';
@@ -1404,6 +2197,9 @@ var AgentChat = (function() {
         sessionId = id;
         sessionTerminal = false;
         hydratedSessionId = null;
+        stopTimer();
+        hideLiveToolIndicator();
+        resetSessionMetrics();
         updateSessionUrl(id);
         connectWebSocket(id);
         loadHistory(id);
@@ -1519,6 +2315,7 @@ var AgentChat = (function() {
                     maxSteps = msg.session.max_steps || sessionMeta.max_steps || Math.max((msg.steps || []).length, 1);
                     currentStep = msg.session.current_step || sessionMeta.current_step || (msg.steps || []).length || 0;
                     updateProgress(currentStep, maxSteps);
+                    renderReasoningPanels(msg.session);
                     sessionTerminal = ['completed', 'failed', 'cancelled'].indexOf(msg.session.status) !== -1;
                     if (hydratedSessionId !== (msg.session.session_id || msg.session.id || hydratedSessionId)) {
                         renderStoredSession({
@@ -1556,6 +2353,7 @@ var AgentChat = (function() {
                 addBubble(msg.summary || 'Investigation completed.', 'agent');
                 addInvestigationSummary(msg);
                 updateProgress(msg.step || maxSteps, msg.max_steps || maxSteps);
+                if (sessionId) refreshReasoningPanels(sessionId);
                 document.getElementById('exportBtn').style.display = 'inline-flex';
                 loadSessions();
                 break;
@@ -1563,12 +2361,14 @@ var AgentChat = (function() {
                 sessionTerminal = true;
                 stopTimer();
                 hideLiveToolIndicator();
+                if (sessionId) refreshReasoningPanels(sessionId);
                 addBubble('Investigation failed: ' + (msg.error || msg.summary || 'Unknown error'), 'system');
                 loadSessions(); break;
             case 'cancelled':
                 sessionTerminal = true;
                 stopTimer();
                 hideLiveToolIndicator();
+                if (sessionId) refreshReasoningPanels(sessionId);
                 addBubble('Investigation cancelled.', 'system');
                 loadSessions(); break;
             case 'complete':
@@ -1592,9 +2392,7 @@ var AgentChat = (function() {
         btn.disabled = true;
 
         if (!sessionId) {
-            toolCallCounter = 0;
-            investigationData = { tools_used: [], iocs_found: [], steps: [], mcp_tools: [] };
-            currentPhase = 'think';
+            resetSessionMetrics();
             startTimer();
 
             if (selectedPlaybook) {
@@ -1626,10 +2424,10 @@ var AgentChat = (function() {
                     scrollToBottom();
                 });
             } else {
-                fetch('/api/agent/investigate', {
+                fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ goal: text })
+                    body: JSON.stringify({ message: text })
                 })
                 .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
                 .then(function(data) {
@@ -1657,9 +2455,18 @@ var AgentChat = (function() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message: text, session_id: sessionId })
             })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(data) {
                 btn.disabled = false;
+                if (data.session_id && data.session_id !== sessionId) {
+                    maxSteps = data.max_steps || 50;
+                    switchSession(data.session_id);
+                    startTimer();
+                    return;
+                }
                 if (data.response) addBubble(data.response, 'agent');
                 scrollToBottom();
             })

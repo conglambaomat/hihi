@@ -19,6 +19,9 @@ import aiohttp
 
 from .agent_state import AgentPhase, AgentState
 from .agent_store import AgentStore
+from .entity_resolver import EntityResolver
+from .evidence_graph import EvidenceGraph
+from .hypothesis_manager import HypothesisManager
 from .profiles import AgentProfileRegistry
 from .specialist_supervisor import SpecialistSupervisor
 from .tool_registry import ToolRegistry
@@ -38,6 +41,13 @@ Investigation goal: {goal}
 Previous findings:
 {findings_block}
 
+{response_style_block}
+
+{chat_decision_block}
+
+Current structured reasoning state:
+{reasoning_block}
+
 {profile_block}
 
 {workflow_block}
@@ -45,7 +55,7 @@ Previous findings:
 {playbooks_block}
 
 INSTRUCTIONS:
-1. You MUST use tools to gather evidence before drawing conclusions. Never answer from memory alone.
+1. When the analyst needs fresh evidence, you MUST use tools before drawing conclusions. Never answer from memory alone for investigation claims.
 2. For IOC investigations: call investigate_ioc first, then use MCP tools like osint-tools.whois_lookup, network-analysis.geoip_lookup, threat-intel-free.threatfox_ioc_lookup for deeper analysis.
 3. For file analysis: call analyze_malware first, then use MCP tools like remnux.pe_analyze, flare.strings_analysis, remnux.yara_scan, forensics-tools.file_metadata for deeper analysis.
 4. For email analysis: call analyze_email first, then use MCP tools like osint-tools.email_security_check, free-osint.openphish_lookup for deeper analysis.
@@ -53,8 +63,9 @@ INSTRUCTIONS:
 6. Only write a final text answer (no tool call) AFTER you have gathered real evidence from at least 2 tools.
 7. When calling a tool, ONLY pass the tool's own parameters (e.g. {{"ioc": "8.8.8.8"}}). Do NOT include extra keys like "action", "reasoning", or "tool" in the arguments.
 8. Use DIFFERENT tools each step. Never call the same tool with the same parameters twice.
+9. For quick analyst chat questions, prefer the highest-value pivots first and stop honestly once the evidence is sufficient. Avoid low-value manual or auth-required pivots unless the current evidence is still insufficient.
 
-If previous findings are "(none yet)", you MUST call a tool now. Do NOT skip to a conclusion.
+If previous findings are "(none yet)" and the analyst gave you a concrete IOC, file, email, URL, hash, log artifact, or alert to investigate, you MUST call a tool now. Do NOT skip to a conclusion in that case.
 
 RULES:
 - Never execute malware on the host system. Use sandbox tools for dynamic analysis.
@@ -69,6 +80,10 @@ You are a Blue Team Security Agent. You investigate security threats autonomousl
 Available tools:
 {tools_block}
 
+{response_style_block}
+
+{chat_decision_block}
+
 {profile_block}
 
 {workflow_block}
@@ -79,6 +94,9 @@ Investigation goal: {goal}
 
 Previous findings:
 {findings_block}
+
+Current structured reasoning state:
+{reasoning_block}
 
 Decide your next action. Respond in JSON (no markdown, no extra text):
 {{"action": "use_tool", "tool": "tool_name", "params": {{...}}, "reasoning": "why"}}
@@ -101,7 +119,12 @@ You are a Blue Team Security Agent. Summarise the following investigation
 in 3-5 sentences suitable for a SOC ticket.  Include the verdict
 (MALICIOUS / SUSPICIOUS / CLEAN), key evidence, and recommended next steps.
 
+{response_style_block}
+
 Goal: {goal}
+
+Current structured reasoning state:
+{reasoning_block}
 
 Steps taken: {step_count}
 
@@ -126,6 +149,7 @@ class AgentLoop:
         agent_profiles: Optional[AgentProfileRegistry] = None,
         workflow_registry=None,
         governance_store=None,
+        case_store=None,
     ):
         self.config = config
         self.tools = tool_registry
@@ -136,11 +160,18 @@ class AgentLoop:
         self.agent_profiles = agent_profiles
         self.workflow_registry = workflow_registry
         self.governance_store = governance_store
+        self.case_store = case_store
         self.specialist_supervisor = SpecialistSupervisor(agent_store) if agent_store is not None else None
+        self.hypothesis_manager = HypothesisManager()
+        self.entity_resolver = EntityResolver()
+        self.evidence_graph = EvidenceGraph()
 
         agent_cfg = config.get('agent', {})
         self.max_steps = agent_cfg.get('max_steps', 50)
         self.auto_enrich_timeout_seconds = int(agent_cfg.get('auto_enrich_timeout_seconds', 12))
+        self.chat_tool_cap = int(agent_cfg.get('chat_tool_cap', 14))
+        self.chat_prompt_findings_limit = int(agent_cfg.get('chat_prompt_findings_limit', 5))
+        self.chat_auto_enrich_limit = int(agent_cfg.get('chat_auto_enrich_limit', 1))
 
         # LLM connection settings (mirrors LLMAnalyzer)
         llm_cfg = config.get('llm', {})
@@ -164,6 +195,27 @@ class AgentLoop:
             llm_cfg.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'),
         ).rstrip('/')
         self.gemini_model = llm_cfg.get('gemini_model', llm_cfg.get('model', 'gemini-2.5-flash'))
+        self.openrouter_key = (
+            get_valid_key(config.get('api_keys', {}), 'openrouter')
+            or (llm_cfg.get('api_key', '') if is_valid_api_key(llm_cfg.get('api_key', '')) else '')
+        )
+        self.openrouter_endpoint = llm_cfg.get(
+            'openrouter_endpoint',
+            llm_cfg.get('base_url', 'https://openrouter.ai/api/v1'),
+        ).rstrip('/')
+        self.openrouter_model = llm_cfg.get(
+            'openrouter_model',
+            llm_cfg.get('model', 'nvidia/nemotron-3-super-120b-a12b:free'),
+        )
+        self.auto_failover = bool(llm_cfg.get('auto_failover', True))
+        configured_fallbacks = llm_cfg.get('fallback_providers', llm_cfg.get('fallback_order', []))
+        if isinstance(configured_fallbacks, str):
+            configured_fallbacks = [configured_fallbacks]
+        self.fallback_providers = [
+            str(provider).strip().lower()
+            for provider in (configured_fallbacks or ['groq', 'anthropic'])
+            if str(provider).strip()
+        ]
         self.timeout = aiohttp.ClientTimeout(total=120)
         self.provider_runtime_status: Dict[str, Any] = {
             "provider": self.provider,
@@ -173,6 +225,7 @@ class AgentLoop:
             "http_status": None,
             "checked_at": None,
         }
+        self.provider_runtime_statuses: Dict[str, Dict[str, Any]] = {}
 
         # Active sessions & pub-sub
         self._active_sessions: Dict[str, AgentState] = {}
@@ -230,8 +283,26 @@ class AgentLoop:
             workflow_id=metadata.get("workflow_id"),
         )
         state.configure_specialist_team(specialist_team, active_specialist=active_specialist)
+        state.reasoning_state = self.hypothesis_manager.bootstrap(goal, session_id)
+        state.entity_state = self.entity_resolver.bootstrap()
+        state.evidence_state = self.evidence_graph.bootstrap()
+        state.deterministic_decision = self._build_deterministic_decision_output(state)
+        state.agentic_explanation = self.hypothesis_manager.build_agentic_explanation(
+            state.reasoning_state,
+            goal=goal,
+            deterministic_decision=state.deterministic_decision,
+            entity_state=state.entity_state,
+            evidence_state=state.evidence_state,
+        )
+        state.evidence_state = self.evidence_graph.sync_reasoning(
+            state.evidence_state,
+            session_id=session_id,
+            reasoning_state=state.reasoning_state,
+            root_cause_assessment=state.agentic_explanation.get("root_cause_assessment", {}),
+        )
         self._active_sessions[session_id] = state
         self._approval_events[session_id] = asyncio.Event()
+        self._persist_reasoning_metadata(session_id, state)
 
         # Capture the main event loop so _notify() can safely push
         # messages to subscriber queues from background threads.
@@ -254,18 +325,77 @@ class AgentLoop:
     def _record_llm_runtime_status(
         self,
         *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
         available: bool,
         error: Optional[str] = None,
         http_status: Optional[int] = None,
     ) -> None:
-        self.provider_runtime_status = {
-            "provider": self.provider,
+        provider_name = self._normalize_provider(provider)
+        status = {
+            "provider": provider_name,
+            "model": model or self._active_model_name(provider_name),
             "available": available,
             "status": "ready" if available else "error",
             "error": error,
             "http_status": http_status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+        self.provider_runtime_statuses[provider_name] = status
+        if provider_name == self.provider:
+            self.provider_runtime_status = status
+
+    def _normalize_provider(self, provider: Optional[str]) -> str:
+        return str(provider or self.provider or 'ollama').strip().lower() or 'ollama'
+
+    @staticmethod
+    def _is_groq_chat_model_compatible(model_name: str) -> bool:
+        normalized = str(model_name or '').strip().lower()
+        if not normalized:
+            return False
+        incompatible_tokens = ('prompt-guard', 'safeguard', 'moderation')
+        return not any(token in normalized for token in incompatible_tokens)
+
+    def _active_model_name(self, provider: Optional[str] = None) -> str:
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'anthropic':
+            return self.anthropic_model
+        if provider_name == 'groq':
+            if self._is_groq_chat_model_compatible(self.groq_model):
+                return self.groq_model
+            return 'openai/gpt-oss-20b'
+        if provider_name == 'gemini':
+            return self.gemini_model
+        if provider_name == 'openrouter':
+            return self.openrouter_model
+        return self.ollama_model
+
+    def _provider_is_configured(self, provider: Optional[str]) -> bool:
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'anthropic':
+            return bool(self.anthropic_key)
+        if provider_name == 'groq':
+            return bool(self.groq_key)
+        if provider_name == 'gemini':
+            return bool(self.gemini_key)
+        if provider_name == 'openrouter':
+            return bool(self.openrouter_key)
+        if provider_name == 'ollama':
+            return bool(self.ollama_endpoint)
+        return False
+
+    def _candidate_providers(self) -> List[str]:
+        candidates = [self.provider]
+        if not self.auto_failover:
+            return candidates
+        for provider in self.fallback_providers:
+            normalized = self._normalize_provider(provider)
+            if normalized in candidates:
+                continue
+            if not self._provider_is_configured(normalized):
+                continue
+            candidates.append(normalized)
+        return candidates
 
     async def approve_action(self, session_id: str) -> bool:
         """Approve the pending action so the loop can resume."""
@@ -431,6 +561,196 @@ class AgentLoop:
                 terminal_status=terminal_status,
             )
 
+    def _build_deterministic_decision_output(self, state: AgentState) -> Dict[str, Any]:
+        """Return the best deterministic decision available from collected findings."""
+        decision: Dict[str, Any] = {
+            "score": None,
+            "severity": None,
+            "verdict": "UNKNOWN",
+            "confidence": None,
+            "policy_flags": [],
+            "source": None,
+        }
+
+        for finding in reversed(state.findings):
+            if finding.get("type") != "tool_result":
+                continue
+            result = finding.get("result")
+            payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+            if not isinstance(payload, dict):
+                continue
+
+            source = str(finding.get("tool") or "tool_result")
+            if decision["source"] is None:
+                decision["source"] = source
+            if decision["score"] is None and isinstance(payload.get("score"), (int, float)):
+                decision["score"] = payload.get("score")
+                decision["source"] = source
+            if decision["severity"] is None and payload.get("severity") is not None:
+                decision["severity"] = payload.get("severity")
+                decision["source"] = source
+            if decision["confidence"] is None and isinstance(payload.get("confidence"), (int, float)):
+                decision["confidence"] = payload.get("confidence")
+            if payload.get("policy_flags"):
+                decision["policy_flags"] = list(payload.get("policy_flags") or [])
+            if payload.get("verdict") is not None:
+                decision["verdict"] = str(payload.get("verdict")).upper()
+                decision["source"] = source
+                break
+
+        if decision["severity"] is None:
+            authoritative = self._resolve_authoritative_outcome(state)
+            if authoritative and authoritative.get("kind") == "severity":
+                decision["severity"] = authoritative.get("label", "").replace("SEVERITY:", "").lower() or None
+                decision["source"] = authoritative.get("source")
+            elif authoritative and authoritative.get("kind") == "verdict" and decision["source"] is None:
+                decision["source"] = authoritative.get("source")
+
+        return decision
+
+    def _refresh_reasoning_outputs(
+        self,
+        session_id: str,
+        state: AgentState,
+        *,
+        tool_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Refresh structured reasoning state and persist it to session metadata."""
+        if tool_name is not None:
+            last_finding = state.findings[-1] if state.findings else {}
+            finding_index = len(state.findings) - 1 if state.findings else 0
+            step_number = int(last_finding.get("step", state.step_count))
+            state.reasoning_state = self.hypothesis_manager.revise(
+                state.reasoning_state,
+                goal=state.goal,
+                session_id=session_id,
+                tool_name=tool_name,
+                params=params or {},
+                result=result or {},
+                finding_index=finding_index,
+                step_number=step_number,
+            )
+            evidence_ref = {
+                "session_id": session_id,
+                "step_number": step_number,
+                "finding_index": finding_index,
+                "tool_name": tool_name,
+                "summary": (
+                    state.reasoning_state.get("recent_evidence_refs", [{}])[-1].get("summary")
+                    if isinstance(state.reasoning_state, dict) and state.reasoning_state.get("recent_evidence_refs")
+                    else f"{tool_name} observation"
+                ),
+                "created_at": last_finding.get("timestamp") if isinstance(last_finding, dict) else None,
+            }
+            state.entity_state = self.entity_resolver.ingest_observation(
+                state.entity_state,
+                session_id=session_id,
+                tool_name=tool_name,
+                params=params or {},
+                result=result or {},
+                step_number=step_number,
+                evidence_ref=evidence_ref,
+            )
+            state.evidence_state = self.evidence_graph.ingest_observation(
+                state.evidence_state,
+                session_id=session_id,
+                tool_name=tool_name,
+                step_number=step_number,
+                evidence_ref=evidence_ref,
+                entity_state=state.entity_state,
+            )
+        else:
+            state.reasoning_state = self.hypothesis_manager.bootstrap(
+                state.goal,
+                session_id,
+                existing=state.reasoning_state,
+            )
+            state.entity_state = self.entity_resolver.bootstrap(state.entity_state)
+            state.evidence_state = self.evidence_graph.bootstrap(state.evidence_state)
+
+        state.deterministic_decision = self._build_deterministic_decision_output(state)
+        state.agentic_explanation = self.hypothesis_manager.build_agentic_explanation(
+            state.reasoning_state,
+            goal=state.goal,
+            deterministic_decision=state.deterministic_decision,
+            entity_state=state.entity_state,
+            evidence_state=state.evidence_state,
+        )
+        state.evidence_state = self.evidence_graph.sync_reasoning(
+            state.evidence_state,
+            session_id=session_id,
+            reasoning_state=state.reasoning_state,
+            root_cause_assessment=state.agentic_explanation.get("root_cause_assessment", {}),
+        )
+        self._persist_reasoning_metadata(session_id, state)
+
+    def _persist_reasoning_metadata(self, session_id: str, state: AgentState) -> None:
+        self.store.update_session_metadata(
+            session_id,
+            {
+                "reasoning_state": state.reasoning_state,
+                "entity_state": state.entity_state,
+                "evidence_state": state.evidence_state,
+                "deterministic_decision": state.deterministic_decision,
+                "deterministic_decision_output": state.deterministic_decision,
+                "agentic_explanation": state.agentic_explanation,
+                "agentic_explanation_output": state.agentic_explanation,
+                "root_cause_assessment": state.agentic_explanation.get("root_cause_assessment", {}),
+            },
+            merge=True,
+        )
+
+    def _sync_case_reasoning_checkpoint(
+        self,
+        session_id: str,
+        state: AgentState,
+        *,
+        terminal_status: Optional[str] = None,
+    ) -> None:
+        if self.case_store is None:
+            return
+        case_id = self._session_case_id(session_id)
+        if not case_id:
+            return
+
+        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
+        entity_summary = self.entity_resolver.summarize_for_case_event(state.entity_state)
+        evidence_summary = self.evidence_graph.summarize_for_case_event(state.evidence_state)
+        hypothesis_snapshot = state.reasoning_state.get("hypotheses", []) if isinstance(state.reasoning_state, dict) else []
+
+        self.case_store.add_event(
+            case_id,
+            event_type="agentic_reasoning_checkpoint",
+            title="Agentic reasoning checkpoint recorded",
+            payload={
+                "session_id": session_id,
+                "terminal_status": terminal_status,
+                "reasoning_status": state.reasoning_state.get("status") if isinstance(state.reasoning_state, dict) else None,
+                "deterministic_decision": state.deterministic_decision,
+                "root_cause_assessment": root_cause,
+                "hypotheses": hypothesis_snapshot[:6],
+                "entity_summary": entity_summary,
+                "entity_relationships": entity_summary.get("relationships", []),
+                "evidence_timeline": evidence_summary.get("timeline", []),
+                "evidence_edges": evidence_summary.get("edges", []),
+            },
+        )
+        if isinstance(root_cause, dict) and root_cause.get("primary_root_cause"):
+            self.case_store.add_event(
+                case_id,
+                event_type="root_cause_assessment",
+                title=root_cause.get("summary") or "Root cause assessment updated",
+                payload={
+                    "session_id": session_id,
+                    "terminal_status": terminal_status,
+                    "root_cause_assessment": root_cause,
+                    "deterministic_decision": state.deterministic_decision,
+                    "entity_summary": entity_summary,
+                },
+            )
+
     def _sync_specialist_progress(self, session_id: str, state: AgentState, reason: str = "") -> None:
         """Rotate the active specialist based on workflow progress."""
         if not state.specialist_team:
@@ -555,14 +875,18 @@ class AgentLoop:
                     "active_specialist": state.active_specialist,
                 })
 
-                decision = await self._think(state)
+                decision = self._chat_short_circuit_decision(state)
+                if decision is None:
+                    decision = await self._think(state)
 
                 if decision is None:
                     # Retry once: LLM may have returned an unparseable
                     # response or had a transient connection issue.
                     logger.warning("[AGENT] First LLM call returned None, retrying...")
                     await asyncio.sleep(1)
-                    decision = await self._think(state)
+                    decision = self._chat_short_circuit_decision(state)
+                    if decision is None:
+                        decision = await self._think(state)
 
                 if decision is None:
                     state.errors.append(self._provider_failure_message())
@@ -588,12 +912,20 @@ class AgentLoop:
                     summary = decision.get('answer', '')
                     verdict = decision.get('verdict', 'UNKNOWN')
                     authoritative_outcome = self._resolve_authoritative_outcome(state)
+                    self._refresh_reasoning_outputs(session_id, state)
+                    deterministic_decision = state.deterministic_decision
+                    agentic_explanation = state.agentic_explanation
                     state.add_finding({
                         "type": "final_answer",
                         "answer": summary,
                         "verdict": verdict,
-                        "verdict_authority": "llm_advisory",
+                        "verdict_authority": "deterministic_core" if authoritative_outcome else "llm_advisory",
                         "authoritative_outcome": authoritative_outcome,
+                        "deterministic_decision": deterministic_decision,
+                        "agentic_explanation": agentic_explanation,
+                        "root_cause_assessment": agentic_explanation.get("root_cause_assessment", {}),
+                        "entity_state": state.entity_state,
+                        "evidence_state": state.evidence_state,
                         "reasoning": decision.get('reasoning', ''),
                     })
                     self.store.add_step(
@@ -799,6 +1131,13 @@ class AgentLoop:
                     "params": decision.get('params', {}),
                     "result": result,
                 })
+                self._refresh_reasoning_outputs(
+                    session_id,
+                    state,
+                    tool_name=tool_name,
+                    params=decision.get('params', {}),
+                    result=result,
+                )
                 state.step_count += 1
                 self._sync_specialist_progress(session_id, state, reason=f"Completed specialist action via {tool_name}.")
 
@@ -879,6 +1218,13 @@ class AgentLoop:
                                 "params": mcp_params,
                                 "result": mcp_result,
                             })
+                            self._refresh_reasoning_outputs(
+                                session_id,
+                                state,
+                                tool_name=mcp_tool,
+                                params=mcp_params,
+                                result=mcp_result,
+                            )
                             state.step_count += 1
                             self._sync_specialist_progress(session_id, state, reason=f"Auto-enrichment completed via {mcp_tool}.")
                             self.store.update_session_findings(
@@ -923,7 +1269,9 @@ class AgentLoop:
                     state.errors.append(f"Step limit ({state.max_steps}) reached")
                 state.phase = AgentPhase.COMPLETED
             final_status = 'completed' if state.phase == AgentPhase.COMPLETED else 'failed'
+            self._refresh_reasoning_outputs(session_id, state)
             self._persist_specialist_metadata(session_id, state, terminal_status=final_status, reason="Workflow session finished.")
+            self._sync_case_reasoning_checkpoint(session_id, state, terminal_status=final_status)
             summary = await self._generate_summary(state)
             self.store.update_session_status(session_id, final_status, summary)
             self.store.update_session_findings(session_id, state.findings)
@@ -954,12 +1302,17 @@ class AgentLoop:
         """Build context and call the LLM to decide the next action."""
         tools_block = self._build_tools_block()
         findings_block = self._build_findings_block(state)
+        response_style_block = self._build_response_style_block(state)
+        chat_decision_block = self._build_chat_decision_block(state)
+        reasoning_block = self._build_reasoning_block(state)
         profile_block = self._build_profile_block(state)
         workflow_block = self._build_workflow_block(state)
         playbooks_block = self._build_playbooks_block()
         all_tools = self.tools.get_tools_for_llm()
         # Filter tools to a manageable set for the LLM
         tools_json = self._filter_tools_for_goal(all_tools, state.goal, state)
+        if self._chat_prefers_direct_response(state):
+            tools_json = []
         has_native_tools = len(tools_json) > 0
 
         if has_native_tools:
@@ -968,6 +1321,9 @@ class AgentLoop:
             system_prompt = _SYSTEM_PROMPT.format(
                 goal=state.goal,
                 findings_block=findings_block,
+                response_style_block=response_style_block,
+                chat_decision_block=chat_decision_block,
+                reasoning_block=reasoning_block,
                 profile_block=profile_block,
                 workflow_block=workflow_block,
                 playbooks_block=playbooks_block,
@@ -977,6 +1333,9 @@ class AgentLoop:
                 tools_block=tools_block,
                 goal=state.goal,
                 findings_block=findings_block,
+                response_style_block=response_style_block,
+                chat_decision_block=chat_decision_block,
+                reasoning_block=reasoning_block,
                 profile_block=profile_block,
                 workflow_block=workflow_block,
                 playbooks_block=playbooks_block,
@@ -987,7 +1346,7 @@ class AgentLoop:
         ]
 
         # Attempt tool-calling API first, fall back to plain chat
-        raw = await self._chat_with_tools(messages)
+        raw = await self._chat_with_tools(messages, tools_json=tools_json)
         logger.info(f"[AGENT] LLM raw response type={type(raw).__name__}, "
                      f"preview={str(raw)[:500] if raw else 'None'}")
         if raw is None:
@@ -1004,18 +1363,14 @@ class AgentLoop:
                 # Normalise non-standard JSON formats into our decision dict
                 parsed = self._normalise_decision(parsed, state)
                 return parsed
-            # If we can't parse JSON and native tools were available,
-            # the LLM gave a plain text answer.
-            if has_native_tools and raw.strip():
-                # If we already have findings → real conclusion
-                if state.findings:
+            if raw.strip():
+                if state.findings or not has_native_tools or self._chat_prefers_direct_response(state):
                     return {
                         "action": "final_answer",
                         "answer": raw.strip(),
                         "verdict": self._extract_verdict(raw),
-                        "reasoning": "LLM provided text response after tool use",
+                        "reasoning": "LLM provided direct text response",
                     }
-                # No findings yet → auto-dispatch
                 logger.warning(
                     "[AGENT] LLM gave text instead of tool call. "
                     "Auto-dispatching tool based on goal."
@@ -1041,6 +1396,13 @@ class AgentLoop:
         instead of failing immediately at step 0.
         """
         if not state.findings:
+            if self._chat_prefers_direct_response(state):
+                return {
+                    "action": "final_answer",
+                    "answer": self._build_direct_chat_fallback_answer(state.goal),
+                    "verdict": "UNKNOWN",
+                    "reasoning": "Fallback: direct analyst chat response without tool use.",
+                }
             return {
                 "action": "use_tool",
                 "tool": self._guess_first_tool(state.goal),
@@ -1119,6 +1481,14 @@ class AgentLoop:
 
         # --- final_answer with no findings → force tool use ---
         if parsed.get('action') == 'final_answer' and not state.findings:
+            if self._chat_prefers_direct_response(state):
+                answer = str(parsed.get("answer") or "").strip() or self._build_direct_chat_fallback_answer(state.goal)
+                return {
+                    "action": "final_answer",
+                    "answer": answer,
+                    "verdict": parsed.get("verdict", "UNKNOWN"),
+                    "reasoning": parsed.get("reasoning", "LLM provided direct analyst-chat answer"),
+                }
             logger.warning(
                 "[AGENT] LLM tried final_answer with no findings. "
                 "Auto-dispatching tool."
@@ -1160,7 +1530,7 @@ class AgentLoop:
         We keep all 10 local tools + the most relevant MCP tools, capped
         at ~30 total to stay within the model's effective context.
         """
-        MAX_TOOLS = 30
+        max_tools = self.chat_tool_cap if self._is_lightweight_chat_session(state) else 30
         goal_lower = goal.lower()
 
         # Always include all local tools (10)
@@ -1175,7 +1545,7 @@ class AgentLoop:
             if t.get('function', {}).get('name', '').count('.')
         ]
 
-        if len(local_tools) + len(mcp_tools) <= MAX_TOOLS:
+        if len(local_tools) + len(mcp_tools) <= max_tools:
             return all_tools  # Small enough, send all
 
         # Score MCP tools by relevance
@@ -1227,7 +1597,7 @@ class AgentLoop:
                 other_mcp.append(t)
 
         # Fill remaining slots with other MCP tools
-        remaining = MAX_TOOLS - len(local_tools) - len(relevant_mcp)
+        remaining = max_tools - len(local_tools) - len(relevant_mcp)
         selected = local_tools + relevant_mcp
         if remaining > 0:
             selected += other_mcp[:remaining]
@@ -1251,39 +1621,61 @@ class AgentLoop:
         """
         import re
         result = []
+        simple_chat = self._is_simple_chat_goal(goal, primary_tool)
 
         if primary_tool == 'investigate_ioc':
             ioc_val = params.get('ioc', '')
             # Check if it's an IP
             if re.match(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ioc_val):
-                result.extend([
-                    ('network-analysis.whois_lookup', {'target': ioc_val}),
-                    ('network-analysis.geoip_lookup', {'ip': ioc_val}),
-                    ('free-osint.shodan_internetdb_lookup', {'ip': ioc_val}),
-                ])
+                if simple_chat:
+                    result.extend([
+                        ('network-analysis.geoip_lookup', {'ip': ioc_val}),
+                    ])
+                else:
+                    result.extend([
+                        ('network-analysis.whois_lookup', {'target': ioc_val}),
+                        ('network-analysis.geoip_lookup', {'ip': ioc_val}),
+                        ('free-osint.shodan_internetdb_lookup', {'ip': ioc_val}),
+                    ])
             elif re.match(r'[a-zA-Z0-9]', ioc_val) and '.' in ioc_val:
                 # Domain
-                result.extend([
-                    ('osint-tools.whois_lookup', {'target': ioc_val}),
-                    ('osint-tools.dns_resolve', {'domain': ioc_val}),
-                    ('osint-tools.ssl_certificate_info', {'host': ioc_val}),
-                ])
+                if simple_chat:
+                    result.extend([
+                        ('osint-tools.whois_lookup', {'target': ioc_val}),
+                        ('osint-tools.dns_resolve', {'domain': ioc_val}),
+                    ])
+                else:
+                    result.extend([
+                        ('osint-tools.whois_lookup', {'target': ioc_val}),
+                        ('osint-tools.dns_resolve', {'domain': ioc_val}),
+                        ('osint-tools.ssl_certificate_info', {'host': ioc_val}),
+                    ])
             elif re.match(r'^[a-fA-F0-9]{32,64}$', ioc_val):
                 # Hash
-                result.extend([
-                    ('malwoverview.malwoverview_hash_lookup', {'hash_value': ioc_val}),
-                    ('threat-intel-free.malwarebazaar_hash_lookup', {'hash_value': ioc_val}),
-                ])
+                if simple_chat:
+                    result.extend([
+                        ('malwoverview.malwoverview_hash_lookup', {'hash_value': ioc_val}),
+                    ])
+                else:
+                    result.extend([
+                        ('malwoverview.malwoverview_hash_lookup', {'hash_value': ioc_val}),
+                        ('threat-intel-free.malwarebazaar_hash_lookup', {'hash_value': ioc_val}),
+                    ])
 
         elif primary_tool == 'analyze_malware':
             file_path = params.get('file_path', params.get('ioc', ''))
             if file_path:
-                result.extend([
-                    ('remnux.hash_file', {'file_path': file_path}),
-                    ('remnux.file_entropy', {'file_path': file_path}),
-                    ('flare.strings_analysis', {'file_path': file_path}),
-                    ('forensics-tools.file_metadata', {'file_path': file_path}),
-                ])
+                if simple_chat:
+                    result.extend([
+                        ('forensics-tools.file_metadata', {'file_path': file_path}),
+                    ])
+                else:
+                    result.extend([
+                        ('remnux.hash_file', {'file_path': file_path}),
+                        ('remnux.file_entropy', {'file_path': file_path}),
+                        ('flare.strings_analysis', {'file_path': file_path}),
+                        ('forensics-tools.file_metadata', {'file_path': file_path}),
+                    ])
 
         elif primary_tool == 'analyze_email':
             file_path = params.get('file_path', params.get('eml_path', ''))
@@ -1311,7 +1703,8 @@ class AgentLoop:
         for tool_name, tool_params in result:
             if self.tools.get_tool(tool_name) is not None:
                 available.append((tool_name, tool_params))
-        return available[:4]  # Max 4 enrichment calls
+        max_calls = self.chat_auto_enrich_limit if simple_chat else 4
+        return available[:max_calls]
 
     def _guess_first_tool(self, goal: str) -> str:
         """Pick the most appropriate tool name based on the investigation goal."""
@@ -1385,6 +1778,171 @@ class AgentLoop:
         if "\n\nUse prior evidence" in focused:
             focused = focused.split("\n\nUse prior evidence", 1)[0].strip()
         return focused or goal
+
+    def _session_metadata(self, session_id: str) -> Dict[str, Any]:
+        session = self.store.get_session(session_id) if self.store is not None else None
+        metadata = session.get("metadata", {}) if isinstance(session, dict) else {}
+        return metadata if isinstance(metadata, dict) else {}
+
+    def _is_chat_session(self, state: AgentState) -> bool:
+        metadata = self._session_metadata(state.session_id)
+        return bool(
+            metadata.get("chat_mode")
+            or metadata.get("ui_mode") == "chat"
+            or str(metadata.get("response_style") or "").strip().lower() == "conversational"
+        )
+
+    def _is_lightweight_chat_session(self, state: AgentState) -> bool:
+        return self._is_chat_session(state) and self._is_simple_chat_goal(
+            state.goal,
+            self._guess_first_tool(state.goal),
+        )
+
+    @staticmethod
+    def _goal_has_observable(goal: str) -> bool:
+        focused_goal = str(goal or "")
+        patterns = (
+            r'([A-Z]:[/\\][\w/\\.\- ]+|/[\w/.\- ]+)',
+            r'\b\d{1,3}(?:\.\d{1,3}){3}\b',
+            r'https?://\S+',
+            r'\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?\b',
+            r'\b[a-fA-F0-9]{32,64}\b',
+            r'\b[\w.\-+]+@[\w.\-]+\.[A-Za-z]{2,}\b',
+            r'\bCVE-\d{4}-\d{4,}\b',
+        )
+        return any(re.search(pattern, focused_goal) for pattern in patterns)
+
+    @staticmethod
+    def _looks_like_artifact_submission(goal: str) -> bool:
+        focused_goal = str(goal or "").strip()
+        lower_goal = focused_goal.lower()
+        if not focused_goal:
+            return False
+        if len(focused_goal) > 280 or focused_goal.count("\n") >= 3:
+            return True
+        artifact_markers = (
+            "subject:",
+            "from:",
+            "to:",
+            "received:",
+            "return-path:",
+            "message-id:",
+            "alert:",
+            "event id",
+            "siem",
+            "powershell",
+            "cmd.exe",
+            "user-agent:",
+            "pcap",
+            "mail header",
+            "email header",
+            "log snippet",
+            "ioc list",
+        )
+        return any(marker in lower_goal for marker in artifact_markers)
+
+    def _chat_prefers_direct_response(self, state: AgentState) -> bool:
+        if not self._is_chat_session(state) or state.findings:
+            return False
+        focused_goal = self._focus_goal_text(state.goal).strip()
+        if not focused_goal:
+            return True
+        if self._goal_has_observable(focused_goal):
+            return False
+        if self._looks_like_artifact_submission(focused_goal):
+            return False
+        return True
+
+    def _is_simple_chat_goal(self, goal: str, primary_tool: str) -> bool:
+        if primary_tool != "investigate_ioc":
+            return False
+
+        focused_goal = self._focus_goal_text(goal).lower()
+        if len(focused_goal) > 180:
+            return False
+        if any(
+            term in focused_goal
+            for term in (
+                "playbook", "threat hunt", "campaign", "actor", "timeline",
+                "correlate", "compare", "generate rule",
+                "detection", "att&ck", "mitre", "full investigation",
+                "deep dive", "comprehensive", "all related", "blast radius",
+            )
+        ):
+            return False
+
+        simple_patterns = (
+            "tell me if",
+            "is it malicious",
+            "is this malicious",
+            "is this bad",
+            "is it bad",
+            "investigate whether",
+            "determine whether",
+            "quick check",
+            "what is this ip",
+            "what is this domain",
+            "what organization",
+            "which organization",
+            "what hostname",
+            "what host name",
+            "who owns this ip",
+            "check this ip",
+            "check this domain",
+            "reputation of",
+        )
+        has_simple_intent = any(pattern in focused_goal for pattern in simple_patterns) or bool(
+            re.search(r"\bis\s+.+\s+malicious\b", focused_goal)
+        )
+
+        observable_count = 0
+        if re.search(r'\b\d{1,3}(?:\.\d{1,3}){3}\b', focused_goal):
+            observable_count += 1
+        if re.search(r'\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b', focused_goal):
+            observable_count += 1
+        if re.search(r'https?://\S+', focused_goal):
+            observable_count += 1
+        if re.search(r'\b[a-fA-F0-9]{32,64}\b', focused_goal):
+            observable_count += 1
+
+        return has_simple_intent and observable_count <= 2
+
+    def _build_response_style_block(self, state: AgentState) -> str:
+        if not self._is_chat_session(state):
+            return ""
+        return (
+            "Response style for analyst chat:\n"
+            "- When you have enough evidence, answer the analyst's question directly in the first sentence.\n"
+            "- Use plain, practical SOC language instead of stiff report boilerplate.\n"
+            "- After the direct answer, briefly explain the evidence and why it matters.\n"
+            "- End with concrete next steps only if they add value."
+        )
+
+    def _build_chat_decision_block(self, state: AgentState) -> str:
+        if not self._is_chat_session(state):
+            return ""
+        return (
+            "Chat decision policy:\n"
+            "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
+            "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
+            "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
+        )
+
+    def _build_direct_chat_fallback_answer(self, goal: str) -> str:
+        provider_excerpt = self._provider_runtime_error_excerpt()
+        if provider_excerpt:
+            prefix = (
+                "The LLM is currently unavailable "
+                f"({provider_excerpt}), so I cannot provide a conversational analysis right now."
+            )
+        else:
+            prefix = (
+                "The LLM is currently unavailable, so I cannot provide a conversational analysis right now."
+            )
+        return (
+            f"{prefix} "
+            "Please share a concrete IOC, file path, email artifact, or log snippet if you want me to run the available investigation tools."
+        )
 
     def _build_tools_block(self) -> str:
         """Format registered tools into a readable list for the prompt."""
@@ -1503,20 +2061,165 @@ class AgentLoop:
                 break
         return " | ".join(parts[:limit])
 
-    @staticmethod
-    def _build_findings_block(state: AgentState) -> str:
+    def _build_findings_block(self, state: AgentState) -> str:
         """Summarise findings so far (capped to keep context manageable)."""
         if not state.findings:
             return "(none yet)"
-        # Show last 10 findings to avoid blowing up context window
-        recent = state.findings[-10:]
+
+        max_findings = self.chat_prompt_findings_limit if self._is_chat_session(state) else 8
+        recent = state.findings[-max_findings:]
         parts = []
         for i, f in enumerate(recent):
-            preview = json.dumps(f, default=str)
-            if len(preview) > 600:
-                preview = preview[:600] + "..."
-            parts.append(f"[{f.get('step', i)}] {preview}")
+            step = f.get('step', i)
+            finding_type = str(f.get("type") or "finding")
+            if finding_type == "tool_result":
+                tool_name = str(f.get("tool") or "tool_result")
+                summary = self._describe_fallback_evidence(tool_name, f.get("result"))
+                if not summary:
+                    payload = f.get("result")
+                    preview = _truncate(json.dumps(payload, default=str), 220)
+                    summary = f"{tool_name} returned {preview}"
+                parts.append(f"[{step}] {summary}")
+            elif finding_type == "final_answer":
+                answer = _truncate(str(f.get("answer") or ""), 220)
+                parts.append(f"[{step}] final_answer: {answer}")
+            else:
+                preview = _truncate(json.dumps(f, default=str), 220)
+                parts.append(f"[{step}] {preview}")
         return "\n".join(parts)
+
+    def _build_reasoning_block(self, state: AgentState) -> str:
+        """Return a compact structured reasoning snapshot for the prompt."""
+        reasoning_state = state.reasoning_state if isinstance(state.reasoning_state, dict) else {}
+        hypotheses = reasoning_state.get("hypotheses", []) if isinstance(reasoning_state, dict) else []
+        if not hypotheses:
+            return "(no structured hypotheses yet)"
+
+        lines: List[str] = []
+        status = str(reasoning_state.get("status") or "collecting_evidence")
+        lines.append(f"Reasoning status: {status}")
+
+        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
+        if isinstance(root_cause, dict) and root_cause.get("summary"):
+            lines.append(f"Root cause assessment: {_truncate(str(root_cause.get('summary')), 220)}")
+
+        entity_state = state.entity_state if isinstance(state.entity_state, dict) else {}
+        entities = entity_state.get("entities", {}) if isinstance(entity_state.get("entities"), dict) else {}
+        if entities:
+            entity_summaries = []
+            for entity in list(entities.values())[:5]:
+                if not isinstance(entity, dict):
+                    continue
+                entity_summaries.append(f"{entity.get('type')}={entity.get('value')}")
+            if entity_summaries:
+                lines.append("Tracked entities: " + ", ".join(entity_summaries))
+
+        open_questions = reasoning_state.get("open_questions", [])
+        if isinstance(open_questions, list) and open_questions:
+            lines.append("Open questions:")
+            question_limit = 2 if self._is_chat_session(state) and status == "sufficient_evidence" else 4
+            for question in open_questions[:question_limit]:
+                lines.append(f"- {question}")
+
+        lines.append("Hypotheses:")
+        for raw_hypothesis in hypotheses[:3]:
+            if not isinstance(raw_hypothesis, dict):
+                continue
+            statement = str(raw_hypothesis.get("statement") or "Unspecified hypothesis")
+            confidence = float(raw_hypothesis.get("confidence", 0.0) or 0.0)
+            status = str(raw_hypothesis.get("status") or "open")
+            support_count = len(raw_hypothesis.get("supporting_evidence_refs", []) or [])
+            contradict_count = len(raw_hypothesis.get("contradicting_evidence_refs", []) or [])
+            lines.append(
+                f"- {statement} "
+                f"(status={status}, confidence={confidence:.2f}, support={support_count}, contradict={contradict_count})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _has_tool_result(state: AgentState, tool_name: str) -> bool:
+        return any(
+            finding.get("type") == "tool_result" and finding.get("tool") == tool_name
+            for finding in state.findings
+        )
+
+    @staticmethod
+    def _simple_chat_has_strong_evidence(state: AgentState) -> bool:
+        tool_results = [
+            finding
+            for finding in state.findings
+            if finding.get("type") == "tool_result"
+        ]
+        if len(tool_results) < 2:
+            return False
+
+        for finding in tool_results:
+            result = finding.get("result")
+            payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+            if not isinstance(payload, dict):
+                continue
+            verdict = str(payload.get("verdict") or "").upper()
+            severity = str(payload.get("severity") or "").upper()
+            threat_score = payload.get("threat_score", payload.get("score"))
+            if verdict in {"MALICIOUS", "SUSPICIOUS"}:
+                return True
+            if severity in {"HIGH", "CRITICAL"}:
+                return True
+            if isinstance(threat_score, (int, float)) and threat_score >= 80:
+                return True
+        return False
+
+    def _chat_short_circuit_decision(self, state: AgentState) -> Optional[Dict[str, Any]]:
+        """Skip extra LLM turns when a simple analyst chat already has enough evidence."""
+        if not self._is_lightweight_chat_session(state):
+            return None
+        if not state.findings:
+            return None
+
+        authoritative_outcome = self._resolve_authoritative_outcome(state)
+        if authoritative_outcome is None:
+            return None
+
+        reasoning_status = (
+            str(state.reasoning_state.get("status") or "")
+            if isinstance(state.reasoning_state, dict)
+            else ""
+        )
+
+        if not self._has_tool_result(state, "correlate_findings"):
+            if (
+                reasoning_status == "sufficient_evidence"
+                or self._simple_chat_has_strong_evidence(state)
+            ) and self.tools.get_tool("correlate_findings") is not None:
+                return {
+                    "action": "use_tool",
+                    "tool": "correlate_findings",
+                    "params": {"findings": state.findings[-8:]},
+                    "reasoning": "Short-circuit: enough evidence is already available, so correlate before answering the analyst.",
+                }
+            return None
+
+        root_cause = (
+            state.agentic_explanation.get("root_cause_assessment", {})
+            if isinstance(state.agentic_explanation, dict)
+            else {}
+        )
+        if (
+            reasoning_status == "sufficient_evidence"
+            or (
+                isinstance(root_cause, dict)
+                and root_cause.get("status") == "supported"
+                and root_cause.get("supporting_evidence_refs")
+            )
+            or self._simple_chat_has_strong_evidence(state)
+        ):
+            return {
+                "action": "final_answer",
+                "answer": self._build_fallback_answer(state, authoritative_outcome),
+                "verdict": authoritative_outcome["label"],
+                "reasoning": "Short-circuit: the simple analyst chat already has sufficient evidence-backed reasoning.",
+            }
+        return None
 
     def _session_case_id(self, session_id: str) -> Optional[str]:
         session = self.store.get_session(session_id)
@@ -1685,26 +2388,109 @@ class AgentLoop:
     ) -> str:
         """Build a deterministic evidence-backed answer when LLM calls fail."""
         sentences: List[str] = []
-        if authoritative_outcome:
+        chat_specific = self._build_chat_specific_fallback(state)
+        if chat_specific:
+            sentences.append(chat_specific)
+
+        if state.step_count:
             sentences.append(
-                f"Evidence-backed outcome: {authoritative_outcome['label']} "
-                f"(source: {authoritative_outcome['source']})."
+                f"The investigation completed {state.step_count} steps before switching to a deterministic fallback summary."
             )
-        sentences.append(
-            f"LLM decisioning became unavailable after {state.step_count} steps, "
-            f"but the investigation still collected {len(state.findings)} evidence items."
-        )
+
+        if authoritative_outcome:
+            sentences.append(f"Evidence-backed outcome: {authoritative_outcome['label']}.")
+        else:
+            sentences.append("The investigation collected evidence, but no authoritative verdict was finalized.")
 
         evidence_points = self._fallback_evidence_points(state)
         if evidence_points:
             sentences.append("Key evidence: " + " ".join(evidence_points))
 
-        provider_error = self._provider_runtime_error_excerpt()
-        if provider_error:
-            sentences.append(f"LLM provider issue: {provider_error}")
+        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
+        root_cause_summary = str(root_cause.get("summary") or "").strip()
+        if root_cause_summary:
+            sentences.append(f"Current investigative explanation: {root_cause_summary}")
 
-        sentences.append("Use the collected evidence for analyst review.")
+        missing_evidence = state.agentic_explanation.get("missing_evidence", []) if isinstance(state.agentic_explanation, dict) else []
+        if isinstance(missing_evidence, list) and missing_evidence:
+            sentences.append(f"Main evidence gap: {str(missing_evidence[0])}")
+
+        provider_excerpt = self._provider_runtime_error_excerpt()
+        if provider_excerpt:
+            sentences.append(f"LLM fallback reason: {provider_excerpt}")
+
+        sentences.append("This summary was generated directly from the collected evidence so the analyst can continue without losing context.")
         return " ".join(sentences)[:2000]
+
+    def _build_chat_specific_fallback(self, state: AgentState) -> str:
+        """Answer simple analyst lookup questions directly from collected evidence."""
+        if not self._is_chat_session(state):
+            return ""
+
+        focused_goal = self._focus_goal_text(state.goal).lower()
+        wants_org = any(
+            phrase in focused_goal
+            for phrase in ("what organization", "which organization", "who owns this ip")
+        )
+        wants_host = any(
+            phrase in focused_goal
+            for phrase in ("what hostname", "what host name", "hostname", "host name")
+        )
+        if not wants_org and not wants_host:
+            return ""
+
+        organization = ""
+        hostname = ""
+        for finding in reversed(state.findings):
+            if finding.get("type") != "tool_result":
+                continue
+            result = finding.get("result")
+            payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+            if not isinstance(payload, dict):
+                continue
+            if not organization:
+                organization = str(
+                    payload.get("organization")
+                    or payload.get("org_name")
+                    or payload.get("registrant_org")
+                    or ""
+                ).strip()
+                parsed_fields = payload.get("parsed_fields", {}) if isinstance(payload.get("parsed_fields"), dict) else {}
+                if not organization:
+                    registrant_org = parsed_fields.get("registrant_org")
+                    if isinstance(registrant_org, list) and registrant_org:
+                        organization = str(registrant_org[0]).strip()
+                    elif registrant_org:
+                        organization = str(registrant_org).strip()
+            if not hostname:
+                hostnames = payload.get("hostnames")
+                if isinstance(hostnames, list) and hostnames:
+                    hostname = str(hostnames[0]).strip()
+                elif payload.get("reverse_dns"):
+                    hostname = str(payload.get("reverse_dns")).strip()
+                elif payload.get("hostname"):
+                    hostname = str(payload.get("hostname")).strip()
+            if organization and hostname:
+                break
+
+        if not organization and not hostname:
+            return ""
+
+        subject = ""
+        if isinstance(state.reasoning_state, dict):
+            subject = str(state.reasoning_state.get("goal_focus") or "").strip()
+        subject = subject or "the investigation target"
+
+        details: List[str] = []
+        if wants_org and organization:
+            details.append(f"organization {organization}")
+        if wants_host and hostname:
+            details.append(f"hostname {hostname}")
+        if not details:
+            return ""
+        if len(details) == 1:
+            return f"For {subject}, the strongest current mapping is {details[0]}."
+        return f"For {subject}, the strongest current mapping is {details[0]} and {details[1]}."
 
     def _provider_runtime_error_excerpt(self) -> str:
         status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
@@ -1858,6 +2644,8 @@ class AgentLoop:
         findings_json = json.dumps(state.findings[-15:], default=str, indent=1)
         prompt = _SUMMARY_PROMPT.format(
             goal=state.goal,
+            response_style_block=self._build_response_style_block(state),
+            reasoning_block=self._build_reasoning_block(state),
             step_count=state.step_count,
             findings_json=findings_json[:4000],
         )
@@ -1877,37 +2665,82 @@ class AgentLoop:
     # ================================================================== #
 
     async def _chat_with_tools(
-        self, messages: List[Dict],
+        self, messages: List[Dict], tools_json: Optional[List[Dict]] = None,
     ) -> Optional[Any]:
         """Call the LLM with a messages list and available tools.
 
         Supports both Ollama /api/chat and Anthropic /v1/messages.
         Returns raw response text/dict or None on failure.
         """
-        tools_json = self.tools.get_tools_for_llm()
+        tools_payload = tools_json if tools_json is not None else self.tools.get_tools_for_llm()
 
-        if self.provider == 'ollama':
-            return await self._ollama_chat(messages, tools_json)
-        if self.provider == 'anthropic':
-            return await self._anthropic_chat(messages, tools_json)
-        if self.provider == 'groq':
-            return await self._groq_chat(messages, tools_json)
-        if self.provider == 'gemini':
-            return await self._gemini_chat(messages, tools_json)
-        logger.error("[AGENT] Unsupported provider configured: %s", self.provider)
+        for provider_name in self._candidate_providers():
+            response = await self._chat_with_tools_via_provider(
+                provider_name,
+                messages,
+                tools_payload,
+            )
+            if response is not None:
+                if provider_name != self.provider:
+                    logger.info(
+                        "[AGENT] Chat tool-call failover succeeded via %s after %s was unavailable.",
+                        provider_name,
+                        self.provider,
+                    )
+                return response
+
+        logger.error("[AGENT] All configured chat providers failed: %s", ", ".join(self._candidate_providers()))
         return None
 
     async def _call_llm_text(self, prompt: str) -> Optional[str]:
         """Simple single-prompt call returning plain text (for summaries)."""
-        if self.provider == 'ollama':
+        for provider_name in self._candidate_providers():
+            response = await self._call_llm_text_via_provider(provider_name, prompt)
+            if response is not None:
+                if provider_name != self.provider:
+                    logger.info(
+                        "[AGENT] Text generation failover succeeded via %s after %s was unavailable.",
+                        provider_name,
+                        self.provider,
+                    )
+                return response
+
+        logger.error("[AGENT] All configured text-generation providers failed: %s", ", ".join(self._candidate_providers()))
+        return None
+
+    async def _chat_with_tools_via_provider(
+        self,
+        provider_name: str,
+        messages: List[Dict],
+        tools_json: List[Dict],
+    ) -> Optional[Any]:
+        normalized = self._normalize_provider(provider_name)
+        if normalized == 'ollama':
+            return await self._ollama_chat(messages, tools_json)
+        if normalized == 'anthropic':
+            return await self._anthropic_chat(messages, tools_json)
+        if normalized == 'groq':
+            return await self._groq_chat(messages, tools_json)
+        if normalized == 'gemini':
+            return await self._gemini_chat(messages, tools_json)
+        if normalized == 'openrouter':
+            return await self._openrouter_chat(messages, tools_json)
+        logger.error("[AGENT] Unsupported provider configured: %s", normalized)
+        return None
+
+    async def _call_llm_text_via_provider(self, provider_name: str, prompt: str) -> Optional[str]:
+        normalized = self._normalize_provider(provider_name)
+        if normalized == 'ollama':
             return await self._ollama_generate(prompt)
-        if self.provider == 'anthropic':
+        if normalized == 'anthropic':
             return await self._anthropic_generate(prompt)
-        if self.provider == 'groq':
+        if normalized == 'groq':
             return await self._groq_generate(prompt)
-        if self.provider == 'gemini':
+        if normalized == 'gemini':
             return await self._gemini_generate(prompt)
-        logger.error("[AGENT] Unsupported provider configured: %s", self.provider)
+        if normalized == 'openrouter':
+            return await self._openrouter_generate(prompt)
+        logger.error("[AGENT] Unsupported provider configured: %s", normalized)
         return None
 
     def _provider_failure_message(self) -> str:
@@ -1928,6 +2761,12 @@ class AgentLoop:
                 "LLM returned no decision. Verify the Gemini API key is configured, "
                 f"the endpoint '{self.gemini_endpoint}' is reachable, and model "
                 f"'{self.gemini_model}' is available."
+            )
+        if self.provider == 'openrouter':
+            return (
+                "LLM returned no decision. Verify the OpenRouter API key is configured, "
+                f"the endpoint '{self.openrouter_endpoint}' is reachable, and model "
+                f"'{self.openrouter_model}' is available."
             )
         return (
             "LLM returned no decision. Verify Ollama is running "
@@ -2164,6 +3003,8 @@ class AgentLoop:
         """Groq OpenAI-compatible /chat/completions with tool calling."""
         if not self.groq_key:
             self._record_llm_runtime_status(
+                provider='groq',
+                model=self._active_model_name('groq'),
                 available=False,
                 error="Groq API key not configured.",
             )
@@ -2193,6 +3034,8 @@ class AgentLoop:
                     if resp.status != 200:
                         body = await resp.text()
                         self._record_llm_runtime_status(
+                            provider='groq',
+                            model=self._active_model_name('groq'),
                             available=False,
                             error=f"Groq HTTP {resp.status}: {body[:200]}",
                             http_status=resp.status,
@@ -2202,6 +3045,8 @@ class AgentLoop:
 
                     data = await resp.json()
                     self._record_llm_runtime_status(
+                        provider='groq',
+                        model=self._active_model_name('groq'),
                         available=True,
                         http_status=resp.status,
                     )
@@ -2215,6 +3060,8 @@ class AgentLoop:
 
         except Exception as exc:
             self._record_llm_runtime_status(
+                provider='groq',
+                model=self._active_model_name('groq'),
                 available=False,
                 error=f"Groq request failed: {exc}",
             )
@@ -2225,6 +3072,8 @@ class AgentLoop:
         """Groq /chat/completions for plain text responses."""
         if not self.groq_key:
             self._record_llm_runtime_status(
+                provider='groq',
+                model=self._active_model_name('groq'),
                 available=False,
                 error="Groq API key not configured.",
             )
@@ -2250,6 +3099,8 @@ class AgentLoop:
                     if resp.status != 200:
                         body = await resp.text()
                         self._record_llm_runtime_status(
+                            provider='groq',
+                            model=self._active_model_name('groq'),
                             available=False,
                             error=f"Groq HTTP {resp.status}: {body[:200]}",
                             http_status=resp.status,
@@ -2258,6 +3109,8 @@ class AgentLoop:
                         return None
                     data = await resp.json()
                     self._record_llm_runtime_status(
+                        provider='groq',
+                        model=self._active_model_name('groq'),
                         available=True,
                         http_status=resp.status,
                     )
@@ -2266,10 +3119,146 @@ class AgentLoop:
                     return message.get("content", "")
         except Exception as exc:
             self._record_llm_runtime_status(
+                provider='groq',
+                model=self._active_model_name('groq'),
                 available=False,
                 error=f"Groq request failed: {exc}",
             )
             logger.error(f"[AGENT] Groq generate failed: {exc}")
+            return None
+
+    async def _openrouter_chat(
+        self, messages: List[Dict], tools: List[Dict],
+    ) -> Optional[Any]:
+        """OpenRouter OpenAI-compatible /chat/completions with tool calling."""
+        if not self.openrouter_key:
+            self._record_llm_runtime_status(
+                provider='openrouter',
+                model=self._active_model_name('openrouter'),
+                available=False,
+                error="OpenRouter API key not configured.",
+            )
+            logger.warning("[AGENT] No OpenRouter API key configured")
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.openrouter_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://localhost",
+                "X-Title": "CABTA",
+            }
+            payload: Dict[str, Any] = {
+                "model": self.openrouter_model,
+                "messages": messages,
+                "temperature": 0.2,
+                "stream": False,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.openrouter_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            provider='openrouter',
+                            model=self._active_model_name('openrouter'),
+                            available=False,
+                            error=f"OpenRouter HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] OpenRouter chat error {resp.status}: {body[:300]}")
+                        return None
+
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        provider='openrouter',
+                        model=self._active_model_name('openrouter'),
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+
+                    if message.get("tool_calls"):
+                        return {"tool_calls": message["tool_calls"]}
+
+                    return message.get("content", "")
+
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                provider='openrouter',
+                model=self._active_model_name('openrouter'),
+                available=False,
+                error=f"OpenRouter request failed: {exc}",
+            )
+            logger.error(f"[AGENT] OpenRouter chat failed: {exc}", exc_info=True)
+            return None
+
+    async def _openrouter_generate(self, prompt: str) -> Optional[str]:
+        """OpenRouter /chat/completions for plain text responses."""
+        if not self.openrouter_key:
+            self._record_llm_runtime_status(
+                provider='openrouter',
+                model=self._active_model_name('openrouter'),
+                available=False,
+                error="OpenRouter API key not configured.",
+            )
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.openrouter_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://localhost",
+                "X-Title": "CABTA",
+            }
+            payload = {
+                "model": self.openrouter_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "stream": False,
+            }
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.openrouter_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            provider='openrouter',
+                            model=self._active_model_name('openrouter'),
+                            available=False,
+                            error=f"OpenRouter HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] OpenRouter generate error {resp.status}: {body[:200]}")
+                        return None
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        provider='openrouter',
+                        model=self._active_model_name('openrouter'),
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+                    return message.get("content", "")
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                provider='openrouter',
+                model=self._active_model_name('openrouter'),
+                available=False,
+                error=f"OpenRouter request failed: {exc}",
+            )
+            logger.error(f"[AGENT] OpenRouter generate failed: {exc}")
             return None
 
     # ---- Gemini ---- #
@@ -2280,6 +3269,8 @@ class AgentLoop:
         """Gemini OpenAI-compatible /chat/completions with tool calling."""
         if not self.gemini_key:
             self._record_llm_runtime_status(
+                provider='gemini',
+                model=self._active_model_name('gemini'),
                 available=False,
                 error="Gemini API key not configured.",
             )
@@ -2309,6 +3300,8 @@ class AgentLoop:
                     if resp.status != 200:
                         body = await resp.text()
                         self._record_llm_runtime_status(
+                            provider='gemini',
+                            model=self._active_model_name('gemini'),
                             available=False,
                             error=f"Gemini HTTP {resp.status}: {body[:200]}",
                             http_status=resp.status,
@@ -2318,6 +3311,8 @@ class AgentLoop:
 
                     data = await resp.json()
                     self._record_llm_runtime_status(
+                        provider='gemini',
+                        model=self._active_model_name('gemini'),
                         available=True,
                         http_status=resp.status,
                     )
@@ -2331,6 +3326,8 @@ class AgentLoop:
 
         except Exception as exc:
             self._record_llm_runtime_status(
+                provider='gemini',
+                model=self._active_model_name('gemini'),
                 available=False,
                 error=f"Gemini request failed: {exc}",
             )
@@ -2341,6 +3338,8 @@ class AgentLoop:
         """Gemini OpenAI-compatible /chat/completions for plain text responses."""
         if not self.gemini_key:
             self._record_llm_runtime_status(
+                provider='gemini',
+                model=self._active_model_name('gemini'),
                 available=False,
                 error="Gemini API key not configured.",
             )
@@ -2366,6 +3365,8 @@ class AgentLoop:
                     if resp.status != 200:
                         body = await resp.text()
                         self._record_llm_runtime_status(
+                            provider='gemini',
+                            model=self._active_model_name('gemini'),
                             available=False,
                             error=f"Gemini HTTP {resp.status}: {body[:200]}",
                             http_status=resp.status,
@@ -2374,6 +3375,8 @@ class AgentLoop:
                         return None
                     data = await resp.json()
                     self._record_llm_runtime_status(
+                        provider='gemini',
+                        model=self._active_model_name('gemini'),
                         available=True,
                         http_status=resp.status,
                     )
@@ -2382,6 +3385,8 @@ class AgentLoop:
                     return message.get("content", "")
         except Exception as exc:
             self._record_llm_runtime_status(
+                provider='gemini',
+                model=self._active_model_name('gemini'),
                 available=False,
                 error=f"Gemini request failed: {exc}",
             )

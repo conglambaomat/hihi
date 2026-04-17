@@ -36,6 +36,240 @@
         white-space: pre-wrap;
         word-break: break-word;
     }
+    .reasoning-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1rem;
+    }
+    .reasoning-panel {
+        padding: 0.9rem;
+        border-radius: 10px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+    }
+    .reasoning-panel-title {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: 0.65rem;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        font-weight: 700;
+    }
+    .reasoning-empty {
+        padding: 0.8rem;
+        border-radius: 8px;
+        border: 1px dashed var(--border-color);
+        color: var(--text-secondary);
+        background: rgba(148,163,184,0.05);
+        font-size: 0.82rem;
+        line-height: 1.55;
+    }
+    .reasoning-stat-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.5rem;
+    }
+    .reasoning-stat {
+        padding: 0.55rem 0.65rem;
+        border-radius: 8px;
+        background: rgba(15,23,42,0.18);
+        border: 1px solid var(--border-color);
+    }
+    .reasoning-stat-label {
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin-bottom: 0.15rem;
+    }
+    .reasoning-stat-value {
+        font-size: 0.84rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        word-break: break-word;
+    }
+    .reasoning-pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-top: 0.55rem;
+    }
+    .reasoning-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.28rem;
+        padding: 0.16rem 0.44rem;
+        border-radius: 999px;
+        border: 1px solid rgba(88,166,255,0.18);
+        background: rgba(88,166,255,0.08);
+        color: var(--text-primary);
+        font-size: 0.68rem;
+    }
+    .reasoning-pill.warning {
+        border-color: rgba(245,158,11,0.22);
+        background: rgba(245,158,11,0.10);
+        color: #fbbf24;
+    }
+    .reasoning-pill.success {
+        border-color: rgba(34,197,94,0.22);
+        background: rgba(34,197,94,0.10);
+        color: #4ade80;
+    }
+    .reasoning-pill.danger {
+        border-color: rgba(239,68,68,0.22);
+        background: rgba(239,68,68,0.10);
+        color: #f87171;
+    }
+    .reasoning-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.14rem 0.44rem;
+        border-radius: 999px;
+        font-size: 0.64rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 700;
+        border: 1px solid transparent;
+    }
+    .status-supported {
+        background: rgba(34,197,94,0.10);
+        color: #4ade80;
+        border-color: rgba(34,197,94,0.22);
+    }
+    .status-open,
+    .status-collecting_evidence,
+    .status-inconclusive {
+        background: rgba(56,189,248,0.10);
+        color: #67e8f9;
+        border-color: rgba(56,189,248,0.22);
+    }
+    .status-insufficient_evidence,
+    .status-contradicted {
+        background: rgba(239,68,68,0.10);
+        color: #f87171;
+        border-color: rgba(239,68,68,0.22);
+    }
+    .status-monitoring {
+        background: rgba(245,158,11,0.10);
+        color: #fbbf24;
+        border-color: rgba(245,158,11,0.22);
+    }
+    .reasoning-list {
+        margin: 0;
+        padding-left: 1rem;
+        display: grid;
+        gap: 0.22rem;
+        color: var(--text-primary);
+        font-size: 0.83rem;
+    }
+    .reasoning-subsection-label {
+        margin: 0.65rem 0 0.3rem;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        font-weight: 700;
+    }
+    .hypothesis-card {
+        padding: 0.7rem;
+        margin-bottom: 0.65rem;
+        border-radius: 8px;
+        background: rgba(15,23,42,0.18);
+        border: 1px solid var(--border-color);
+    }
+    .hypothesis-card:last-child {
+        margin-bottom: 0;
+    }
+    .hypothesis-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.4rem;
+    }
+    .hypothesis-title {
+        font-size: 0.84rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        line-height: 1.45;
+    }
+    .entity-chip-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+    .entity-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.28rem;
+        padding: 0.18rem 0.44rem;
+        border-radius: 999px;
+        border: 1px solid rgba(88,166,255,0.18);
+        background: rgba(88,166,255,0.08);
+        color: var(--text-primary);
+        font-size: 0.68rem;
+    }
+    .relationship-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        gap: 0.4rem;
+        align-items: center;
+        margin-bottom: 0.35rem;
+    }
+    .relationship-node {
+        padding: 0.3rem 0.45rem;
+        border-radius: 6px;
+        background: rgba(15,23,42,0.18);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-size: 0.74rem;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    .relationship-type {
+        font-size: 0.62rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+    }
+    .session-summary-card {
+        padding: 0.75rem;
+        border-radius: 8px;
+        background: rgba(15,23,42,0.18);
+        border: 1px solid var(--border-color);
+        margin-bottom: 0.55rem;
+    }
+    .session-summary-card:last-child {
+        margin-bottom: 0;
+    }
+    .session-summary-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-bottom: 0.28rem;
+    }
+    .timeline-inline {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+    }
+    .timeline-inline-item {
+        padding: 0.55rem 0.65rem;
+        border-radius: 8px;
+        background: rgba(15,23,42,0.18);
+        border: 1px solid var(--border-color);
+    }
+    .timeline-inline-item small {
+        display: block;
+        color: var(--text-secondary);
+        margin-bottom: 0.12rem;
+    }
 </style>
 {% endblock %}
 
@@ -108,6 +342,19 @@
                     <dd>{{ case.created_at | default('N/A') | e }}</dd>
                 </dl>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Investigation Reasoning -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Investigation Reasoning</h5>
+        <span class="badge badge-info" id="caseReasoningStatusBadge">Loading…</span>
+    </div>
+    <div class="card-body">
+        <div id="caseReasoningPanels" class="reasoning-empty">
+            Loading deterministic decision, root cause assessment, hypotheses, entities, and missing-evidence guidance for this case…
         </div>
     </div>
 </div>
@@ -243,6 +490,278 @@
         'use strict';
 
         var caseId = {{ case.id | tojson }};
+
+        function esc(value) {
+            var div = document.createElement('div');
+            div.textContent = value == null ? '' : String(value);
+            return div.innerHTML;
+        }
+
+        function formatLabel(value) {
+            return String(value || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+        }
+
+        function formatConfidence(value) {
+            if (value === null || value === undefined || value === '') return '-';
+            var numeric = Number(value);
+            if (!isFinite(numeric)) return String(value);
+            if (numeric <= 1) numeric *= 100;
+            return Math.round(numeric) + '%';
+        }
+
+        function verdictBadgeClass(verdict) {
+            var v = String(verdict || '').toUpperCase();
+            if (v === 'MALICIOUS') return 'badge badge-danger';
+            if (v === 'SUSPICIOUS') return 'badge badge-warning';
+            if (v === 'CLEAN') return 'badge badge-success';
+            return 'badge badge-info';
+        }
+
+        function makeStatusPill(status) {
+            var normalized = String(status || 'open').toLowerCase();
+            return '<span class="reasoning-status-pill status-' + esc(normalized) + '">' + esc(formatLabel(normalized)) + '</span>';
+        }
+
+        function setReasoningStatusBadge(text, className) {
+            var badge = document.getElementById('caseReasoningStatusBadge');
+            if (!badge) return;
+            badge.className = className || 'badge badge-info';
+            badge.id = 'caseReasoningStatusBadge';
+            badge.textContent = text || 'N/A';
+        }
+
+        function renderReasoningEmpty(message) {
+            return '<div class="reasoning-empty">' + esc(message) + '</div>';
+        }
+
+        function renderEvidenceList(items, limit) {
+            if (!Array.isArray(items) || !items.length) return renderReasoningEmpty('No structured evidence refs are available at this level yet.');
+            var html = '<ul class="reasoning-list">';
+            items.slice(0, limit || items.length).forEach(function (item) {
+                var bits = [];
+                if (item.summary) bits.push(item.summary);
+                if (item.tool_name) bits.push('tool: ' + item.tool_name);
+                if (item.step_number !== undefined) bits.push('step ' + item.step_number);
+                html += '<li>' + esc(bits.join(' | ')) + '</li>';
+            });
+            html += '</ul>';
+            return html;
+        }
+
+        function buildCaseReasoningPanels(data) {
+            var deterministic = data.deterministic_decision || {};
+            var agentic = data.agentic_explanation || {};
+            var reasoning = data.reasoning_state || {};
+            var entityState = data.entity_state || {};
+            var graphSummary = data.graph_summary || {};
+            var timelineSummary = data.timeline_summary || {};
+            var rootCause = data.root_cause_assessment || {};
+            var hypotheses = Array.isArray(reasoning.hypotheses) ? reasoning.hypotheses.slice().sort(function (a, b) { return (b.confidence || 0) - (a.confidence || 0); }) : [];
+            var entities = entityState && typeof entityState.entities === 'object' ? Object.keys(entityState.entities).map(function (key) { return entityState.entities[key]; }) : [];
+            var relationships = Array.isArray(entityState.relationships) ? entityState.relationships : [];
+            var missingEvidence = Array.isArray(agentic.missing_evidence) ? agentic.missing_evidence : (Array.isArray(reasoning.missing_evidence) ? reasoning.missing_evidence : []);
+            var nextPivots = Array.isArray(agentic.recommended_next_pivots) ? agentic.recommended_next_pivots : [];
+            var nextActions = Array.isArray(agentic.recommended_next_actions) ? agentic.recommended_next_actions : [];
+            var sessions = Array.isArray(data.workflow_sessions) ? data.workflow_sessions : [];
+
+            var html = '<div class="reasoning-grid">';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-shield-check"></i>Deterministic Decision</div>';
+            if (deterministic.verdict || deterministic.score !== undefined || deterministic.severity || deterministic.confidence !== undefined) {
+                html += '<div class="reasoning-stat-grid">';
+                html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Verdict</div><div class="reasoning-stat-value">';
+                html += deterministic.verdict ? '<span class="' + verdictBadgeClass(deterministic.verdict) + '">' + esc(String(deterministic.verdict).toUpperCase()) + '</span>' : '-';
+                html += '</div></div>';
+                html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Score</div><div class="reasoning-stat-value">' + esc(deterministic.score !== undefined ? String(deterministic.score) : '-') + '</div></div>';
+                html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Severity</div><div class="reasoning-stat-value">' + esc(formatLabel(deterministic.severity || '-')) + '</div></div>';
+                html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Confidence</div><div class="reasoning-stat-value">' + esc(formatConfidence(deterministic.confidence)) + '</div></div>';
+                html += '</div>';
+                if (Array.isArray(deterministic.policy_flags) && deterministic.policy_flags.length) {
+                    html += '<div class="reasoning-pill-row">';
+                    deterministic.policy_flags.forEach(function (flag) {
+                        html += '<span class="reasoning-pill warning"><i class="bi bi-flag"></i>' + esc(formatLabel(flag)) + '</span>';
+                    });
+                    html += '</div>';
+                }
+            } else {
+                html += renderReasoningEmpty('No deterministic decision has been persisted for this case yet.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-diagram-3"></i>Agentic Explanation</div>';
+            if (rootCause.primary_root_cause || rootCause.summary) {
+                if (rootCause.primary_root_cause) html += '<p><strong>' + esc(rootCause.primary_root_cause) + '</strong></p>';
+                if (rootCause.summary) html += '<p>' + esc(rootCause.summary) + '</p>';
+                html += '<div class="reasoning-pill-row">';
+                if (rootCause.status) html += makeStatusPill(rootCause.status);
+                html += '<span class="reasoning-pill"><i class="bi bi-speedometer2"></i>Confidence: ' + esc(formatConfidence(agentic.explanation_confidence !== undefined ? agentic.explanation_confidence : rootCause.confidence)) + '</span>';
+                html += '</div>';
+                if (Array.isArray(agentic.causal_chain) && agentic.causal_chain.length) {
+                    html += '<div class="reasoning-subsection-label">Causal Chain</div><ol class="reasoning-list">';
+                    agentic.causal_chain.slice(0, 5).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                    html += '</ol>';
+                }
+                if (Array.isArray(agentic.alternative_hypotheses) && agentic.alternative_hypotheses.length) {
+                    html += '<div class="reasoning-subsection-label">Alternative Hypotheses</div><ul class="reasoning-list">';
+                    agentic.alternative_hypotheses.slice(0, 4).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                    html += '</ul>';
+                }
+            } else {
+                html += renderReasoningEmpty('No structured root-cause assessment is available for this case yet.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-lightbulb"></i>Hypotheses</div>';
+            if (hypotheses.length) {
+                hypotheses.slice(0, 4).forEach(function (hypothesis) {
+                    html += '<div class="hypothesis-card">';
+                    html += '<div class="hypothesis-header"><div class="hypothesis-title">' + esc(hypothesis.statement || 'Hypothesis') + '</div>' + makeStatusPill(hypothesis.status || 'open') + '</div>';
+                    html += '<div class="reasoning-pill-row">';
+                    html += '<span class="reasoning-pill"><i class="bi bi-speedometer2"></i>Confidence: ' + esc(formatConfidence(hypothesis.confidence)) + '</span>';
+                    html += '<span class="reasoning-pill success"><i class="bi bi-plus-circle"></i>Support: ' + esc(String((hypothesis.supporting_evidence_refs || []).length || 0)) + '</span>';
+                    html += '<span class="reasoning-pill danger"><i class="bi bi-dash-circle"></i>Contradict: ' + esc(String((hypothesis.contradicting_evidence_refs || []).length || 0)) + '</span>';
+                    html += '</div>';
+                    if (Array.isArray(hypothesis.open_questions) && hypothesis.open_questions.length) {
+                        html += '<div class="reasoning-subsection-label">Open Questions</div><ul class="reasoning-list">';
+                        hypothesis.open_questions.slice(0, 2).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                        html += '</ul>';
+                    }
+                    html += '</div>';
+                });
+            } else {
+                html += renderReasoningEmpty('No structured hypotheses are attached to the latest workflow session for this case.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-share"></i>Entity Pivots</div>';
+            if (entities.length) {
+                html += '<div class="entity-chip-wrap">';
+                entities.slice(0, 16).forEach(function (entity) {
+                    var label = entity.label || entity.value || entity.id || entity.type || 'entity';
+                    html += '<span class="entity-chip"><i class="bi bi-diagram-2"></i>' + esc(formatLabel(entity.type || 'entity')) + ': ' + esc(label) + '</span>';
+                });
+                html += '</div>';
+                if (relationships.length) {
+                    html += '<div class="reasoning-subsection-label">Relationships</div>';
+                    var lookup = {};
+                    entities.forEach(function (entity) { if (entity && entity.id) lookup[entity.id] = entity; });
+                    relationships.slice(0, 6).forEach(function (relationship) {
+                        var source = lookup[relationship.source] || {};
+                        var target = lookup[relationship.target] || {};
+                        html += '<div class="relationship-row">';
+                        html += '<div class="relationship-node">' + esc(source.label || source.value || relationship.source || 'Unknown') + '</div>';
+                        html += '<div class="relationship-type">' + esc(formatLabel(relationship.relation || 'linked_to')) + '</div>';
+                        html += '<div class="relationship-node">' + esc(target.label || target.value || relationship.target || 'Unknown') + '</div>';
+                        html += '</div>';
+                    });
+                }
+            } else {
+                html += renderReasoningEmpty('No normalized entities are available for the latest case-linked workflow session.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-signpost-split"></i>Missing Evidence / Next Pivots</div>';
+            if (missingEvidence.length || nextPivots.length || nextActions.length) {
+                if (missingEvidence.length) {
+                    html += '<div class="reasoning-subsection-label">Missing Evidence</div><ul class="reasoning-list">';
+                    missingEvidence.slice(0, 5).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                    html += '</ul>';
+                }
+                if (nextPivots.length) {
+                    html += '<div class="reasoning-subsection-label">Recommended Next Pivots</div><ul class="reasoning-list">';
+                    nextPivots.slice(0, 5).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                    html += '</ul>';
+                }
+                if (nextActions.length) {
+                    html += '<div class="reasoning-subsection-label">Recommended Next Actions</div><ul class="reasoning-list">';
+                    nextActions.slice(0, 4).forEach(function (item) { html += '<li>' + esc(item) + '</li>'; });
+                    html += '</ul>';
+                }
+            } else {
+                html += renderReasoningEmpty('No unresolved evidence gaps or next pivots are recorded for this case.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-clock-history"></i>Case Timeline Signals</div>';
+            if (Array.isArray(timelineSummary.events) && timelineSummary.events.length) {
+                html += '<div class="timeline-inline">';
+                timelineSummary.events.slice(-6).reverse().forEach(function (event) {
+                    html += '<div class="timeline-inline-item">';
+                    html += '<small>' + esc(event.timestamp || '') + ' · ' + esc(formatLabel(event.type || event.source || 'event')) + '</small>';
+                    html += '<div>' + esc(event.title || event.summary || 'Case event') + '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            } else {
+                html += renderReasoningEmpty('No case-level timeline signals are available yet.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-collection"></i>Workflow Sessions</div>';
+            if (sessions.length) {
+                sessions.slice().reverse().slice(0, 5).forEach(function (session) {
+                    html += '<div class="session-summary-card">';
+                    html += '<div class="session-summary-title">';
+                    html += '<strong>' + esc(session.workflow_id || session.session_id || 'workflow') + '</strong>';
+                    html += makeStatusPill(session.reasoning_status || session.status || 'open');
+                    html += '</div>';
+                    html += '<div class="reasoning-pill-row">';
+                    if (session.deterministic_decision && session.deterministic_decision.verdict) {
+                        html += '<span class="reasoning-pill"><i class="bi bi-shield"></i>' + esc(String(session.deterministic_decision.verdict).toUpperCase()) + '</span>';
+                    }
+                    html += '<span class="reasoning-pill"><i class="bi bi-lightbulb"></i>Hypotheses: ' + esc(String(session.hypothesis_count || 0)) + '</span>';
+                    html += '<span class="reasoning-pill"><i class="bi bi-diagram-2"></i>Entities: ' + esc(String(session.entity_count || 0)) + '</span>';
+                    html += '</div>';
+                    if (session.root_cause_assessment && session.root_cause_assessment.summary) {
+                        html += '<div style="margin-top:0.45rem;color:var(--text-secondary);font-size:0.8rem;line-height:1.45;">' + esc(session.root_cause_assessment.summary) + '</div>';
+                    }
+                    html += '</div>';
+                });
+            } else {
+                html += renderReasoningEmpty('No agent workflow sessions are currently linked to this case.');
+            }
+            html += '</div>';
+
+            html += '<div class="reasoning-panel">';
+            html += '<div class="reasoning-panel-title"><i class="bi bi-graph-up"></i>Graph Summary</div>';
+            html += '<div class="reasoning-stat-grid">';
+            html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Nodes</div><div class="reasoning-stat-value">' + esc(String(graphSummary.node_count || 0)) + '</div></div>';
+            html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Edges</div><div class="reasoning-stat-value">' + esc(String(graphSummary.edge_count || 0)) + '</div></div>';
+            html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Timeline Events</div><div class="reasoning-stat-value">' + esc(String(timelineSummary.event_count || 0)) + '</div></div>';
+            html += '<div class="reasoning-stat"><div class="reasoning-stat-label">Latest Session</div><div class="reasoning-stat-value">' + esc(data.latest_workflow_id || data.latest_session_id || '-') + '</div></div>';
+            html += '</div>';
+            html += '</div>';
+
+            html += '</div>';
+            return html;
+        }
+
+        function loadCaseReasoning() {
+            var container = document.getElementById('caseReasoningPanels');
+            if (!container) return;
+            fetch('/api/cases/' + encodeURIComponent(caseId) + '/reasoning')
+                .then(function (response) {
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    return response.json();
+                })
+                .then(function (data) {
+                    var rootCause = data.root_cause_assessment || {};
+                    setReasoningStatusBadge(rootCause.status ? formatLabel(rootCause.status) : 'Ready', rootCause.status === 'supported' ? 'badge badge-success' : rootCause.status === 'insufficient_evidence' ? 'badge badge-danger' : 'badge badge-info');
+                    container.innerHTML = buildCaseReasoningPanels(data);
+                })
+                .catch(function (err) {
+                    console.error('[BTA Case] Reasoning load failed:', err.message);
+                    setReasoningStatusBadge('Unavailable', 'badge badge-danger');
+                    container.innerHTML = renderReasoningEmpty('Failed to load case reasoning: ' + err.message);
+                });
+        }
 
         /* --------------------------------------------------
            Status Update (capitalized values)
@@ -451,6 +970,8 @@
                 });
             });
         }
+
+        loadCaseReasoning();
     })();
 </script>
 {% endblock %}

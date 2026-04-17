@@ -10,6 +10,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .agent import _decorate_session_payload
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DEFAULT_CHAT_AGENT_PROFILE = "investigator"
@@ -192,6 +194,11 @@ async def send_message(request: Request, body: ChatMessage):
             case_id=session.get('case_id'),
             metadata={
                 "agent_profile_id": _preferred_chat_profile(session),
+                "chat_mode": True,
+                "ui_mode": "chat",
+                "response_style": "conversational",
+                "chat_user_message": body.message,
+                "chat_parent_session_id": body.session_id,
             },
         )
         return {
@@ -205,6 +212,10 @@ async def send_message(request: Request, body: ChatMessage):
             body.message,
             metadata={
                 "agent_profile_id": DEFAULT_CHAT_AGENT_PROFILE,
+                "chat_mode": True,
+                "ui_mode": "chat",
+                "response_style": "conversational",
+                "chat_user_message": body.message,
             },
         )
         return {
@@ -234,6 +245,7 @@ async def get_chat_session(request: Request, session_id: str):
     if not session:
         raise HTTPException(404, "Session not found")
     steps = store.get_steps(session_id)
+    session = _decorate_session_payload(session)
     session['steps'] = steps
     # Include live state if available
     agent_loop = request.app.state.agent_loop

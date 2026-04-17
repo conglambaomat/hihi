@@ -56,7 +56,11 @@ def _load_config(config_file: Path | None = None) -> dict:
 
     return {
         'llm': {
-            'provider': 'ollama',
+            'provider': 'openrouter',
+            'auto_failover': False,
+            'fallback_providers': [],
+            'openrouter_endpoint': 'https://openrouter.ai/api/v1',
+            'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
             'ollama_endpoint': 'http://localhost:11434',
             'ollama_model': 'llama3.1:8b',
             'groq_endpoint': 'https://api.groq.com/openai/v1',
@@ -321,6 +325,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
             agent_profiles=app.state.agent_profiles,
             workflow_registry=app.state.workflow_registry,
             governance_store=app.state.governance_store,
+            case_store=app.state.case_store,
         )
         logger.info("[WEB] AgentLoop initialized")
     except Exception as exc:
