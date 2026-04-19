@@ -1,1 +1,1 @@
-git init
+aider --gui --model openai/hello
