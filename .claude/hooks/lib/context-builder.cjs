@@ -101,7 +101,7 @@ function resolveSkillsVenv(configDirName = '.claude') {
   if (fs.existsSync(globalVenv)) {
     return isWindows
       ? '~\\.claude\\skills\\.venv\\Scripts\\python.exe'
-      : '~/.claude/skills/.venv/bin/python3';
+      : '~/.cursor/skills/.venv/bin/python3';
   }
   return null;
 }
@@ -362,7 +362,7 @@ function buildRulesSection({ devRulesPath, catalogScript, skillsVenv, plansPath,
   }
 
   if (skillsVenv) {
-    lines.push(`- Python scripts in .claude/skills/: Use \`${skillsVenv}\``);
+    lines.push(`- Python scripts in .cursor/skills/: Use \`${skillsVenv}\``);
   }
 
   lines.push(`- When skills' scripts are failed to execute, always fix them and run again, repeat until success.`);

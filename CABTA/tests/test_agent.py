@@ -178,6 +178,19 @@ class TestAgentState:
         agent_state.transition(AgentPhase.WAITING_HUMAN)
         assert agent_state.phase == AgentPhase.WAITING_HUMAN
 
+    def test_publication_fields_default_and_serialize(self, agent_state):
+        assert agent_state.snapshot_lifecycle is None
+        assert agent_state.is_published is False
+
+        agent_state.snapshot_lifecycle = "published"
+        agent_state.is_published = True
+
+        payload = agent_state.to_dict()
+
+        assert payload["snapshot_lifecycle"] == "published"
+        assert payload["is_published"] is True
+        assert payload["thread_id"] == agent_state.thread_id
+
     def test_valid_transition_waiting_human_to_thinking(self, agent_state):
         agent_state.transition(AgentPhase.THINKING)
         agent_state.transition(AgentPhase.WAITING_HUMAN)
@@ -3129,7 +3142,7 @@ class TestSettingsAPI:
                 if val and isinstance(val, str) and len(val) > 8:
                     assert "*" in val
 
-    def test_llm_health_reports_active_groq_provider(self):
+    def test_llm_health_normalizes_legacy_groq_config_to_openrouter(self):
         from starlette.testclient import TestClient
         from src.web.app import create_app
 
@@ -3152,9 +3165,9 @@ class TestSettingsAPI:
         resp = client.get("/api/config/llm-health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["provider"] == "groq"
+        assert data["provider"] == "openrouter"
         assert data["available"] is True
-        assert data["configured_model"] == "openai/gpt-oss-20b"
+        assert data["configured_model"] == "arcee-ai/trinity-large-preview:free"
 
     def test_llm_health_reports_active_openrouter_provider(self):
         from starlette.testclient import TestClient
@@ -3166,7 +3179,7 @@ class TestSettingsAPI:
             'llm': {
                 'provider': 'openrouter',
                 'openrouter_endpoint': 'https://openrouter.ai/api/v1',
-                'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
+                'openrouter_model': 'arcee-ai/trinity-large-preview:free',
             },
             'api_keys': {
                 **app.state.config.get('api_keys', {}),
@@ -3181,9 +3194,36 @@ class TestSettingsAPI:
         data = resp.json()
         assert data["provider"] == "openrouter"
         assert data["available"] is True
-        assert data["configured_model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+        assert data["configured_model"] == "arcee-ai/trinity-large-preview:free"
 
-    def test_llm_health_reports_active_gemini_provider(self):
+    def test_llm_health_normalizes_legacy_nvidia_config_to_openrouter(self):
+        from starlette.testclient import TestClient
+        from src.web.app import create_app
+
+        app = create_app()
+        app.state.config = {
+            **app.state.config,
+            'llm': {
+                'provider': 'nvidia',
+                'nvidia_endpoint': 'https://integrate.api.nvidia.com/v1',
+                'nvidia_model': 'deepseek-ai/deepseek-v3.2',
+            },
+            'api_keys': {
+                **app.state.config.get('api_keys', {}),
+                'nvidia': 'nvapi-runtime-key-abcdefghijklmnopqrstuvwxyz123456',
+            },
+        }
+        app.state.web_provider.config = app.state.config
+
+        client = TestClient(app)
+        resp = client.get("/api/config/llm-health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "openrouter"
+        assert data["available"] is True
+        assert data["configured_model"] == "arcee-ai/trinity-large-preview:free"
+
+    def test_llm_health_normalizes_legacy_gemini_config_to_openrouter(self):
         from starlette.testclient import TestClient
         from src.web.app import create_app
 
@@ -3206,11 +3246,11 @@ class TestSettingsAPI:
         resp = client.get("/api/config/llm-health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["provider"] == "gemini"
+        assert data["provider"] == "openrouter"
         assert data["available"] is True
-        assert data["configured_model"] == "gemini-3-flash-preview"
+        assert data["configured_model"] == "arcee-ai/trinity-large-preview:free"
 
-    def test_llm_health_reflects_runtime_provider_failure(self):
+    def test_llm_health_reflects_runtime_openrouter_failure(self):
         from starlette.testclient import TestClient
         from src.web.app import create_app
 
@@ -3218,21 +3258,21 @@ class TestSettingsAPI:
         app.state.config = {
             **app.state.config,
             'llm': {
-                'provider': 'groq',
-                'groq_endpoint': 'https://api.groq.com/openai/v1',
-                'groq_model': 'openai/gpt-oss-20b',
+                'provider': 'openrouter',
+                'openrouter_endpoint': 'https://openrouter.ai/api/v1',
+                'openrouter_model': 'arcee-ai/trinity-large-preview:free',
             },
             'api_keys': {
                 **app.state.config.get('api_keys', {}),
-                'groq': 'gsk-invalid',
+                'openrouter': 'sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456',
             },
         }
         app.state.web_provider.config = app.state.config
         app.state.agent_loop.provider_runtime_status = {
-            'provider': 'groq',
+            'provider': 'openrouter',
             'available': False,
             'status': 'error',
-            'error': 'Groq HTTP 401: invalid_api_key',
+            'error': 'OpenRouter HTTP 401: invalid_api_key',
             'http_status': 401,
             'checked_at': '2026-04-14T00:00:00+00:00',
         }
@@ -3242,7 +3282,7 @@ class TestSettingsAPI:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["provider"] == "groq"
+        assert data["provider"] == "openrouter"
         assert data["available"] is False
         assert data["status"] == "degraded"
         assert "latest live runtime call failed" in data["message"]
@@ -3271,7 +3311,7 @@ class TestSettingsAPI:
         resp = client.get("/api/config/ollama-health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["provider"] == "groq"
+        assert data["provider"] == "openrouter"
         assert data["available"] is True
         assert data["ollama_running"] is None
 
@@ -3341,7 +3381,7 @@ def _make_agent_loop(tmp_path, **overrides):
         "llm": {
             "provider": "ollama",
             "openrouter_endpoint": "https://openrouter.ai/api/v1",
-            "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "openrouter_model": "arcee-ai/trinity-large-preview:free",
             "ollama_endpoint": "http://localhost:11434",
             "ollama_model": "llama3.1:8b",
             "groq_endpoint": "https://api.groq.com/openai/v1",
@@ -3374,6 +3414,208 @@ class TestAgentLoop:
             session_id = await loop.investigate("Test goal")
         assert isinstance(session_id, str) and len(session_id) > 0
         assert session_id in loop._active_sessions
+
+    @pytest.mark.asyncio
+    async def test_investigate_restores_follow_up_context_from_parent_session(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        parent_session = loop.store.create_session(
+            goal="Investigate suspicious domain activity",
+            metadata={
+                "reasoning_state": {
+                    "session_id": "parent",
+                    "goal_focus": "account-securecheck.com",
+                    "status": "collecting_evidence",
+                    "hypotheses": [],
+                    "open_questions": ["Which registrar owns this domain?"],
+                    "missing_evidence": [],
+                    "recent_evidence_refs": [],
+                },
+                "entity_state": {
+                    "entities": {
+                        "domain:account-securecheck.com": {
+                            "id": "domain:account-securecheck.com",
+                            "type": "domain",
+                            "value": "account-securecheck.com",
+                            "label": "account-securecheck.com",
+                        }
+                    },
+                    "relationships": [],
+                    "observations": [],
+                },
+                "evidence_state": {"nodes": [], "edges": [], "timeline": []},
+            },
+        )
+        thread_id = loop.thread_store.create_thread(
+            root_session_id=parent_session,
+            status="active",
+        )
+        loop.store.update_session_metadata(
+            parent_session,
+            {
+                "thread_id": thread_id,
+                "chat_root_session_id": parent_session,
+            },
+            merge=True,
+        )
+        snapshot_id = loop.thread_store.update_thread_snapshot(
+            thread_id=thread_id,
+            last_session_id=parent_session,
+            thread_summary="The domain remains suspicious but registrar ownership is unresolved.",
+            pinned_entities=["domain:account-securecheck.com"],
+            pinned_questions=["Which registrar owns this domain?"],
+            snapshot={
+                "investigation_plan": {
+                    "goal": "Investigate suspicious domain activity",
+                    "lane": "ioc",
+                    "workflow_id": None,
+                    "lead_profile": "investigator",
+                    "primary_entities": ["domain"],
+                    "initial_hypotheses": [
+                        "The domain is malicious infrastructure.",
+                        "The domain is benign or lacks enough context.",
+                    ],
+                    "first_pivots": ["Pivot on registrar", "Check linked infrastructure"],
+                    "stopping_conditions": ["Sufficient supporting evidence"],
+                    "escalation_conditions": ["High-confidence malicious finding"],
+                    "generated_at": "2026-04-19T00:00:00+00:00",
+                },
+                "reasoning_state": {
+                    "session_id": "parent",
+                    "goal_focus": "account-securecheck.com",
+                    "status": "collecting_evidence",
+                    "hypotheses": [],
+                    "open_questions": ["Which registrar owns this domain?"],
+                    "missing_evidence": [],
+                    "recent_evidence_refs": [],
+                },
+                "entity_state": {
+                    "entities": {
+                        "domain:account-securecheck.com": {
+                            "id": "domain:account-securecheck.com",
+                            "type": "domain",
+                            "value": "account-securecheck.com",
+                            "label": "account-securecheck.com",
+                        }
+                    },
+                    "relationships": [],
+                    "observations": [],
+                },
+                "evidence_state": {"nodes": [], "edges": [], "timeline": []},
+                "active_observations": [
+                    {
+                        "observation_id": "obs-parent-1",
+                        "observation_type": "ioc_enrichment",
+                        "summary": "Domain enrichment suggests suspicious registration patterns.",
+                    }
+                ],
+                "accepted_facts": [
+                    {
+                        "observation_id": "obs-parent-1",
+                        "summary": "The domain has suspicious registration characteristics.",
+                    }
+                ],
+                "unresolved_questions": ["Which registrar owns this domain?"],
+                "evidence_quality_summary": {
+                    "observation_count": 1,
+                    "average_quality": 0.66,
+                    "high_quality_count": 0,
+                },
+            },
+            status="active",
+        )
+
+        with patch.object(loop, "_run_loop", new_callable=AsyncMock):
+            session_id = await loop.investigate(
+                "Explain the current evidence for this domain.",
+                metadata={
+                    "chat_mode": True,
+                    "response_style": "conversational",
+                    "chat_user_message": "Explain the current evidence for this domain.",
+                    "chat_parent_session_id": parent_session,
+                },
+            )
+
+        state = loop._active_sessions[session_id]
+        session = loop.store.get_session(session_id)
+        assert state.findings == []
+        assert state.step_count == 0
+        assert state.reasoning_state["session_id"] == session_id
+        assert state.reasoning_state["goal_focus"] == "account-securecheck.com"
+        assert state.entity_state["entities"]["domain:account-securecheck.com"]["value"] == "account-securecheck.com"
+        assert state.investigation_plan["lane"] == "ioc"
+        assert state.accepted_facts[0]["observation_id"] == "obs-parent-1"
+        assert session["metadata"]["chat_context_restored"] is True
+        assert session["metadata"]["chat_context_restored_from_session_id"] == parent_session
+        assert session["metadata"]["chat_context_restored_from_thread_id"] == thread_id
+        assert session["metadata"]["chat_context_restored_snapshot_id"] == snapshot_id
+        assert session["metadata"]["chat_context_restored_findings"] == 0
+        assert session["metadata"]["chat_context_restored_source"] == "thread_snapshot"
+
+    @pytest.mark.asyncio
+    async def test_investigate_restores_follow_up_context_from_case_memory_snapshot(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        parent_session = loop.store.create_session(
+            goal="Investigate suspicious sign-in activity",
+            metadata={"thread_id": "missing-thread"},
+        )
+
+        with patch.object(loop, "_run_loop", new_callable=AsyncMock):
+            session_id = await loop.investigate(
+                "Explain why the user session looks suspicious.",
+                metadata={
+                    "chat_mode": True,
+                    "response_style": "conversational",
+                    "chat_user_message": "Explain why the user session looks suspicious.",
+                    "chat_parent_session_id": parent_session,
+                    "case_memory_context": {
+                        "case_id": "CASE-7",
+                        "latest_session_id": "case-memory-session",
+                        "accepted_snapshot": {
+                            "investigation_plan": {
+                                "goal": "Investigate suspicious sign-in activity",
+                                "lane": "log_identity",
+                                "workflow_id": "full-investigation",
+                                "lead_profile": "investigator",
+                                "primary_entities": ["user", "session", "host"],
+                                "initial_hypotheses": ["Credential misuse occurred."],
+                                "first_pivots": ["Review auth telemetry"],
+                                "stopping_conditions": ["Enough evidence"],
+                                "escalation_conditions": ["Need approval"],
+                                "generated_at": "2026-04-19T00:00:00+00:00",
+                            },
+                            "reasoning_state": {
+                                "session_id": "case-memory-session",
+                                "goal_focus": "alice",
+                                "status": "collecting_evidence",
+                                "open_questions": ["Which host executed the suspicious session?"],
+                            },
+                            "entity_state": {
+                                "entities": {
+                                    "user:alice": {
+                                        "id": "user:alice",
+                                        "type": "user",
+                                        "value": "alice",
+                                        "label": "alice",
+                                    }
+                                },
+                                "relationships": [],
+                                "observations": [],
+                            },
+                            "evidence_state": {"nodes": [], "edges": [], "timeline": []},
+                            "accepted_facts": [{"summary": "Alice authenticated from an unusual source IP."}],
+                            "unresolved_questions": ["Which host executed the suspicious session?"],
+                        },
+                    },
+                },
+            )
+
+        state = loop._active_sessions[session_id]
+        session = loop.store.get_session(session_id)
+        assert state.reasoning_state["goal_focus"] == "alice"
+        assert state.entity_state["entities"]["user:alice"]["value"] == "alice"
+        assert state.accepted_facts[0]["summary"] == "Alice authenticated from an unusual source IP."
+        assert session["metadata"]["chat_context_restored_snapshot_id"] == "case-memory-session"
+        assert session["metadata"]["chat_context_restored_source"] == "case_memory"
 
     @pytest.mark.asyncio
     async def test_investigate_initializes_multi_agent_team_for_workflow(self, tmp_path, agent_profiles, workflow_registry):
@@ -3448,15 +3690,13 @@ class TestAgentLoop:
         state.step_count = 3
         loop._sync_specialist_progress(session_id, state, reason="Phase progression")
 
-        assert state.active_specialist == "investigator"
-        assert len(state.specialist_handoffs) == 1
-        assert state.specialist_handoffs[0]["from_profile"] == "triage"
-        assert state.specialist_handoffs[0]["to_profile"] == "investigator"
+        assert state.active_specialist == "triage"
+        assert state.specialist_handoffs == []
         session = loop.store.get_session(session_id)
-        assert session["metadata"]["active_specialist"] == "investigator"
+        assert session["metadata"]["active_specialist"] == "triage"
         tasks = loop.store.list_specialist_tasks(session_id)
-        assert tasks[0]["status"] == "completed"
-        assert tasks[1]["status"] == "active"
+        assert tasks[0]["status"] == "active"
+        assert tasks[1]["status"] == "planned"
 
     @pytest.mark.asyncio
     async def test_run_playbook_preserves_case_context_and_marks_subworkflow_started(self, tmp_path):
@@ -3524,6 +3764,36 @@ class TestAgentLoop:
         assert result["session_id"] == "s1"
         assert result["goal"] == "test"
 
+    def test_normalize_terminal_snapshot_publication_defaults_completed_session_to_candidate_without_authoritative_reasoning(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.phase = AgentPhase.COMPLETED
+
+        loop._normalize_terminal_snapshot_publication(state)
+
+        assert state.snapshot_lifecycle == "candidate"
+        assert state.is_published is False
+
+    def test_normalize_terminal_snapshot_publication_promotes_completed_published_session(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.phase = AgentPhase.COMPLETED
+        state.is_published = True
+
+        loop._normalize_terminal_snapshot_publication(state)
+
+        assert state.snapshot_lifecycle == "published"
+
+    def test_normalize_terminal_snapshot_publication_preserves_explicit_lifecycle(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.phase = AgentPhase.COMPLETED
+        state.snapshot_lifecycle = "candidate"
+        state.is_published = True
+
+        loop._normalize_terminal_snapshot_publication(state)
+
+        assert state.snapshot_lifecycle == "candidate"
 
     # ---- subscribe returns a queue ----------------------------------- #
     def test_subscribe_returns_queue(self, tmp_path):
@@ -3705,6 +3975,52 @@ class TestAgentLoop:
         assert decision["tool"] == "correlate_findings"
         assert isinstance(decision["params"]["findings"], list)
 
+    def test_runtime_status_for_provider_falls_back_to_legacy_runtime_status(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.provider_runtime_status = {
+            "provider": "openrouter",
+            "available": False,
+            "checked_at": "2026-04-20T00:00:00+00:00",
+            "error": "timeout",
+        }
+        loop.provider_health_service.provider_runtime_statuses.clear()
+
+        status = loop._runtime_status_for_provider("openrouter")
+
+        assert status["provider"] == "openrouter"
+        assert status["available"] is False
+        assert status["error"] == "timeout"
+
+    def test_provider_is_recently_unavailable_uses_cooldown_window(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.llm_unavailable_cooldown_seconds = 60.0
+        loop.provider_health_service.record_runtime_status(
+            provider="openrouter",
+            available=False,
+            error="timeout",
+        )
+
+        assert loop._provider_is_recently_unavailable("openrouter") is True
+
+        loop.provider_health_service.provider_runtime_statuses["openrouter"]["checked_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=120)
+        ).isoformat()
+
+        assert loop._provider_is_recently_unavailable("openrouter") is False
+
+    def test_candidate_providers_syncs_runtime_config_into_provider_health_service(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.provider = "OpenRouter"
+        loop.auto_failover = True
+        loop.fallback_providers = ["groq", "gemini", "  "]
+
+        candidates = loop._candidate_providers()
+
+        assert candidates[0] == "openrouter"
+        assert loop.provider_health_service.primary_provider == "openrouter"
+        assert loop.provider_health_service.auto_failover is True
+        assert loop.provider_health_service.fallback_providers == ["groq", "gemini", "openrouter"]
+
     def test_chat_prefers_direct_response_without_observable(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         session_id = loop.store.create_session(
@@ -3721,6 +4037,146 @@ class TestAgentLoop:
 
         state.goal = "Hay dieu tra nhanh domain account-securecheck.com"
         assert loop._chat_prefers_direct_response(state) is False
+
+    def test_chat_follow_up_from_restored_context_prefers_model_written_answer(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Continue the previous analyst conversation about the security investigation.",
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_context_restored": True,
+                "chat_user_message": "Giai thich vi sao ban ket luan domain nay doc hai.",
+                "chat_parent_session_id": "parent-session",
+                "chat_follow_up_requires_fresh_evidence": False,
+            },
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Continue the previous analyst conversation about the security investigation.",
+            max_steps=4,
+        )
+        state.findings = [
+            {
+                "type": "tool_result",
+                "tool": "investigate_ioc",
+                "result": {
+                    "ioc": "account-securecheck.com",
+                    "verdict": "MALICIOUS",
+                    "threat_score": 100,
+                },
+            },
+            {
+                "type": "tool_result",
+                "tool": "osint-tools.whois_lookup",
+                "result": {
+                    "result": {
+                        "target": "account-securecheck.com",
+                        "creation_date": "2026-04-10",
+                        "registrar": "RegistrarX",
+                    }
+                },
+            },
+        ]
+        state.reasoning_state = {
+            "goal_focus": "account-securecheck.com",
+            "status": "sufficient_evidence",
+            "hypotheses": [],
+            "open_questions": [],
+        }
+        state.agentic_explanation = {
+            "root_cause_assessment": {
+                "summary": "Primary investigative hypothesis: the domain is malicious infrastructure.",
+                "status": "supported",
+            },
+            "missing_evidence": [],
+        }
+
+        decision = loop._chat_short_circuit_decision(state)
+
+        assert decision is None
+        assert loop._chat_should_force_model_answer_without_tools(state) is True
+
+    def test_reasoning_guided_next_action_prefers_search_logs_for_entity_gap(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        async def search_logs(**kwargs):
+            return {"status": "manual_lookup_required"}
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "string"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        session_id = loop.store.create_session(
+            goal="Investigate suspicious user session activity",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(session_id=session_id, goal="Investigate suspicious user session activity")
+        state.findings = [
+            {"type": "tool_result", "tool": "investigate_ioc", "result": {"ioc": "185.220.101.45", "verdict": "SUSPICIOUS"}}
+        ]
+        state.reasoning_state = {
+            "goal_focus": "185.220.101.45",
+            "status": "collecting_evidence",
+            "hypotheses": [],
+            "open_questions": ["Which user is associated with the suspicious IP activity?"],
+        }
+        state.agentic_explanation = {"missing_evidence": ["Need host and user telemetry."]}
+
+        decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "search_logs"
+        assert decision["decision_source"] == "telemetry_gap_log_pivot"
+        assert decision["plan_lane"] == ""
+        assert decision["focus"] == "185.220.101.45"
+        assert "Which user is associated with the suspicious IP activity?" in decision["question_bundle"]
+        assert "Need host and user telemetry." in decision["question_bundle"]
+        assert "telemetry" in decision["reasoning"].lower()
+        assert "185.220.101.45" in decision["params"]["query"]
+        assert state.reasoning_state["last_log_query_plan"]["focus"] == "185.220.101.45"
+        assert state.reasoning_state["last_log_query_plan"]["pivot_sequence"]
+
+    def test_consume_pending_thread_command_updates_chat_context(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Investigate suspicious domain activity",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        thread_id = loop.thread_store.create_thread(
+            root_session_id=session_id,
+            status="active",
+        )
+        loop.store.update_session_metadata(session_id, {"thread_id": thread_id}, merge=True)
+
+        state = AgentState(
+            session_id=session_id,
+            goal="Investigate suspicious domain activity",
+            thread_id=thread_id,
+        )
+        state.reasoning_state = {"open_questions": ["What is the registrar?"]}
+        state.unresolved_questions = ["What is the registrar?"]
+
+        command_id = loop.thread_store.enqueue_command(
+            thread_id=thread_id,
+            session_id=session_id,
+            intent="new_pivot",
+            content="Pivot on the registrar tied to the domain.",
+            payload={"requires_fresh_evidence": True},
+        )
+
+        assert loop._consume_pending_thread_command(session_id, state) is True
+
+        session = loop.store.get_session(session_id)
+        metadata = session["metadata"]
+        assert metadata["chat_user_message"] == "Pivot on the registrar tied to the domain."
+        assert metadata["chat_intent"] == "new_pivot"
+        assert metadata["chat_follow_up_requires_fresh_evidence"] is True
+        assert state.unresolved_questions[0] == "Pivot on the registrar tied to the domain."
+        completed = loop.thread_store.list_commands(thread_id, statuses=("completed",))
+        assert any(item["id"] == command_id and item["status"] == "completed" for item in completed)
 
     def test_think_chat_capability_question_returns_direct_answer_without_tools(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -3793,9 +4249,152 @@ class TestAgentLoop:
 
         assert decision["action"] == "final_answer"
         assert decision["verdict"] == "UNKNOWN"
-        assert "LLM is currently unavailable" in decision["answer"]
-        assert "quota exceeded" in decision["answer"]
+        assert "did not fall back to another model" in decision["answer"]
+        assert "rate limit" in decision["answer"].lower()
         assert "Please share a concrete IOC" in decision["answer"]
+
+    def test_fallback_decision_without_llm_for_chat_with_findings_builds_evidence_backed_answer(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.provider = "nvidia"
+        session_id = loop.store.create_session(
+            goal="Why do you think 8.8.8.8 is clean?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Why do you think 8.8.8.8 is clean?",
+            max_steps=4,
+        )
+        state.step_count = 3
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "investigate_ioc",
+            "result": {"ioc": "8.8.8.8", "verdict": "CLEAN", "threat_score": 10},
+        })
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "correlate_findings",
+            "result": {"severity": "medium", "statistics": {"unique_iocs": 1}},
+        })
+        loop.provider_runtime_status = {
+            "provider": "nvidia",
+            "available": False,
+            "error": "NVIDIA Build direct chat request timed out after 8s",
+        }
+
+        decision = loop._fallback_decision_without_llm(state)
+
+        assert decision["action"] == "final_answer"
+        assert decision["verdict"] == "CLEAN"
+        assert "did not fall back to another model" in decision["answer"]
+        assert "Evidence-backed outcome: CLEAN" in decision["answer"]
+        assert "8.8.8.8 classified as CLEAN with threat_score=10." in decision["answer"]
+        assert "Key evidence:" in decision["answer"]
+
+    @pytest.mark.asyncio
+    async def test_think_skips_model_only_chat_retry_while_provider_is_in_cooldown(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Hello, what can you help me investigate in SOC workflows?",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Hello, what can you help me investigate in SOC workflows?",
+            max_steps=4,
+        )
+        loop.provider = "nvidia"
+        loop.provider_runtime_status = {
+            "provider": "nvidia",
+            "available": False,
+            "error": "NVIDIA Build direct chat request timed out after 8s",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock) as chat_with_tools:
+            decision = await loop._think(state)
+
+        chat_with_tools.assert_not_called()
+        assert decision["action"] == "final_answer"
+        assert "did not fall back to another model" in decision["answer"]
+
+    @pytest.mark.asyncio
+    async def test_think_replaces_hidden_tool_choice_for_lightweight_chat(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def investigate_ioc(**kwargs):
+            return {"verdict": "UNKNOWN"}
+
+        async def create_case(**kwargs):
+            return {"status": "created"}
+
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="analysis",
+            executor=investigate_ioc,
+        )
+        loop.tools.register_local_tool(
+            name="create_case",
+            description="Create case",
+            parameters={"properties": {"title": {"type": "string"}}},
+            category="case_management",
+            executor=create_case,
+        )
+
+        session_id = loop.store.create_session(
+            goal="Check 8.8.8.8 and tell me if it looks suspicious.",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Check 8.8.8.8 and tell me if it looks suspicious.",
+            max_steps=4,
+        )
+
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value='{"action":"use_tool","tool":"create_case","params":{"title":"Unexpected case"}}',
+        ):
+            decision = await loop._think(state)
+
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "investigate_ioc"
+        assert decision["params"] == {"ioc": "8.8.8.8"}
+        assert "Sanitized an out-of-policy LLM tool selection" in decision["reasoning"]
+
+    def test_filter_tools_for_lightweight_chat_excludes_case_management_tools(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.tools.register_default_tools({})
+        session_id = loop.store.create_session(
+            goal="Investigate 8.8.8.8 and tell me if it looks suspicious.",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Investigate 8.8.8.8 and tell me if it looks suspicious.",
+        )
+
+        filtered = loop._filter_tools_for_goal(
+            loop.tools.get_tools_for_llm(),
+            state.goal,
+            state,
+        )
+        names = {
+            tool.get("function", {}).get("name")
+            for tool in filtered
+        }
+
+        assert "extract_iocs" in names
+        assert "correlate_findings" in names
+        assert "create_case" not in names
+        assert "get_case_context" not in names
+        assert "add_case_note" not in names
+        assert "link_case_analysis" not in names
+        assert "update_case_status" not in names
 
     def test_domain_auto_enrichment_uses_fast_correct_contracts(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -3843,6 +4442,80 @@ class TestAgentLoop:
         result = await loop._act(state, decision)
         assert result == {"clean": True}
 
+    @pytest.mark.asyncio
+    async def test_run_loop_pivots_when_llm_repeats_same_tool(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(goal="Investigate repeated pivot handling")
+        state = AgentState(session_id=session_id, goal="Investigate repeated pivot handling", max_steps=4)
+        loop._active_sessions[session_id] = state
+        loop._approval_events[session_id] = None
+
+        async def primary_executor(**kwargs):
+            return {"verdict": "SUSPICIOUS"}
+
+        async def alternate_executor(**kwargs):
+            return {"results_count": 1, "status": "manual_lookup_required"}
+
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="analysis",
+            executor=primary_executor,
+        )
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "string"}}},
+            category="siem",
+            executor=alternate_executor,
+        )
+
+        with patch.object(
+            loop,
+            "_think",
+            new_callable=AsyncMock,
+            side_effect=[
+                {
+                    "action": "use_tool",
+                    "tool": "investigate_ioc",
+                    "params": {"ioc": "185.220.101.45"},
+                    "reasoning": "Need initial verdict.",
+                },
+                {
+                    "action": "use_tool",
+                    "tool": "investigate_ioc",
+                    "params": {"ioc": "185.220.101.45"},
+                    "reasoning": "LLM repeated the same tool.",
+                },
+                {
+                    "action": "final_answer",
+                    "answer": "Enough evidence collected.",
+                    "verdict": "SUSPICIOUS",
+                    "reasoning": "Done.",
+                },
+            ],
+        ), patch.object(
+            loop,
+            "_reasoning_guided_next_action",
+            return_value={
+                "action": "use_tool",
+                "tool": "search_logs",
+                "params": {"query": "Investigate 185.220.101.45. Which user is associated with the suspicious IP activity?"},
+                "reasoning": "Pivot into telemetry instead of repeating the same IOC lookup.",
+            },
+        ) as guided, patch.object(
+            loop,
+            "_generate_summary",
+            new_callable=AsyncMock,
+            return_value="done",
+        ):
+            await loop._run_loop(session_id)
+
+        findings = loop.store.get_session(session_id)["findings"]
+        assert any(item.get("tool") == "search_logs" for item in findings if item.get("type") == "tool_result")
+        assert guided.called
+
     # ---- _generate_summary with final_answer finding ----------------- #
     @pytest.mark.asyncio
     async def test_generate_summary(self, tmp_path):
@@ -3861,6 +4534,29 @@ class TestAgentLoop:
         state.add_finding({"type": "final_answer", "answer": "Awaiting more evidence", "verdict": "CLEAN"})
         summary = await loop._generate_summary(state)
         assert summary == "Awaiting more evidence"
+
+    @pytest.mark.asyncio
+    async def test_generate_summary_does_not_prefix_unavailable_chat_warning_with_verdict(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="s1", goal="test")
+        state.add_finding({"type": "tool_result", "tool": "investigate_ioc", "result": {"verdict": "CLEAN"}})
+        state.add_finding({
+            "type": "final_answer",
+            "answer": (
+                "NVIDIA Build model deepseek-ai/deepseek-v3.2 is currently unavailable "
+                "(NVIDIA Build direct chat request timed out after 8s). "
+                "CABTA did not fall back to another model. "
+                "Evidence-backed outcome: CLEAN. "
+                "Key evidence: 8.8.8.8 classified as CLEAN with threat_score=10. "
+                "This summary was generated directly from the collected evidence so the analyst can continue without losing context."
+            ),
+            "verdict": "CLEAN",
+        })
+
+        summary = await loop._generate_summary(state)
+
+        assert not summary.startswith("[CLEAN]")
+        assert "Evidence-backed outcome: CLEAN" in summary
 
     # ---- _generate_summary fallback when LLM fails ------------------- #
     @pytest.mark.asyncio
@@ -3944,9 +4640,10 @@ class TestAgentLoop:
 
         assert decision["action"] == "final_answer"
         assert decision["verdict"] == "MALICIOUS"
+        assert "did not fall back to another model" in decision["answer"]
         assert "Evidence-backed outcome: MALICIOUS" in decision["answer"]
         assert "domain age is 6 days" in decision["answer"]
-        assert "quota exceeded" in decision["answer"]
+        assert "rate limit" in decision["answer"].lower()
 
     def test_guess_tool_params_prefers_new_analyst_request_in_follow_up_context(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -4030,7 +4727,7 @@ class TestAgentLoop:
                 "llm": {
                     "provider": "openrouter",
                     "openrouter_endpoint": "https://openrouter.ai/api/v1",
-                    "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "openrouter_model": "arcee-ai/trinity-large-preview:free",
                 },
                 "api_keys": {
                     "openrouter": "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456",
@@ -4042,8 +4739,166 @@ class TestAgentLoop:
         )
         assert loop.provider == "openrouter"
         assert loop.openrouter_key == "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456"
-        assert loop.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
+        assert loop.openrouter_model == "arcee-ai/trinity-large-preview:free"
         assert loop.openrouter_endpoint == "https://openrouter.ai/api/v1"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_uses_native_tool_payload_by_default(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "openrouter",
+                    "openrouter_endpoint": "https://openrouter.ai/api/v1",
+                    "openrouter_model": "arcee-ai/trinity-large-preview:free",
+                },
+                "api_keys": {"openrouter": "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456"},
+            },
+        )
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="analysis",
+            executor=AsyncMock(return_value={"verdict": "UNKNOWN"}),
+        )
+        state = AgentState(session_id="s-openrouter", goal="Investigate 8.8.8.8", max_steps=4)
+
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value={
+                "tool_calls": [{
+                    "function": {
+                        "name": "investigate_ioc",
+                        "arguments": "{\"ioc\":\"8.8.8.8\"}",
+                    }
+                }]
+            },
+        ) as chat_with_tools:
+            decision = await loop._think(state)
+
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "investigate_ioc"
+        assert decision["params"] == {"ioc": "8.8.8.8"}
+        assert chat_with_tools.await_args.kwargs["tools_json"]
+        assert (
+            chat_with_tools.await_args.kwargs["tools_json"][0]["function"]["name"]
+            == "investigate_ioc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_openrouter_can_force_legacy_json_planning(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "openrouter",
+                    "openrouter_endpoint": "https://openrouter.ai/api/v1",
+                    "openrouter_model": "arcee-ai/trinity-large-preview:free",
+                    "openrouter_force_json_decision_mode": True,
+                },
+                "api_keys": {"openrouter": "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456"},
+            },
+        )
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="analysis",
+            executor=AsyncMock(return_value={"verdict": "UNKNOWN"}),
+        )
+        state = AgentState(session_id="s-openrouter-json", goal="Investigate 8.8.8.8", max_steps=4)
+
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value='{"action":"use_tool","tool":"investigate_ioc","params":{"ioc":"8.8.8.8"},"reasoning":"json plan"}',
+        ) as chat_with_tools:
+            decision = await loop._think(state)
+
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "investigate_ioc"
+        assert decision["params"] == {"ioc": "8.8.8.8"}
+        assert chat_with_tools.await_args.kwargs["tools_json"] == []
+
+    @pytest.mark.asyncio
+    async def test_openrouter_model_only_chat_uses_direct_answer_prompt(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "openrouter",
+                    "openrouter_endpoint": "https://openrouter.ai/api/v1",
+                    "openrouter_model": "arcee-ai/trinity-large-preview:free",
+                },
+                "api_keys": {"openrouter": "sk-or-v1-runtime-key-abcdefghijklmnopqrstuvwxyz123456"},
+            },
+        )
+        session_id = loop.store.create_session(
+            goal="Check 8.8.8.8 and tell me if it looks suspicious.",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Check 8.8.8.8 and tell me if it looks suspicious.",
+            max_steps=4,
+        )
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "investigate_ioc",
+            "result": {"ioc": "8.8.8.8", "verdict": "CLEAN", "threat_score": 10},
+        })
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "correlate_findings",
+            "result": {"severity": "medium", "statistics": {"unique_iocs": 1}},
+        })
+
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value="8.8.8.8 looks clean based on the current evidence.",
+        ) as chat_with_tools:
+            decision = await loop._think(state)
+
+        assert decision["action"] == "final_answer"
+        assert decision["verdict"] == "CLEAN"
+        assert "looks clean" in decision["answer"].lower()
+        assert chat_with_tools.await_args.kwargs["tools_json"] == []
+        prompt = chat_with_tools.await_args.args[0][0]["content"]
+        assert "Answer the analyst directly in natural language" in prompt
+        assert "Do not output JSON." in prompt
+        assert "Respond in JSON" not in prompt
+
+    def test_nvidia_provider_config(self, tmp_path):
+        loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {
+                    "provider": "nvidia",
+                    "nvidia_endpoint": "https://integrate.api.nvidia.com/v1",
+                    "nvidia_model": "deepseek-ai/deepseek-v3.2",
+                    "auto_failover": True,
+                    "fallback_providers": ["groq"],
+                },
+                "api_keys": {
+                    "nvidia": "nvapi-runtime-key-abcdefghijklmnopqrstuvwxyz123456",
+                    "anthropic": "",
+                    "groq": "gsk_runtime_key_abcdefghijklmnopqrstuvwxyz123456",
+                    "gemini": "",
+                    "openrouter": "",
+                },
+            },
+        )
+        assert loop.provider == "nvidia"
+        assert loop.nvidia_key == "nvapi-runtime-key-abcdefghijklmnopqrstuvwxyz123456"
+        assert loop.nvidia_model == "deepseek-ai/deepseek-v3.2"
+        assert loop.nvidia_endpoint == "https://integrate.api.nvidia.com/v1"
+        assert loop._candidate_providers() == ["nvidia"]
 
     # ---- _parse_tool_call_response ----------------------------------- #
     def test_parse_tool_call_response(self, tmp_path):

@@ -24,21 +24,14 @@ The system combines deterministic scoring, analyst-facing evidence, optional loc
 
 ## Mandatory Reading Before Work
 
-Always read these first:
+**Start with [`docs/ONBOARDING.md`](docs/ONBOARDING.md)** — single read order and task-specific short lists (do not load every long doc for every task).
 
-1. `README.md`
-2. `docs/project-overview-pdr.md`
-3. `docs/system-design.md`
-4. `docs/codebase-summary.md`
-5. `docs/code-standards.md`
-6. `docs/feature-truth-matrix.md` for runtime-sensitive, demo-sensitive, or integration-sensitive work
-7. `TEST-MANIFEST.md`
-8. Relevant files under `plans/` if the task already has a plan
+Minimum invariants (also in `docs/ONBOARDING.md`):
 
-If the task is architecture-heavy, also read:
+- **Verdicts and scores:** deterministic CABTA scoring and evidence paths are authoritative; LLMs do not replace them as the source of truth for final verdict output.
+- **Sensitive / integration work:** read [`docs/feature-truth-matrix.md`](docs/feature-truth-matrix.md) before claiming runtime or wiring behavior.
 
-- `docs/future-system-roadmap.md`
-- `docs/vibe-coding-operating-model.md`
+Architecture detail lives in [`docs/system-design.md`](docs/system-design.md) — do not duplicate it in chat; link it.
 
 Unless the task is explicitly UI-visual, do not spend time reading `docs/screenshots/`.
 Treat screenshots as visual reference material, not architectural truth.
@@ -141,9 +134,8 @@ Update docs when you change:
 - scoring logic
 - setup or test procedure
 
-At minimum, review:
+At minimum, review (see [`docs/ONBOARDING.md`](docs/ONBOARDING.md) for task-specific lists):
 
-- `README.md`
 - `docs/system-design.md`
 - `docs/codebase-summary.md`
 - `TEST-MANIFEST.md`

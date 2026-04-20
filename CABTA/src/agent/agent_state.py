@@ -56,6 +56,15 @@ class AgentState:
     active_specialist: Optional[str] = None
     specialist_index: int = 0
     specialist_handoffs: List[Dict[str, Any]] = field(default_factory=list)
+    investigation_plan: Dict[str, Any] = field(default_factory=dict)
+    session_snapshot_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    snapshot_lifecycle: Optional[str] = None
+    is_published: bool = False
+    active_observations: List[Dict[str, Any]] = field(default_factory=list)
+    accepted_facts: List[Dict[str, Any]] = field(default_factory=list)
+    unresolved_questions: List[str] = field(default_factory=list)
+    evidence_quality_summary: Dict[str, Any] = field(default_factory=dict)
     reasoning_state: Dict[str, Any] = field(default_factory=dict)
     entity_state: Dict[str, Any] = field(default_factory=dict)
     evidence_state: Dict[str, Any] = field(default_factory=dict)
@@ -159,6 +168,15 @@ class AgentState:
             "active_specialist": self.active_specialist,
             "specialist_index": self.specialist_index,
             "specialist_handoffs": self.specialist_handoffs,
+            "investigation_plan": self.investigation_plan,
+            "session_snapshot_id": self.session_snapshot_id,
+            "thread_id": self.thread_id,
+            "snapshot_lifecycle": self.snapshot_lifecycle,
+            "is_published": self.is_published,
+            "active_observations": self.active_observations,
+            "accepted_facts": self.accepted_facts,
+            "unresolved_questions": self.unresolved_questions,
+            "evidence_quality_summary": self.evidence_quality_summary,
             "reasoning_state": self.reasoning_state,
             "entity_state": self.entity_state,
             "evidence_state": self.evidence_state,

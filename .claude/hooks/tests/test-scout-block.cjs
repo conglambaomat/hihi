@@ -119,7 +119,7 @@ const testCases = [
   // .venv (with dot)
   {
     name: '[#265] Bash: Unix .venv python executable',
-    input: { tool_name: 'Bash', tool_input: { command: '~/.claude/skills/.venv/bin/python3 script.py' } },
+    input: { tool_name: 'Bash', tool_input: { command: '~/.cursor/skills/.venv/bin/python3 script.py' } },
     expected: 'ALLOWED'
   },
   {

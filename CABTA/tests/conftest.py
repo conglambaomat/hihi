@@ -39,6 +39,7 @@ def mock_config():
             'ip2proxy': '',
             'anthropic': '',
             'groq': '',
+            'openrouter': '',
         },
         'rate_limits': {
             'virustotal': {'requests_per_minute': 4},

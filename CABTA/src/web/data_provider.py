@@ -101,7 +101,9 @@ class WebDataProvider:
         )
 
     def feature_status(self, app: Any) -> Dict[str, Dict[str, Any]]:
-        cfg = self.config or {}
+        from ..utils.config import enforce_openrouter_only
+
+        cfg = enforce_openrouter_only(self.config or {})
         llm = cfg.get("llm", {})
         analysis = cfg.get("analysis", {})
         agent_enabled = bool(getattr(app.state, "agent_loop", None))
@@ -116,30 +118,10 @@ class WebDataProvider:
 
         if not provider:
             llm_status = {"status": "disabled", "label": "Disabled"}
-        elif provider == "openrouter":
+        else:
             llm_status = {
                 "status": "configured" if self._has_api_key("openrouter") else "degraded",
                 "label": "OpenRouter" if self._has_api_key("openrouter") else "OpenRouter (key missing)",
-            }
-        elif provider == "groq":
-            llm_status = {
-                "status": "configured" if self._has_api_key("groq") else "degraded",
-                "label": "Groq" if self._has_api_key("groq") else "Groq (key missing)",
-            }
-        elif provider == "anthropic":
-            llm_status = {
-                "status": "configured" if self._has_api_key("anthropic") else "degraded",
-                "label": "Anthropic" if self._has_api_key("anthropic") else "Anthropic (key missing)",
-            }
-        elif provider == "gemini":
-            llm_status = {
-                "status": "configured" if self._has_api_key("gemini") else "degraded",
-                "label": "Gemini" if self._has_api_key("gemini") else "Gemini (key missing)",
-            }
-        else:
-            llm_status = {
-                "status": "configured" if llm.get("ollama_endpoint") or llm.get("base_url") else "degraded",
-                "label": "Ollama",
             }
 
         sandbox_enabled = bool(
@@ -417,8 +399,8 @@ class WebDataProvider:
         )
         context = {
             "request": request,
-            "product_name": "AISA",
-            "product_full_name": "AI Security Assistant",
+            "product_name": "CABTA",
+            "product_full_name": "Cyan Agent Blue Team Assistant",
             "app_mode": self.app_mode(),
             "demo_enabled": self.is_demo_mode(),
             "feature_status": self.feature_status(app),

@@ -17,11 +17,11 @@ Centralized environment variable resolver that follows Claude Code's hierarchy.
 ### Priority Order (Highest to Lowest)
 
 1. **process.env** - Runtime environment variables (HIGHEST)
-2. **PROJECT/.claude/skills/\<skill\>/.env** - Project skill-specific
-3. **PROJECT/.claude/skills/.env** - Project shared across skills
+2. **PROJECT/.cursor/skills/\<skill\>/.env** - Project skill-specific
+3. **PROJECT/.cursor/skills/.env** - Project shared across skills
 4. **PROJECT/.claude/.env** - Project global defaults
-5. **~/.claude/skills/\<skill\>/.env** - User skill-specific
-6. **~/.claude/skills/.env** - User shared across skills
+5. **~/.cursor/skills/\<skill\>/.env** - User skill-specific
+6. **~/.cursor/skills/.env** - User shared across skills
 7. **~/.claude/.env** - User global defaults (LOWEST)
 
 ### CLI Usage

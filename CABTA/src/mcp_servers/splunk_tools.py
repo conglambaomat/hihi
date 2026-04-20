@@ -50,7 +50,7 @@ def _request(path: str, *, method: str = "GET", data: Dict[str, Any] | None = No
         headers={
             "Authorization": f"Bearer {SPLUNK_TOKEN}",
             "Accept": "application/json",
-            "User-Agent": "AISA-Splunk-MCP/1.0",
+            "User-Agent": "CABTA-Splunk-MCP/1.0",
         },
     )
     try:

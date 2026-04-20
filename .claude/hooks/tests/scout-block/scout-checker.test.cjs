@@ -226,7 +226,7 @@ describe('isVenvExecutable', () => {
     assert.ok(isVenvExecutable('.venv/Scripts/python.exe script.py'));
   });
   it('matches nested .venv path', () => {
-    assert.ok(isVenvExecutable('~/.claude/skills/.venv/bin/python3 script.py'));
+    assert.ok(isVenvExecutable('~/.cursor/skills/.venv/bin/python3 script.py'));
   });
   it('does NOT match bare python', () => {
     assert.ok(!isVenvExecutable('python3 script.py'));
@@ -335,7 +335,7 @@ describe('checkScoutBlock - Bash commands', () => {
   // --- Should ALLOW (venv) ---
   describe('allowed venv commands', () => {
     it('allows .venv/bin/python3 execution', () => {
-      const r = checkScoutBlock({ toolName: 'Bash', toolInput: { command: '~/.claude/skills/.venv/bin/python3 script.py' }, options: DEFAULT_OPTS });
+      const r = checkScoutBlock({ toolName: 'Bash', toolInput: { command: '~/.cursor/skills/.venv/bin/python3 script.py' }, options: DEFAULT_OPTS });
       assert.ok(!r.blocked);
     });
 

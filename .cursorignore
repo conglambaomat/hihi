@@ -1,0 +1,20 @@
+﻿# Reduce Cursor index noise and avoid scanning paths that often error or are irrelevant to product code.
+
+# Claude / tooling archives
+.claude-archived/
+
+# Python / test caches
+.pytest_cache/
+**/.pytest_cache/
+__pycache__/
+**/__pycache__/
+
+# Node (if present)
+**/node_modules/
+
+# Temp / smoke / local run artifacts
+.tmp-pytest/
+.tmp-py-smoke/
+**/tmp_pytest_smoke/
+**/tmp-chat-server*.log
+**/.codex-web.err.log

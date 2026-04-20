@@ -296,7 +296,7 @@ async function main() {
       }
       if (shadowedCleanup.kept.length > 0) {
         console.log(`[!] Kept ${shadowedCleanup.kept.length} skill(s) for manual review (content differs): ${shadowedCleanup.kept.join(', ')}`);
-        console.log(`    Review .claude/skills/.shadowed/ and merge changes manually.`);
+        console.log(`    Review .cursor/skills/.shadowed/ and merge changes manually.`);
       }
     }
 

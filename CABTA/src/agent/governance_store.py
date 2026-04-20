@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 import logging
 import os
@@ -12,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..utils.runtime_paths import runtime_cache_dir
+
 logger = logging.getLogger(__name__)
 
 def _default_db_path() -> Path:
@@ -21,7 +24,7 @@ def _default_db_path() -> Path:
 
     home_override = os.environ.get('CABTA_HOME')
     home_path = Path(home_override) if home_override else Path.home()
-    return home_path / '.blue-team-assistant' / 'cache' / 'governance.db'
+    return (runtime_cache_dir() if not home_override else home_path / 'cache') / 'governance.db'
 
 
 _DEFAULT_DB = _default_db_path()
@@ -251,6 +254,24 @@ class GovernanceStore:
         feedback: str,
         reviewer: str = "analyst",
     ) -> bool:
+        decision = self.get_ai_decision(decision_id)
+        if not decision:
+            return False
+
+        self.record_decision_feedback(
+            decision_id=decision_id,
+            session_id=str(decision.get("session_id") or ""),
+            case_id=decision.get("case_id"),
+            workflow_id=decision.get("workflow_id"),
+            feedback_type="decision_review",
+            verdict="correct" if "correct" in str(feedback or "").lower() else "needs_review",
+            target={"decision_id": decision_id},
+            useful=None,
+            comment=feedback,
+            metadata={"legacy_feedback_text": feedback},
+            reviewer=reviewer,
+        )
+
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             conn = self._connect()
@@ -264,6 +285,122 @@ class GovernanceStore:
             updated = cur.rowcount > 0
             conn.close()
         return updated
+
+    def record_decision_feedback(
+        self,
+        *,
+        decision_id: str,
+        session_id: str,
+        feedback_type: str,
+        reviewer: str = "analyst",
+        verdict: Optional[str] = None,
+        target: Optional[Dict[str, Any]] = None,
+        useful: Optional[bool] = None,
+        comment: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        case_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+    ) -> str:
+        feedback_id = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                """INSERT INTO decision_feedback_events
+                   (id, decision_id, session_id, case_id, workflow_id, feedback_type,
+                    verdict, target_json, useful, comment, metadata_json, reviewer, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    feedback_id,
+                    decision_id,
+                    session_id,
+                    case_id,
+                    workflow_id,
+                    feedback_type,
+                    verdict,
+                    json.dumps(target or {}, default=str),
+                    None if useful is None else int(bool(useful)),
+                    comment,
+                    json.dumps(metadata or {}, default=str),
+                    reviewer,
+                    now,
+                ),
+            )
+            conn.commit()
+            conn.close()
+        return feedback_id
+
+    def list_decision_feedback(
+        self,
+        *,
+        decision_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+        feedback_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM decision_feedback_events"
+        clauses = []
+        params: List[Any] = []
+        if decision_id:
+            clauses.append("decision_id = ?")
+            params.append(decision_id)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if case_id:
+            clauses.append("case_id = ?")
+            params.append(case_id)
+        if feedback_type:
+            clauses.append("feedback_type = ?")
+            params.append(feedback_type)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        conn = self._connect()
+        cur = conn.execute(query, tuple(params))
+        rows = cur.fetchall()
+        desc = cur.description
+        conn.close()
+        return [self._row_to_dict(desc, row) for row in rows]
+
+    def governance_summary(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        approval_items = self.list_approvals(session_id=session_id, case_id=case_id, limit=1000)
+        decision_items = self.list_ai_decisions(session_id=session_id, case_id=case_id, limit=1000)
+        feedback_items = self.list_decision_feedback(session_id=session_id, case_id=case_id, limit=1000)
+
+        approval_status_counts = Counter(str(item.get("status") or "unknown") for item in approval_items)
+        decision_type_counts = Counter(str(item.get("decision_type") or "unknown") for item in decision_items)
+        feedback_type_counts = Counter(str(item.get("feedback_type") or "unknown") for item in feedback_items)
+        feedback_verdict_counts = Counter(str(item.get("verdict") or "unspecified") for item in feedback_items)
+
+        return {
+            "scope": {
+                "session_id": session_id,
+                "case_id": case_id,
+            },
+            "approvals": {
+                "total": len(approval_items),
+                "by_status": dict(approval_status_counts),
+                "pending": approval_status_counts.get("pending", 0),
+            },
+            "ai_decisions": {
+                "total": len(decision_items),
+                "by_type": dict(decision_type_counts),
+            },
+            "decision_feedback": {
+                "total": len(feedback_items),
+                "by_type": dict(feedback_type_counts),
+                "by_verdict": dict(feedback_verdict_counts),
+            },
+        }
 
     def _init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -308,6 +445,25 @@ class GovernanceStore:
                 feedback           TEXT,
                 feedback_reviewer  TEXT,
                 feedback_at        TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_feedback_events (
+                id            TEXT PRIMARY KEY,
+                decision_id   TEXT NOT NULL,
+                session_id    TEXT NOT NULL,
+                case_id       TEXT,
+                workflow_id   TEXT,
+                feedback_type TEXT NOT NULL,
+                verdict       TEXT,
+                target_json   TEXT DEFAULT '{}',
+                useful        INTEGER,
+                comment       TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                reviewer      TEXT NOT NULL DEFAULT 'analyst',
+                created_at    TEXT NOT NULL
             )
             """
         )

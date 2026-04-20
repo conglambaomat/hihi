@@ -60,11 +60,9 @@ def _load_config(config_file: Path | None = None) -> dict:
             'auto_failover': False,
             'fallback_providers': [],
             'openrouter_endpoint': 'https://openrouter.ai/api/v1',
-            'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
+            'openrouter_model': 'arcee-ai/trinity-large-preview:free',
             'ollama_endpoint': 'http://localhost:11434',
             'ollama_model': 'llama3.1:8b',
-            'groq_endpoint': 'https://api.groq.com/openai/v1',
-            'groq_model': 'openai/gpt-oss-20b',
             'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
             'gemini_model': 'gemini-2.5-flash',
         },
@@ -112,8 +110,8 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     active_config_file = Path(config_file).expanduser().resolve() if config_file else CONFIG_FILE
 
     app = FastAPI(
-        title='AISA',
-        description='AISA localhost SOC triage and investigation platform',
+        title='CABTA',
+        description='CABTA localhost SOC triage and investigation platform',
         version='2.0.0',
         docs_url='/api/docs',
         redoc_url='/api/redoc',
@@ -141,12 +139,13 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     app.state.case_store = CaseStore()
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.state.templates.env.globals.update({
-        'product_name': 'AISA',
-        'product_full_name': 'AI Security Assistant',
+        'product_name': 'CABTA',
+        'product_full_name': 'Cyan Agent Blue Team Assistant',
     })
 
     # Agent components (lazy-initialized; set to None so routes can check availability)
     app.state.agent_store = None
+    app.state.thread_store = None
     app.state.agent_loop = None
     app.state.mcp_client = None
     app.state.playbook_engine = None
@@ -163,6 +162,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     app.state.workflow_service = None
     app.state.governance_store = None
     app.state.case_intelligence = None
+    app.state.case_memory_service = None
     app.state.headless_soc_daemon = None
 
     try:
@@ -199,6 +199,26 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
         logger.info("[WEB] AgentStore initialized")
     except Exception as exc:
         logger.warning(f"[WEB] AgentStore not available: {exc}")
+
+    try:
+        from src.agent.thread_store import ThreadStore
+        thread_db_path = None
+        if getattr(app.state.agent_store, "_db_path", None) is not None:
+            thread_db_path = str(Path(app.state.agent_store._db_path).with_name("threads.db"))
+        app.state.thread_store = ThreadStore(db_path=thread_db_path)
+        logger.info("[WEB] ThreadStore initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] ThreadStore not available: {exc}")
+
+    try:
+        from src.agent.case_memory_service import CaseMemoryService
+        app.state.case_memory_service = CaseMemoryService(
+            case_store=app.state.case_store,
+            agent_store=app.state.agent_store,
+        )
+        logger.info("[WEB] CaseMemoryService initialized")
+    except Exception as exc:
+        logger.warning(f"[WEB] CaseMemoryService not available: {exc}")
 
     # Tool instances (used by ToolRegistry)
     app.state.ioc_investigator = None
@@ -326,6 +346,8 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
             workflow_registry=app.state.workflow_registry,
             governance_store=app.state.governance_store,
             case_store=app.state.case_store,
+            thread_store=app.state.thread_store,
+            case_memory_service=app.state.case_memory_service,
         )
         logger.info("[WEB] AgentLoop initialized")
     except Exception as exc:

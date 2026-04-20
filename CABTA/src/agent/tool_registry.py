@@ -525,7 +525,7 @@ class ToolRegistry:
         # -------------------------------------------------------------- #
         if ioc_investigator is not None:
             async def _investigate_ioc(ioc: str, **_kw) -> Dict:
-                return await ioc_investigator.investigate(ioc)
+                return await ioc_investigator.investigate(ioc, include_llm=False)
 
             self.register_local_tool(
                 name="investigate_ioc",
@@ -756,11 +756,11 @@ class ToolRegistry:
                     generic_queries["yara"] = [
                         "\n".join(
                             [
-                                "rule AISA_Hypothesis_Hunt",
+                                "rule CABTA_Hypothesis_Hunt",
                                 "{",
                                 "    meta:",
                                 f"        description = \"Generated from hypothesis: {hypothesis[:80]}\"",
-                                "        author = \"AISA\"",
+                                "        author = \"CABTA\"",
                                 "    strings:",
                                 "        $ps1 = \"powershell\" ascii wide nocase",
                                 "        $ps2 = \"cmd.exe\" ascii wide nocase",
@@ -777,7 +777,7 @@ class ToolRegistry:
                             [
                                 (
                                     'alert tcp any any -> any any '
-                                    f'(msg:"AISA Hypothesis Hunt - {hypothesis[:40]}"; flow:established,to_server; sid:{_safe_snort_sid(hypothesis)}; rev:1;)'
+                                    f'(msg:"CABTA Hypothesis Hunt - {hypothesis[:40]}"; flow:established,to_server; sid:{_safe_snort_sid(hypothesis)}; rev:1;)'
                                 )
                             ]
                         )
@@ -845,15 +845,15 @@ class ToolRegistry:
             if "snort" in selected_types:
                 for ip in known_iocs["ips"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert ip any any <> {ip} any (msg:"AISA IOC IP {ip}"; sid:{_safe_snort_sid(ip)}; rev:1;)'
+                        f'alert ip any any <> {ip} any (msg:"CABTA IOC IP {ip}"; sid:{_safe_snort_sid(ip)}; rev:1;)'
                     )
                 for domain in known_iocs["domains"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert udp any any -> any 53 (msg:"AISA IOC Domain {domain}"; content:"{domain}"; nocase; sid:{_safe_snort_sid(domain)}; rev:1;)'
+                        f'alert udp any any -> any 53 (msg:"CABTA IOC Domain {domain}"; content:"{domain}"; nocase; sid:{_safe_snort_sid(domain)}; rev:1;)'
                     )
                 for url in known_iocs["urls"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert http any any -> any any (msg:"AISA IOC URL {url[:40]}"; http_uri; content:"{url[:200]}"; nocase; sid:{_safe_snort_sid(url)}; rev:1;)'
+                        f'alert http any any -> any any (msg:"CABTA IOC URL {url[:40]}"; http_uri; content:"{url[:200]}"; nocase; sid:{_safe_snort_sid(url)}; rev:1;)'
                     )
 
             if not any(query_buckets.values()):
@@ -1178,13 +1178,22 @@ class ToolRegistry:
         ) -> Dict:
             """Execute Splunk-backed hunt queries when a live backend is available."""
 
-            normalized_queries = normalize_query_bundle(query)
-            query_count = sum(len(values) for values in normalized_queries.values())
             execution_context = dict(_execution_context or {})
+            query_planner = execution_context.get("log_query_plan", {})
+            planner_queries = normalize_query_bundle(
+                query_planner.get("query_bundle") if isinstance(query_planner, dict) else None
+            )
+            normalized_queries = normalize_query_bundle(query)
+            if planner_queries and (
+                not normalized_queries
+                or set(normalized_queries.keys()) == {"generic"}
+            ):
+                normalized_queries = planner_queries
+            query_count = sum(len(values) for values in normalized_queries.values())
             session_id = str(execution_context.get("session_id") or "adhoc-log-hunt")
             workflow_id = execution_context.get("workflow_id")
             case_id = execution_context.get("case_id")
-            query_origin = "generated" if isinstance(query, dict) else "raw"
+            query_origin = "generated" if planner_queries or isinstance(query, dict) else "raw"
 
             hunting_cfg = config.get("log_hunting", {}) if isinstance(config, dict) else {}
             max_window_hours = int(hunting_cfg.get("max_window_hours", 24 * 7) or 24 * 7)
@@ -1233,11 +1242,13 @@ class ToolRegistry:
                             "mode": demo_result.get("mode", "demo_fixture"),
                         },
                     )
+                    if isinstance(query_planner, dict) and query_planner:
+                        demo_result["query_planner"] = query_planner
                     return demo_result
 
                 message = (
                     "No Splunk log backend is connected for automated hunting. "
-                    "AISA generated hunt queries for analyst-driven execution."
+                    "CABTA generated hunt queries for analyst-driven execution."
                 )
                 result = {
                     "status": "manual_lookup_required",
@@ -1252,6 +1263,7 @@ class ToolRegistry:
                     "suspicious_files": [],
                     "suspicious_executables": [],
                     "message": message,
+                    "query_planner": query_planner if isinstance(query_planner, dict) else {},
                 }
                 _log_hunt_decision(
                     "log_search_manual",
@@ -1283,6 +1295,7 @@ class ToolRegistry:
                     "suspicious_files": [],
                     "suspicious_executables": [],
                     "message": message,
+                    "query_planner": query_planner if isinstance(query_planner, dict) else {},
                 }
                 _log_hunt_decision(
                     "log_search_manual",
@@ -1349,6 +1362,7 @@ class ToolRegistry:
                         "suspicious_executables": [],
                         "message": plan["reason"],
                         "approval_id": approval_id,
+                        "query_planner": query_planner if isinstance(query_planner, dict) else {},
                     }
                     _log_hunt_decision(
                         "log_search_approval_required",
@@ -1378,6 +1392,7 @@ class ToolRegistry:
                         "suspicious_files": [],
                         "suspicious_executables": [],
                         "message": plan["reason"],
+                        "query_planner": query_planner if isinstance(query_planner, dict) else {},
                     }
                     _log_hunt_decision(
                         "log_search_blocked",
@@ -1442,6 +1457,7 @@ class ToolRegistry:
                 "suspicious_files": list(dict.fromkeys(suspicious_files))[:50],
                 "suspicious_executables": list(dict.fromkeys(suspicious_executables))[:50],
                 "message": message,
+                "query_planner": query_planner if isinstance(query_planner, dict) else {},
             }
             if errors:
                 result["errors"] = errors

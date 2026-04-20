@@ -148,19 +148,19 @@ def _run_demo_analysis_bg(mgr, provider, job_id: str, analysis_type: str, params
     """Run a deterministic demo analysis while preserving real job lifecycle."""
     steps = {
         'ioc': [
-            (10, 'Loading AISA demo intelligence sources...'),
+            (10, 'Loading CABTA demo intelligence sources...'),
             (35, 'Correlating seeded IOC evidence...'),
             (70, 'Calculating deterministic demo score...'),
             (95, 'Preparing analyst-facing output...'),
         ],
         'file': [
-            (10, 'Loading AISA demo file profile...'),
+            (10, 'Loading CABTA demo file profile...'),
             (35, 'Running seeded static findings...'),
             (70, 'Calculating deterministic demo score...'),
             (95, 'Preparing analyst-facing output...'),
         ],
         'email': [
-            (10, 'Loading AISA demo email fixture...'),
+            (10, 'Loading CABTA demo email fixture...'),
             (35, 'Evaluating authentication and lure signals...'),
             (70, 'Calculating deterministic demo score...'),
             (95, 'Preparing analyst-facing output...'),

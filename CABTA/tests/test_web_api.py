@@ -320,14 +320,14 @@ class TestFastAPIEndpoints:
         assert r.status_code == 200
         data = r.json()
         assert data['status'] == 'degraded'
-        assert data['capabilities']['llm_runtime']['provider'] == 'groq'
+        assert data['capabilities']['llm_runtime']['provider'] == 'openrouter'
         assert any('Sandboxing is enabled' in issue for issue in data['issues'])
 
     def test_system_info(self):
         r = self.client.get('/api/config/info')
         assert r.status_code == 200
         data = r.json()
-        assert data['app'] == 'AISA'
+        assert data['app'] == 'CABTA'
         assert data['mode'] in ('live', 'demo')
         assert 'demo_enabled' in data
 
@@ -566,10 +566,12 @@ class TestFastAPIEndpoints:
         assert r.status_code == 200
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert args[0].startswith('Continue the previous analyst conversation about the security investigation.')
         assert 'Previous investigation goal:' in args[0]
         assert 'Previous investigation summary:' in args[0]
         assert 'Previous evidence snapshot:' in args[0]
         assert 'New analyst request:' in args[0]
+        assert 'Carry forward the existing findings, reasoning state, and tracked entities from the previous session.' in args[0]
         assert '(Follow-up to previous investigation:' not in args[0]
         assert kwargs['case_id'] == 'CASE-42'
         assert kwargs['metadata']['agent_profile_id'] == 'phishing_analyst'
@@ -578,10 +580,99 @@ class TestFastAPIEndpoints:
         assert kwargs['metadata']['response_style'] == 'conversational'
         assert kwargs['metadata']['chat_user_message'] == 'Pivot on related infrastructure and registrar details.'
         assert kwargs['metadata']['chat_parent_session_id'] == original_session
+        assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is True
+
+    def test_chat_follow_up_explanation_turn_does_not_force_fresh_evidence(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate account-securecheck.com phishing infrastructure',
+            case_id='CASE-42',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'The domain appears malicious and newly registered.',
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Giải thích vì sao bạn kết luận domain này độc hại.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert 'Only use tools if the current evidence is insufficient.' in args[0]
+        assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
+
+    def test_chat_follow_up_while_active_queues_thread_command(self):
+        active_session = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious sign-in activity',
+            case_id='CASE-42',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+
+        r = self.client.post('/api/chat', json={
+            'session_id': active_session,
+            'message': 'Pivot on the host tied to this session.',
+        })
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['status'] == 'active'
+        assert payload['queued_command_id']
+        assert payload['queued_intent'] == 'new_pivot'
+        thread = self.app.state.thread_store.get_thread(payload['thread_id'])
+        assert thread is not None
+        assert thread['pending_commands'][0]['content'] == 'Pivot on the host tied to this session.'
+
+    def test_chat_follow_up_uses_case_memory_when_thread_snapshot_missing(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious sign-in activity',
+            case_id='CASE-42',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Prior session completed.',
+        )
+        self.app.state.case_memory_service = SimpleNamespace(
+            get_case_memory=lambda _case_id: {
+                'case_id': 'CASE-42',
+                'thread_id': 'case-thread-1',
+                'summary': 'Alice authenticated from a suspicious source IP and initiated a risky session.',
+                'latest_session_id': 'sess-case-memory',
+                'accepted_snapshot': {
+                    'root_cause_assessment': {
+                        'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
+                    },
+                    'accepted_facts': [
+                        {'summary': 'Alice authenticated from 185.220.101.45.'},
+                    ],
+                    'unresolved_questions': ['Which host executed the follow-on process activity?'],
+                },
+            }
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Explain why this session is suspicious.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert 'Latest root-cause state:' in args[0]
+        assert 'Accepted facts:' in args[0]
+        assert kwargs['metadata']['thread_id'] == 'case-thread-1'
+        assert kwargs['metadata']['case_memory_context']['latest_session_id'] == 'sess-case-memory'
 
     def test_agent_session_payload_flattens_chat_message_metadata(self):
         session_id = self.app.state.agent_store.create_session(
-            goal='Continue the previous security investigation using tool-based reasoning.',
+            goal='Continue the previous analyst conversation about the security investigation.',
             metadata={
                 'chat_user_message': 'Pivot on the registrar tied to the domain.',
                 'chat_parent_session_id': 'parent-session',
@@ -594,6 +685,46 @@ class TestFastAPIEndpoints:
         payload = r.json()
         assert payload['chat_user_message'] == 'Pivot on the registrar tied to the domain.'
         assert payload['chat_parent_session_id'] == 'parent-session'
+
+    def test_agent_session_payload_includes_prior_chat_thread_messages(self):
+        parent_session = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious domain activity',
+            metadata={
+                'chat_mode': True,
+                'response_style': 'conversational',
+                'chat_user_message': 'Investigate account-securecheck.com.',
+            },
+        )
+        self.app.state.agent_store.update_session_findings(
+            parent_session,
+            [{'type': 'final_answer', 'answer': 'The domain appears malicious and newly registered.'}],
+        )
+        self.app.state.agent_store.update_session_status(
+            parent_session,
+            'completed',
+            'The domain appears malicious and newly registered.',
+        )
+
+        child_session = self.app.state.agent_store.create_session(
+            goal='Continue the previous analyst conversation about the security investigation.',
+            metadata={
+                'chat_mode': True,
+                'response_style': 'conversational',
+                'chat_user_message': 'Pivot on related infrastructure.',
+                'chat_parent_session_id': parent_session,
+            },
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{child_session}')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['chat_root_session_id'] == parent_session
+        assert payload['chat_thread_session_ids'] == [parent_session, child_session]
+        assert payload['chat_history_messages'][0]['role'] == 'user'
+        assert payload['chat_history_messages'][0]['content'] == 'Investigate account-securecheck.com.'
+        assert payload['chat_history_messages'][1]['role'] == 'assistant'
+        assert 'malicious and newly registered' in payload['chat_history_messages'][1]['content']
 
     def test_chat_follow_up_strips_legacy_follow_up_wrapper_from_previous_goal(self):
         original_session = self.app.state.agent_store.create_session(

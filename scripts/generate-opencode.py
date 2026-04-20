@@ -794,13 +794,33 @@ def main():
 
         print(f"  Converted {converted_count} commands")
 
-    # Copy skills from .claude/skills/ to .opencode/skills/
-    claude_skills_dir = claude_dir / "skills"
+    # Copy skills from .cursor/skills/ to .opencode/skills/
+    cursor_skills_dir = project_root / ".cursor" / "skills"
     opencode_skills_dir = opencode_dir / "skills"
-    if claude_skills_dir.exists():
+    if cursor_skills_dir.exists():
         print("\nCopying skills...")
         skill_count = 0
-        for skill_dir in claude_skills_dir.iterdir():
+        for skill_dir in cursor_skills_dir.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            # Nested packs (e.g. gitnexus/*) have no top-level SKILL.md — copy whole tree
+            if skill_dir.name == "gitnexus":
+                target_dir = opencode_skills_dir / "gitnexus"
+                if target_dir.exists() and not args.force:
+                    if args.verbose:
+                        print(f"  Skipped (exists): gitnexus")
+                    continue
+                if args.dry_run:
+                    print(f"  [DRY-RUN] Would copy skill tree: gitnexus")
+                else:
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    shutil.copytree(skill_dir, target_dir)
+                    replace_claude_paths_in_dir(target_dir)
+                    if args.verbose:
+                        print(f"  Copied: gitnexus (nested)")
+                skill_count += 1
+                continue
             if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
                 skill_name = skill_dir.name
                 target_dir = opencode_skills_dir / skill_name

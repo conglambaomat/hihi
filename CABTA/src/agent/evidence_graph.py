@@ -1,4 +1,4 @@
-"""Lightweight evidence link and timeline support for investigations."""
+"""Session-friendly evidence graph with typed observations and edge basis."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ def _now_iso() -> str:
 
 
 class EvidenceGraph:
-    """Maintain a minimal evidence graph in session metadata."""
+    """Maintain a lightweight reasoning-support graph in session metadata."""
 
     def bootstrap(self, existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         state = dict(existing or {})
-        state.setdefault("schema_version", 1)
+        state.setdefault("schema_version", 2)
         state.setdefault("nodes", [])
         state.setdefault("edges", [])
         state.setdefault("timeline", [])
@@ -31,71 +31,104 @@ class EvidenceGraph:
         step_number: int,
         evidence_ref: Dict[str, Any],
         entity_state: Optional[Dict[str, Any]],
+        observations: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         state = self.bootstrap(graph_state)
-        observation_node = {
-            "id": f"observation:{session_id}:{step_number}:{tool_name}".lower(),
-            "type": "observation",
-            "label": tool_name,
-            "summary": evidence_ref.get("summary", ""),
-            "tool_name": tool_name,
-            "step_number": step_number,
-            "timestamp": evidence_ref.get("created_at") or _now_iso(),
-        }
-        self._upsert_node(state, observation_node)
+        observation_items = observations or [
+            {
+                "observation_id": f"obs:{session_id}:{step_number}:{tool_name}:legacy".lower(),
+                "observation_type": "correlation_observation",
+                "summary": evidence_ref.get("summary", ""),
+                "timestamp": evidence_ref.get("created_at") or _now_iso(),
+                "quality": 0.4,
+                "source_paths": ["result"],
+                "entities": [],
+                "facts": {},
+            }
+        ]
 
         entity_lookup = {}
-        if isinstance(entity_state, dict):
-            entity_lookup = entity_state.get("entities", {}) if isinstance(entity_state.get("entities"), dict) else {}
+        if isinstance(entity_state, dict) and isinstance(entity_state.get("entities"), dict):
+            entity_lookup = entity_state.get("entities", {})
 
-        recent_entities = self._recent_entity_ids(entity_state, step_number)
-        for entity_id in recent_entities:
-            entity_payload = entity_lookup.get(entity_id) if isinstance(entity_lookup, dict) else None
-            if isinstance(entity_payload, dict):
-                self._upsert_node(
-                    state,
-                    {
-                        "id": entity_id,
-                        "type": entity_payload.get("type", "entity"),
-                        "label": entity_payload.get("label") or entity_payload.get("value") or entity_id,
-                        "value": entity_payload.get("value"),
-                    },
-                )
-            self._upsert_edge(
-                state,
-                {
-                    "source": observation_node["id"],
-                    "target": entity_id,
-                    "relation": "linked_to",
-                    "timestamp": observation_node["timestamp"],
-                },
-            )
-
-        previous_observation = self._previous_observation_id(state, observation_node["id"])
-        if previous_observation:
-            self._upsert_edge(
-                state,
-                {
-                    "source": previous_observation,
-                    "target": observation_node["id"],
-                    "relation": "precedes",
-                    "timestamp": observation_node["timestamp"],
-                },
-            )
-
-        state["timeline"] = self._append_timeline_event(
-            state.get("timeline", []),
-            {
-                "id": f"timeline:{observation_node['id']}",
+        for observation in observation_items:
+            if not isinstance(observation, dict):
+                continue
+            observation_id = str(observation.get("observation_id") or f"obs:{session_id}:{step_number}:{tool_name}").lower()
+            typed_fact = observation.get("typed_fact", {}) if isinstance(observation.get("typed_fact"), dict) else {}
+            node = {
+                "id": observation_id,
                 "type": "observation",
-                "timestamp": observation_node["timestamp"],
-                "title": f"{tool_name} observation",
-                "summary": evidence_ref.get("summary", ""),
+                "observation_type": observation.get("observation_type", "correlation_observation"),
+                "fact_family": observation.get("fact_family") or typed_fact.get("family"),
+                "typed_fact": typed_fact,
+                "label": observation.get("summary") or observation.get("observation_type") or tool_name,
+                "summary": observation.get("summary", ""),
                 "tool_name": tool_name,
                 "step_number": step_number,
-                "entity_ids": recent_entities,
-            },
-        )
+                "timestamp": observation.get("timestamp") or evidence_ref.get("created_at") or _now_iso(),
+                "quality": observation.get("quality"),
+                "source_paths": list(observation.get("source_paths", [])),
+            }
+            self._upsert_node(state, node)
+
+            entity_ids = self._observation_entity_ids(observation, entity_lookup)
+            for entity_id in entity_ids:
+                entity_payload = entity_lookup.get(entity_id) if isinstance(entity_lookup, dict) else None
+                if isinstance(entity_payload, dict):
+                    self._upsert_node(
+                        state,
+                        {
+                            "id": entity_id,
+                            "type": entity_payload.get("type", "entity"),
+                            "label": entity_payload.get("label") or entity_payload.get("value") or entity_id,
+                            "value": entity_payload.get("value"),
+                            "confidence": entity_payload.get("confidence"),
+                        },
+                    )
+                self._upsert_edge(
+                    state,
+                    {
+                        "source": observation_id,
+                        "target": entity_id,
+                        "relation": "linked_to",
+                        "confidence": max(0.45, float(observation.get("quality", 0.0) or 0.0)),
+                        "basis": "normalized_observation",
+                        "explicit": True,
+                        "timestamp": node["timestamp"],
+                    },
+                )
+
+            previous_observation = self._previous_observation_id(state, observation_id)
+            if previous_observation:
+                self._upsert_edge(
+                    state,
+                    {
+                        "source": previous_observation,
+                        "target": observation_id,
+                        "relation": "precedes",
+                        "confidence": 0.75,
+                        "basis": "timeline_order",
+                        "explicit": True,
+                        "timestamp": node["timestamp"],
+                    },
+                )
+
+            self._append_timeline_event(
+                state,
+                {
+                    "id": f"timeline:{observation_id}",
+                    "type": observation.get("observation_type", "correlation_observation"),
+                    "timestamp": node["timestamp"],
+                    "title": f"{tool_name} observation",
+                    "summary": observation.get("summary", ""),
+                    "tool_name": tool_name,
+                    "step_number": step_number,
+                    "observation_id": observation_id,
+                    "entity_ids": entity_ids,
+                },
+            )
+
         state["updated_at"] = _now_iso()
         return state
 
@@ -110,7 +143,7 @@ class EvidenceGraph:
         state = self.bootstrap(graph_state)
         hypotheses = reasoning_state.get("hypotheses", []) if isinstance(reasoning_state, dict) else []
 
-        for hypothesis in hypotheses[:6]:
+        for hypothesis in hypotheses[:8]:
             if not isinstance(hypothesis, dict):
                 continue
             hypothesis_node = {
@@ -119,6 +152,7 @@ class EvidenceGraph:
                 "label": hypothesis.get("statement", "Hypothesis"),
                 "status": hypothesis.get("status"),
                 "confidence": hypothesis.get("confidence"),
+                "topics": list(hypothesis.get("topics", [])),
             }
             self._upsert_node(state, hypothesis_node)
             for ref in hypothesis.get("supporting_evidence_refs", []) or []:
@@ -130,6 +164,9 @@ class EvidenceGraph:
                             "source": observation_id,
                             "target": hypothesis_node["id"],
                             "relation": "supports",
+                            "confidence": ref.get("confidence") or ref.get("quality") or 0.7,
+                            "basis": ref.get("source_kind") or "structured_evidence",
+                            "explicit": True,
                             "timestamp": ref.get("created_at") or _now_iso(),
                         },
                     )
@@ -142,6 +179,9 @@ class EvidenceGraph:
                             "source": observation_id,
                             "target": hypothesis_node["id"],
                             "relation": "contradicts",
+                            "confidence": ref.get("confidence") or ref.get("quality") or 0.7,
+                            "basis": ref.get("source_kind") or "structured_evidence",
+                            "explicit": True,
                             "timestamp": ref.get("created_at") or _now_iso(),
                         },
                     )
@@ -164,11 +204,14 @@ class EvidenceGraph:
                             "source": observation_id,
                             "target": root_node["id"],
                             "relation": "derived_from",
+                            "confidence": ref.get("confidence") or ref.get("quality") or 0.72,
+                            "basis": ref.get("source_kind") or "root_cause_support",
+                            "explicit": True,
                             "timestamp": ref.get("created_at") or _now_iso(),
                         },
                     )
-            state["timeline"] = self._append_timeline_event(
-                state.get("timeline", []),
+            self._append_timeline_event(
+                state,
                 {
                     "id": f"timeline:root-cause:{session_id}".lower(),
                     "type": "root_cause_assessment",
@@ -187,51 +230,74 @@ class EvidenceGraph:
         return {
             "node_count": len(state.get("nodes", [])),
             "edge_count": len(state.get("edges", [])),
-            "timeline": list(state.get("timeline", []))[-12:],
-            "edges": list(state.get("edges", []))[-24:],
+            "timeline": list(state.get("timeline", []))[-18:],
+            "edges": list(state.get("edges", []))[-40:],
         }
 
-    @staticmethod
-    def _recent_entity_ids(entity_state: Optional[Dict[str, Any]], step_number: int) -> List[str]:
-        if not isinstance(entity_state, dict):
-            return []
-        observations = entity_state.get("observations", [])
-        if not isinstance(observations, list):
-            return []
-        for observation in reversed(observations):
-            if observation.get("step_number") == step_number:
-                return list(observation.get("entity_ids", []))
-        return []
+    def _observation_entity_ids(self, observation: Dict[str, Any], entity_lookup: Dict[str, Any]) -> List[str]:
+        entity_ids: List[str] = []
+        for entity in observation.get("entities", []) if isinstance(observation.get("entities"), list) else []:
+            if not isinstance(entity, dict):
+                continue
+            entity_type = str(entity.get("type") or "").strip().lower()
+            value = str(entity.get("value") or "").strip().lower()
+            if not entity_type or not value:
+                continue
+            entity_id = f"{entity_type}:{value}"
+            if entity_id in entity_lookup:
+                entity_ids.append(entity_id)
+            else:
+                entity_ids.append(entity_id)
+        return self._dedupe(entity_ids)
 
     @staticmethod
     def _observation_id_from_ref(session_id: str, ref: Dict[str, Any]) -> Optional[str]:
+        observation_id = str(ref.get("observation_id") or "").strip()
+        if observation_id:
+            return observation_id.lower()
         tool_name = ref.get("tool_name")
         step_number = ref.get("step_number")
         if tool_name is None or step_number is None:
             return None
-        return f"observation:{session_id}:{step_number}:{tool_name}".lower()
+        return f"obs:{session_id}:{step_number}:0:{tool_name}:legacy".lower()
 
     def _upsert_node(self, state: Dict[str, Any], node: Dict[str, Any]) -> None:
         nodes = {item.get("id"): item for item in state.get("nodes", []) if isinstance(item, dict)}
         nodes[node["id"]] = {**nodes.get(node["id"], {}), **node}
-        state["nodes"] = list(nodes.values())[-120:]
+        state["nodes"] = list(nodes.values())[-180:]
 
     def _upsert_edge(self, state: Dict[str, Any], edge: Dict[str, Any]) -> None:
+        key = "|".join(
+            [
+                str(edge.get("source") or ""),
+                str(edge.get("target") or ""),
+                str(edge.get("relation") or ""),
+                str(edge.get("basis") or ""),
+            ]
+        )
         edges = {
-            f"{item.get('source')}|{item.get('target')}|{item.get('relation')}": item
+            "|".join(
+                [
+                    str(item.get("source") or ""),
+                    str(item.get("target") or ""),
+                    str(item.get("relation") or ""),
+                    str(item.get("basis") or ""),
+                ]
+            ): item
             for item in state.get("edges", [])
             if isinstance(item, dict)
         }
-        key = f"{edge.get('source')}|{edge.get('target')}|{edge.get('relation')}"
-        edges[key] = {**edges.get(key, {}), **edge}
-        state["edges"] = list(edges.values())[-240:]
+        current = dict(edges.get(key, {}))
+        merged = {**current, **edge}
+        merged["confidence"] = max(float(current.get("confidence", 0.0) or 0.0), float(edge.get("confidence", 0.0) or 0.0))
+        edges[key] = merged
+        state["edges"] = list(edges.values())[-360:]
 
-    @staticmethod
-    def _append_timeline_event(existing: List[Dict[str, Any]], event: Dict[str, Any]) -> List[Dict[str, Any]]:
-        events = [item for item in existing if item.get("id") != event["id"]]
+    def _append_timeline_event(self, state: Dict[str, Any], event: Dict[str, Any]) -> None:
+        events = [item for item in state.get("timeline", []) if item.get("id") != event["id"]]
         events.append(event)
         events.sort(key=lambda item: item.get("timestamp", ""))
-        return events[-80:]
+        state["timeline"] = events[-120:]
 
     @staticmethod
     def _previous_observation_id(state: Dict[str, Any], current_id: str) -> Optional[str]:
@@ -240,3 +306,18 @@ class EvidenceGraph:
             return None
         observations.sort(key=lambda item: (item.get("step_number", 0), item.get("timestamp", "")))
         return observations[-1].get("id")
+
+    @staticmethod
+    def _dedupe(values: List[str]) -> List[str]:
+        seen = set()
+        ordered: List[str] = []
+        for value in values:
+            clean = str(value or "").strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(clean)
+        return ordered

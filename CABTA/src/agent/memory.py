@@ -1,7 +1,7 @@
 """
 Investigation Memory - Persistent memory for past IOC results and investigation patterns.
 
-Uses a dedicated SQLite database at ``~/.blue-team-assistant/cache/agent_memory.db``
+Uses a dedicated SQLite database at ``~/.cabta-runtime/cache/agent_memory.db``
 with threading.Lock for safe concurrent access (follows the AgentStore pattern).
 
 Tables:
@@ -20,9 +20,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..utils.runtime_paths import runtime_cache_dir
+
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path.home() / '.blue-team-assistant' / 'cache' / 'agent_memory.db'
+_DEFAULT_DB = runtime_cache_dir() / 'agent_memory.db'
 
 # Default TTL for IOC cache entries (hours)
 _DEFAULT_TTL_HOURS = 24

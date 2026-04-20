@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ..utils.runtime_paths import runtime_cache_dir
+
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path.home() / '.blue-team-assistant' / 'cache' / 'analysis_jobs.db'
+_DEFAULT_DB = runtime_cache_dir() / 'analysis_jobs.db'
 
 
 class AnalysisManager:

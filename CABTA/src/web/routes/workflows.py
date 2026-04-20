@@ -1,4 +1,4 @@
-"""Workflow API routes for the AISA orchestration plane."""
+"""Workflow API routes for the CABTA orchestration plane."""
 
 from __future__ import annotations
 

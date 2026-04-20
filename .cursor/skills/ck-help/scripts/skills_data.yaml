@@ -1,0 +1,194 @@
+- argument_hint: '[framework] [task]'
+  category: backend
+  description: Build backends with Node.js, Python, Go (NestJS, FastAPI, Django).
+    Use for REST/GraphQL/gRPC APIs, auth (OAuth, JWT), databases, microservices, security
+    (OWASP), Docker/K8s.
+  has_references: true
+  has_scripts: false
+  name: backend-development
+  path: backend-development\SKILL.md
+- argument_hint: '[category|command|task description]'
+  category: dev-tools
+  description: ClaudeKit usage guide — discover commands, skills, workflows naturally.
+  has_references: false
+  has_scripts: true
+  name: ck-help
+  path: ck-help\SKILL.md
+- argument_hint: '[context] OR codebase [parallel]'
+  category: utilities
+  description: Review code quality, receive feedback with technical rigor, verify
+    completion claims. Use before PRs, after implementing features, when claiming
+    task completion. Includes scout-based edge case detection and native Task pipeline
+    orchestration.
+  has_references: true
+  has_scripts: false
+  name: code-review
+  path: code-review\SKILL.md
+- argument_hint: '[topic or question]'
+  category: utilities
+  description: Check context usage limits, monitor time remaining, optimize token
+    consumption, debug context failures. Use when asking about context percentage,
+    rate limits, usage warnings, context optimization, agent architectures, memory
+    systems.
+  has_references: true
+  has_scripts: true
+  name: context-engineering
+  path: context-engineering\SKILL.md
+- argument_hint: '[task|plan-path] [--interactive|--fast|--parallel|--auto|--no-test]'
+  category: utilities
+  description: ALWAYS activate this skill before implementing EVERY feature, plan,
+    or fix.
+  has_references: true
+  has_scripts: false
+  name: cook
+  path: cook\SKILL.md
+- argument_hint: '[error or issue description]'
+  category: utilities
+  description: Debug systematically with root cause analysis before fixes. Use for
+    bugs, test failures, unexpected behavior, performance issues, call stack tracing,
+    multi-layer validation, log analysis, CI/CD failures, database diagnostics, system
+    investigation.
+  has_references: true
+  has_scripts: true
+  name: debug
+  path: debug\SKILL.md
+- argument_hint: init|update|summarize
+  category: utilities
+  description: Analyze codebase and manage project documentation — init, update, summarize.
+  has_references: true
+  has_scripts: false
+  name: docs
+  path: docs\SKILL.md
+- argument_hint: '[library-name] [topic]'
+  category: dev-tools
+  description: Search library/framework documentation via llms.txt (context7.com).
+    Use for API docs, GitHub repository analysis, technical documentation lookup,
+    latest library features.
+  has_references: true
+  has_scripts: true
+  name: docs-seeker
+  path: docs-seeker\SKILL.md
+- argument_hint: '[issue] --auto|--review|--quick|--parallel'
+  category: utilities
+  description: ALWAYS activate this skill before fixing ANY bug, error, test failure,
+    CI/CD issue, type error, lint, log error, UI issue, code problem.
+  has_references: true
+  has_scripts: false
+  name: fix
+  path: fix\SKILL.md
+- argument_hint: '[component or feature]'
+  category: frontend
+  description: Build React/TypeScript frontends with modern patterns. Use for components,
+    Suspense, lazy loading, useSuspenseQuery, MUI v7 styling, TanStack Router, performance
+    optimization.
+  has_references: false
+  has_scripts: false
+  name: frontend-development
+  path: frontend-development\SKILL.md
+- argument_hint: cm|cp|pr|merge [args]
+  category: dev-tools
+  description: Git operations with conventional commits. Use for staging, committing,
+    pushing, PRs, merges. Auto-splits commits by type/scope. Security scans for secrets.
+  has_references: true
+  has_scripts: false
+  name: git
+  path: git\SKILL.md
+- category: dev-tools
+  description: 'Use when the user needs to run GitNexus CLI commands like analyze/index
+    a repo, check status, clean the index, generate a wiki, or list indexed repos.
+    Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-cli
+  path: gitnexus\gitnexus-cli\SKILL.md
+- category: dev-tools
+  description: 'Use when the user is debugging a bug, tracing an error, or asking
+    why something fails. Examples: "Why is X failing?", "Where does this error come
+    from?", "Trace this bug"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-debugging
+  path: gitnexus\gitnexus-debugging\SKILL.md
+- category: dev-tools
+  description: 'Use when the user asks how code works, wants to understand architecture,
+    trace execution flows, or explore unfamiliar parts of the codebase. Examples:
+    "How does X work?", "What calls this function?", "Show me the auth flow"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-exploring
+  path: gitnexus\gitnexus-exploring\SKILL.md
+- category: dev-tools
+  description: 'Use when the user asks about GitNexus itself — available tools, how
+    to query the knowledge graph, MCP resources, graph schema, or workflow reference.
+    Examples: "What GitNexus tools are available?", "How do I use GitNexus?"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-guide
+  path: gitnexus\gitnexus-guide\SKILL.md
+- category: dev-tools
+  description: 'Use when the user wants to know what will break if they change something,
+    or needs safety analysis before editing code. Examples: "Is it safe to change
+    X?", "What depends on this?", "What will break?"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-impact-analysis
+  path: gitnexus\gitnexus-impact-analysis\SKILL.md
+- category: dev-tools
+  description: 'Use when the user wants to rename, extract, split, move, or restructure
+    code safely. Examples: "Rename this function", "Extract this into a module", "Refactor
+    this class", "Move this to a separate file"'
+  has_references: false
+  has_scripts: false
+  name: gitnexus/gitnexus-refactoring
+  path: gitnexus\gitnexus-refactoring\SKILL.md
+- argument_hint: '[task or server-name]'
+  category: dev-tools
+  description: Manage MCP servers - discover, analyze, execute tools/prompts/resources.
+    Use for MCP integrations, intelligent tool selection, multi-server management,
+    context-efficient capability discovery.
+  has_references: true
+  has_scripts: true
+  name: mcp-management
+  path: mcp-management\SKILL.md
+- argument_hint: '[task] OR archive|red-team|validate'
+  category: utilities
+  description: Plan implementations, design architectures, create technical roadmaps
+    with detailed phases. Use for feature planning, system design, solution architecture,
+    implementation strategy, phase documentation.
+  has_references: true
+  has_scripts: false
+  name: plan
+  path: plan\SKILL.md
+- argument_hint: '[search-target] [ext]'
+  category: dev-tools
+  description: Fast codebase scouting using parallel agents. Use for file discovery,
+    task context gathering, quick searches across directories. Supports internal (Explore)
+    and external (Gemini/OpenCode) agents.
+  has_references: true
+  has_scripts: false
+  name: scout
+  path: scout\SKILL.md
+- argument_hint: '[context] OR ui [url]'
+  category: utilities
+  description: Run unit, integration, e2e, and UI tests. Use for test execution, coverage
+    analysis, build verification, visual regression, and QA reports.
+  has_references: true
+  has_scripts: false
+  name: test
+  path: test\SKILL.md
+- argument_hint: '[task]'
+  category: dev-tools
+  description: Utilize MCP server tools with intelligent discovery and execution.
+  has_references: false
+  has_scripts: false
+  name: use-mcp
+  path: use-mcp\SKILL.md
+- argument_hint: '[test-type] [target]'
+  category: dev-tools
+  description: Web testing with Playwright, Vitest, k6. E2E/unit/integration/load/security/visual/a11y
+    testing. Use for test automation, flakiness, Core Web Vitals, mobile gestures,
+    cross-browser.
+  has_references: true
+  has_scripts: true
+  name: web-testing
+  path: web-testing\SKILL.md

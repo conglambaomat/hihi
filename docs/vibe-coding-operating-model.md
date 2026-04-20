@@ -1,7 +1,7 @@
 # Vibe Coding Operating Model for Large Projects
 
-**Status:** Recommended working model
-**Scope:** Upcoming large-project delivery in this repository
+**Status:** Recommended working model  
+**Scope:** Workspace-wide delivery discipline in this repository (not CABTA product architecture — for that see `CABTA/docs/ONBOARDING.md` and `CABTA/docs/system-design.md`).
 
 ## Core Thesis
 
@@ -110,7 +110,7 @@ Put durable state in:
 - plan files
 - reports
 - docs
-- journals when lessons matter
+- `plans/reports/` (or optional `docs/journals/` if you recreate it) when lessons matter
 
 Do not rely on chat history as the project memory.
 
@@ -135,9 +135,9 @@ Keep the hooks working for large-project discipline:
 - `subagent-init.cjs` and team hooks for scoped delegation context
 - `post-edit-simplify-reminder.cjs` for keeping implementation quality from drifting
 
-## What the Journals Teach
+## What persistent notes teach
 
-The journals are unusually valuable because they record failures, not just ideals.
+Short reports under `plans/reports/` (or a revived `docs/journals/`) are valuable because they record failures, not just ideals.
 
 ### Anti-Patterns to Avoid
 
@@ -193,7 +193,7 @@ Loss of delegation is **not** a reason to lose structure.
 
 - Update `docs/` when architecture, workflow, or standards change
 - Keep summaries short and link deeper material
-- Add journals for painful lessons worth preserving
+- Add short reports for painful lessons worth preserving
 
 ### Review Discipline
 
@@ -221,7 +221,9 @@ For the next large project, the safest default is:
 3. Execute in small phases.
 4. Use strict verify/review/docs gates.
 5. Prefer progressive disclosure over loading everything.
-6. Treat journals as feedback loops for workflow repair.
+6. Treat written reports as feedback loops for workflow repair.
+
+**CABTA product work:** use `CABTA/docs/ONBOARDING.md` for the short read order; use `CABTA/docs/vibe-coding-operating-model.md` for product lanes (analysis vs workflow vs governance). Do not paste long architecture here — link `CABTA/docs/system-design.md`.
 
 That is the repo's real version of "vibe coding":
 

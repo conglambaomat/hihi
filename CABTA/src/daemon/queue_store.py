@@ -10,7 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_DEFAULT_DB = Path.home() / ".blue-team-assistant" / "cache" / "daemon.db"
+from ..utils.runtime_paths import runtime_cache_dir
+
+_DEFAULT_DB = runtime_cache_dir() / "daemon.db"
 
 
 class DaemonQueueStore:
@@ -43,8 +45,8 @@ class DaemonQueueStore:
                 conn.execute(
                     """INSERT INTO daemon_queue
                        (id, schedule_id, workflow_id, schedule_json, status, attempts,
-                        max_attempts, next_run_at, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)""",
+                        max_attempts, next_run_at, created_at, updated_at, last_transition, resume_token)
+                       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, 'queued', ?)""",
                     (
                         uuid.uuid4().hex[:12],
                         schedule_id,
@@ -54,6 +56,7 @@ class DaemonQueueStore:
                         now,
                         now,
                         now,
+                        uuid.uuid4().hex,
                     ),
                 )
                 queued += 1
@@ -68,7 +71,8 @@ class DaemonQueueStore:
             conn = self._connect()
             cur = conn.execute(
                 """UPDATE daemon_queue
-                   SET status = 'retry_scheduled', lease_owner = NULL, leased_at = NULL, updated_at = ?
+                   SET status = 'retry_scheduled', lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = 'lease_released'
                    WHERE status = 'leased' AND leased_at IS NOT NULL AND leased_at <= ?""",
                 (now, stale_before),
             )
@@ -77,8 +81,16 @@ class DaemonQueueStore:
             conn.close()
         return count
 
-    def lease_due_jobs(self, worker_id: str, *, limit: int = 5) -> List[Dict[str, Any]]:
-        now = datetime.now(timezone.utc).isoformat()
+    def lease_due_jobs(
+        self,
+        worker_id: str,
+        *,
+        limit: int = 5,
+        lease_timeout_seconds: int = 300,
+    ) -> List[Dict[str, Any]]:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_expires_at = (now_dt + timedelta(seconds=max(1, int(lease_timeout_seconds or 300)))).isoformat()
         leased_ids: List[str] = []
         with self._lock:
             conn = self._connect()
@@ -92,9 +104,10 @@ class DaemonQueueStore:
             for job_id in leased_ids:
                 conn.execute(
                     """UPDATE daemon_queue
-                       SET status = 'leased', leased_at = ?, lease_owner = ?, attempts = attempts + 1, updated_at = ?
+                       SET status = 'leased', leased_at = ?, lease_owner = ?, lease_expires_at = ?,
+                           attempts = attempts + 1, updated_at = ?, last_transition = 'leased'
                        WHERE id = ?""",
-                    (now, worker_id, now, job_id),
+                    (now, worker_id, lease_expires_at, now, job_id),
                 )
             conn.commit()
             conn.close()
@@ -106,7 +119,8 @@ class DaemonQueueStore:
             conn = self._connect()
             conn.execute(
                 """UPDATE daemon_queue
-                   SET status = 'completed', session_id = ?, lease_owner = NULL, leased_at = NULL, updated_at = ?
+                   SET status = 'completed', session_id = ?, lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = 'completed'
                    WHERE id = ?""",
                 (session_id, now, job_id),
             )
@@ -130,13 +144,46 @@ class DaemonQueueStore:
                 status = "failed"
             conn.execute(
                 """UPDATE daemon_queue
-                   SET status = ?, next_run_at = ?, last_error = ?, lease_owner = NULL, leased_at = NULL, updated_at = ?
+                   SET status = ?, next_run_at = ?, last_error = ?, lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = ?
                    WHERE id = ?""",
-                (status, next_run_at, error[:1000], now.isoformat(), job_id),
+                (status, next_run_at, error[:1000], now.isoformat(), status, job_id),
             )
             conn.commit()
             conn.close()
         return {"status": status, "retry_in_seconds": delay, "next_run_at": next_run_at}
+
+    def cancel_job(self, job_id: str, *, reason: str = "cancelled") -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """UPDATE daemon_queue
+                   SET status = 'cancelled', last_error = ?, lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = 'cancelled'
+                   WHERE id = ? AND status NOT IN ('completed', 'cancelled')""",
+                (reason[:1000], now, job_id),
+            )
+            conn.commit()
+            updated = cur.rowcount > 0
+            conn.close()
+        return updated
+
+    def resume_job(self, job_id: str) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """UPDATE daemon_queue
+                   SET status = 'queued', next_run_at = ?, lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = 'resumed'
+                   WHERE id = ? AND status IN ('failed', 'cancelled')""",
+                (now, now, job_id),
+            )
+            conn.commit()
+            updated = cur.rowcount > 0
+            conn.close()
+        return updated
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         conn = self._connect()
@@ -159,6 +206,7 @@ class DaemonQueueStore:
             "retry_scheduled": counts.get("retry_scheduled", 0),
             "completed": counts.get("completed", 0),
             "failed": counts.get("failed", 0),
+            "cancelled": counts.get("cancelled", 0),
         }
 
     def _init_db(self) -> None:
@@ -174,13 +222,16 @@ class DaemonQueueStore:
                 status       TEXT NOT NULL DEFAULT 'queued',
                 attempts     INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 3,
-                next_run_at  TEXT NOT NULL,
-                leased_at    TEXT,
-                lease_owner  TEXT,
-                session_id   TEXT,
-                last_error   TEXT DEFAULT '',
-                created_at   TEXT NOT NULL,
-                updated_at   TEXT NOT NULL
+                next_run_at    TEXT NOT NULL,
+                leased_at      TEXT,
+                lease_owner    TEXT,
+                lease_expires_at TEXT,
+                session_id     TEXT,
+                last_error     TEXT DEFAULT '',
+                last_transition TEXT DEFAULT 'queued',
+                resume_token   TEXT,
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
             )
             """
         )

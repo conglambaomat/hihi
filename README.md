@@ -8,9 +8,10 @@ This repository is a workspace that currently hosts `CABTA` as the primary produ
 
 Read these first:
 
-1. `CABTA/README.md`
-2. `CABTA/AGENTS.md`
-3. `CABTA/docs/system-design.md`
+1. `CABTA/docs/ONBOARDING.md`
+2. `CABTA/README.md`
+3. `CABTA/AGENTS.md`
+4. `CABTA/docs/system-design.md`
 
 `CABTA/` is the product application. If a task is ambiguous, assume the user means CABTA.
 
@@ -23,6 +24,10 @@ Important files:
 - `AGENTS.md`
 - `CLAUDE.md`
 - `.claude/rules/development-rules.md`
+- `.cursor/rules/cabta-workspace.mdc` — Cursor project rules (routing + CABTA scoring invariants)
+- `.cursor/skills/` — curated agent skills (plan, cook, fix, test, GitNexus, MCP, …); see `guide/SKILLS.md`
+- `CABTA/docs/ONBOARDING.md` — short read order for product work
+- `docs/gitnexus-workflow.md` — optional GitNexus MCP workflow (when connected)
 
 ## What Lives In This Repo
 

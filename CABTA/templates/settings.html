@@ -91,21 +91,12 @@
                 <div class="mb-3">
                     <label class="form-label">Provider</label>
                     <div class="provider-toggle" id="providerToggle">
-                        <button type="button" class="toggle-option active" data-value="openrouter" onclick="Settings.setProvider('openrouter')">
-                            <i class="bi bi-diagram-3 me-1"></i>OpenRouter
+                        <button type="button" class="toggle-option active" data-value="openrouter" disabled>
+                            <i class="bi bi-diagram-3 me-1"></i>OpenRouter Only
                         </button>
-                        <button type="button" class="toggle-option" data-value="ollama" onclick="Settings.setProvider('ollama')">
-                            <i class="bi bi-pc-display me-1"></i>Ollama
-                        </button>
-                        <button type="button" class="toggle-option" data-value="groq" onclick="Settings.setProvider('groq')">
-                            <i class="bi bi-lightning-charge me-1"></i>Groq
-                        </button>
-                        <button type="button" class="toggle-option" data-value="anthropic" onclick="Settings.setProvider('anthropic')">
-                            <i class="bi bi-cloud me-1"></i>Anthropic
-                        </button>
-                        <button type="button" class="toggle-option" data-value="gemini" onclick="Settings.setProvider('gemini')">
-                            <i class="bi bi-google me-1"></i>Gemini
-                        </button>
+                    </div>
+                    <div class="small text-muted mt-2">
+                        CABTA is pinned to OpenRouter for hosted LLM access. NVIDIA Build and Groq settings have been removed from the runtime configuration.
                     </div>
                 </div>
 
@@ -129,90 +120,12 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Model Name</label>
-                        <input type="text" id="openrouterModel" class="form-control" value="nvidia/nemotron-3-super-120b-a12b:free"
-                            placeholder="e.g. nvidia/nemotron-3-super-120b-a12b:free"
+                        <input type="text" id="openrouterModel" class="form-control" value="arcee-ai/trinity-large-preview:free"
+                            placeholder="e.g. arcee-ai/trinity-large-preview:free"
                             style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
                         <div class="small text-muted mt-2">
-                            OpenRouter uses an OpenAI-compatible API. This CABTA build is configured to use <code>nvidia/nemotron-3-super-120b-a12b:free</code> for both agent chat and analysis summaries.
+                            OpenRouter uses an OpenAI-compatible API. CABTA is configured to use a non-NVIDIA OpenRouter model for both agent chat and analysis summaries.
                         </div>
-                    </div>
-                </div>
-
-                <div id="ollamaFields" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Ollama Endpoint URL</label>
-                        <input type="url" id="ollamaEndpoint" class="form-control" value="http://localhost:11434"
-                            placeholder="http://localhost:11434"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label d-flex justify-content-between align-items-center">
-                            <span>Model Name</span>
-                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.72rem;" onclick="Settings.refreshOllamaModels()" title="Refresh model list from Ollama">
-                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                            </button>
-                        </label>
-                        <select id="ollamaModel" class="form-select"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                            <option value="llama3.1:8b">llama3.1:8b (default)</option>
-                        </select>
-                        <div id="ollamaModelStatus" class="mt-1" style="font-size:0.72rem;"></div>
-                    </div>
-                </div>
-
-                <div id="groqFields" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Groq API Key</label>
-                        <div class="api-key-field">
-                            <input type="password" id="groqApiKey" class="form-control pe-5"
-                                placeholder="gsk_..."
-                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('groqApiKey', this)">
-                                <i class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Groq Endpoint</label>
-                        <input type="url" id="groqEndpoint" class="form-control" value="https://api.groq.com/openai/v1"
-                            placeholder="https://api.groq.com/openai/v1"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Model Name</label>
-                        <input type="text" id="groqModel" class="form-control" value="openai/gpt-oss-20b"
-                            list="groqModelOptions"
-                            placeholder="e.g. openai/gpt-oss-20b"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                        <datalist id="groqModelOptions">
-                            <option value="openai/gpt-oss-20b"></option>
-                            <option value="openai/gpt-oss-120b"></option>
-                            <option value="meta-llama/llama-4-scout-17b-16e-instruct"></option>
-                            <option value="moonshotai/kimi-k2-instruct-0905"></option>
-                        </datalist>
-                        <div class="small text-muted mt-2">
-                            Groq uses a hosted OpenAI-compatible API. Recommended open-weight defaults are <code>openai/gpt-oss-20b</code> or <code>openai/gpt-oss-120b</code>.
-                        </div>
-                    </div>
-                </div>
-
-                <div id="anthropicFields" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Anthropic API Key</label>
-                        <div class="api-key-field">
-                            <input type="password" id="anthropicApiKey" class="form-control pe-5"
-                                placeholder="sk-ant-..."
-                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('anthropicApiKey', this)">
-                                <i class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Model Name</label>
-                        <input type="text" id="anthropicModel" class="form-control" value="claude-sonnet-4-20250514"
-                            placeholder="e.g. claude-sonnet-4-20250514"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
                     </div>
                 </div>
 
@@ -258,36 +171,6 @@
                         These choices map directly to AISA backend modes. Legacy <code>subprocess</code> is normalized to <code>vm</code>.
                     </div>
                 </div>
-
-                <div id="geminiFields" style="display:none;">
-                    <div class="mb-3">
-                        <label class="form-label">Gemini API Key</label>
-                        <div class="api-key-field">
-                            <input type="password" id="geminiApiKey" class="form-control pe-5"
-                                placeholder="AIza..."
-                                style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                            <button type="button" class="toggle-visibility" onclick="Settings.toggleVisibility('geminiApiKey', this)">
-                                <i class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Gemini Endpoint</label>
-                        <input type="url" id="geminiEndpoint" class="form-control" value="https://generativelanguage.googleapis.com/v1beta/openai"
-                            placeholder="https://generativelanguage.googleapis.com/v1beta/openai"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Model Name</label>
-                        <input type="text" id="geminiModel" class="form-control" value="gemini-2.5-flash"
-                            placeholder="e.g. gemini-3-flash-preview"
-                            style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
-                        <div class="small text-muted mt-2">
-                            Gemini uses Google's OpenAI-compatible endpoint. Use a tool-calling capable Gemini model for agent workflows.
-                        </div>
-                    </div>
-                </div>
-
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="requireApproval" checked>
                     <label class="form-check-label" for="requireApproval">Require human approval for high-risk actions</label>
@@ -444,52 +327,9 @@ var Settings = (function() {
             .then(function(cfg) {
                 // LLM settings
                 var llm = cfg.llm || {};
-                var provider = llm.provider || 'openrouter';
-                setProvider(provider);
-
-                if (llm.ollama_endpoint || llm.base_url) {
-                    document.getElementById('ollamaEndpoint').value = llm.ollama_endpoint || llm.base_url || '';
-                }
-                if (llm.openrouter_endpoint || (provider === 'openrouter' && llm.base_url)) {
-                    document.getElementById('openrouterEndpoint').value = llm.openrouter_endpoint || llm.base_url || '';
-                }
-                var savedModel = llm.ollama_model || llm.model || 'llama3.1:8b';
-                if (provider === 'ollama') {
-                    refreshOllamaModels(savedModel);
-                } else {
-                    var ollamaSelect = document.getElementById('ollamaModel');
-                    if (ollamaSelect && ollamaSelect.options.length === 0) {
-                        var opt = document.createElement('option');
-                        opt.value = savedModel;
-                        opt.textContent = savedModel;
-                        opt.selected = true;
-                        ollamaSelect.appendChild(opt);
-                    }
-                    setStatusMsg(
-                        document.getElementById('ollamaModelStatus'),
-                        'Ollama model list is only needed when Ollama is the active provider.',
-                        'text-muted',
-                        'bi-info-circle'
-                    );
-                }
-                if (llm.anthropic_model) {
-                    document.getElementById('anthropicModel').value = llm.anthropic_model;
-                }
-                if (llm.openrouter_model || (provider === 'openrouter' && llm.model)) {
-                    document.getElementById('openrouterModel').value = llm.openrouter_model || llm.model || 'nvidia/nemotron-3-super-120b-a12b:free';
-                }
-                if (llm.groq_endpoint || (provider === 'groq' && llm.base_url)) {
-                    document.getElementById('groqEndpoint').value = llm.groq_endpoint || llm.base_url || '';
-                }
-                if (llm.groq_model || (provider === 'groq' && llm.model)) {
-                    document.getElementById('groqModel').value = llm.groq_model || llm.model || 'openai/gpt-oss-20b';
-                }
-                if (llm.gemini_endpoint || (provider === 'gemini' && llm.base_url)) {
-                    document.getElementById('geminiEndpoint').value = llm.gemini_endpoint || llm.base_url || '';
-                }
-                if (llm.gemini_model || (provider === 'gemini' && llm.model)) {
-                    document.getElementById('geminiModel').value = llm.gemini_model || llm.model || 'gemini-2.5-flash';
-                }
+                currentProvider = 'openrouter';
+                document.getElementById('openrouterEndpoint').value = llm.openrouter_endpoint || llm.base_url || 'https://openrouter.ai/api/v1';
+                document.getElementById('openrouterModel').value = llm.openrouter_model || llm.model || 'arcee-ai/trinity-large-preview:free';
 
                 // Agent settings
                 var agent = cfg.agent || {};
@@ -508,17 +348,8 @@ var Settings = (function() {
 
                 // API keys - show masked values if configured
                 var keys = cfg.api_keys || {};
-                if (keys.groq && keys.groq.length > 0) {
-                    document.getElementById('groqApiKey').placeholder = 'Configured (' + keys.groq + ')';
-                }
                 if (keys.openrouter && keys.openrouter.length > 0) {
                     document.getElementById('openrouterApiKey').placeholder = 'Configured (' + keys.openrouter + ')';
-                }
-                if (keys.anthropic && keys.anthropic.length > 0) {
-                    document.getElementById('anthropicApiKey').placeholder = 'Configured (' + keys.anthropic + ')';
-                }
-                if (keys.gemini && keys.gemini.length > 0) {
-                    document.getElementById('geminiApiKey').placeholder = 'Configured (' + keys.gemini + ')';
                 }
                 apiKeyCatalog.forEach(function(item) {
                     var field = document.getElementById(item.fieldId);
@@ -535,20 +366,7 @@ var Settings = (function() {
     }
 
     function setProvider(provider) {
-        currentProvider = provider;
-        var buttons = document.querySelectorAll('#providerToggle .toggle-option');
-        buttons.forEach(function(btn) {
-            if (btn.getAttribute('data-value') === provider) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
-        });
-        document.getElementById('openrouterFields').style.display = provider === 'openrouter' ? '' : 'none';
-        document.getElementById('ollamaFields').style.display = provider === 'ollama' ? '' : 'none';
-        document.getElementById('groqFields').style.display = provider === 'groq' ? '' : 'none';
-        document.getElementById('anthropicFields').style.display = provider === 'anthropic' ? '' : 'none';
-        document.getElementById('geminiFields').style.display = provider === 'gemini' ? '' : 'none';
+        currentProvider = 'openrouter';
     }
 
     function setStatusMsg(el, text, cls, icon) {
@@ -621,37 +439,16 @@ var Settings = (function() {
     }
 
     function saveLLM() {
-        var llm = { provider: currentProvider };
-        if (currentProvider === 'openrouter') {
-            llm.openrouter_endpoint = document.getElementById('openrouterEndpoint').value.trim() || 'https://openrouter.ai/api/v1';
-            llm.openrouter_model = document.getElementById('openrouterModel').value.trim() || 'nvidia/nemotron-3-super-120b-a12b:free';
-        } else if (currentProvider === 'ollama') {
-            llm.ollama_endpoint = document.getElementById('ollamaEndpoint').value.trim();
-            llm.ollama_model = document.getElementById('ollamaModel').value;
-        } else if (currentProvider === 'groq') {
-            llm.groq_endpoint = document.getElementById('groqEndpoint').value.trim() || 'https://api.groq.com/openai/v1';
-            llm.groq_model = document.getElementById('groqModel').value.trim() || 'openai/gpt-oss-20b';
-        } else if (currentProvider === 'gemini') {
-            llm.gemini_endpoint = document.getElementById('geminiEndpoint').value.trim() || 'https://generativelanguage.googleapis.com/v1beta/openai';
-            llm.gemini_model = document.getElementById('geminiModel').value.trim() || 'gemini-2.5-flash';
-        } else {
-            llm.anthropic_model = document.getElementById('anthropicModel').value.trim();
-        }
+        var llm = {
+            provider: 'openrouter',
+            auto_failover: false,
+            fallback_providers: [],
+            openrouter_endpoint: document.getElementById('openrouterEndpoint').value.trim() || 'https://openrouter.ai/api/v1',
+            openrouter_model: document.getElementById('openrouterModel').value.trim() || 'arcee-ai/trinity-large-preview:free'
+        };
         var payload = { llm: llm };
-        // If Anthropic key provided, send it via api_keys
-        if (currentProvider === 'openrouter') {
-            var openrouterKey = document.getElementById('openrouterApiKey').value.trim();
-            if (openrouterKey) payload.api_keys = { openrouter: openrouterKey };
-        } else if (currentProvider === 'anthropic') {
-            var key = document.getElementById('anthropicApiKey').value.trim();
-            if (key) payload.api_keys = { anthropic: key };
-        } else if (currentProvider === 'groq') {
-            var groqKey = document.getElementById('groqApiKey').value.trim();
-            if (groqKey) payload.api_keys = { groq: groqKey };
-        } else if (currentProvider === 'gemini') {
-            var geminiKey = document.getElementById('geminiApiKey').value.trim();
-            if (geminiKey) payload.api_keys = { gemini: geminiKey };
-        }
+        var openrouterKey = document.getElementById('openrouterApiKey').value.trim();
+        if (openrouterKey) payload.api_keys = { openrouter: openrouterKey };
         saveConfig(payload, 'llmSaveIndicator');
     }
 
@@ -742,13 +539,12 @@ var Settings = (function() {
     document.addEventListener('DOMContentLoaded', init);
 
     return {
-        setProvider: setProvider,
         saveLLM: saveLLM,
         saveAgent: saveAgent,
         saveWeb: saveWeb,
         saveApiKeys: saveApiKeys,
         toggleVisibility: toggleVisibility,
-        refreshOllamaModels: refreshOllamaModels
+        setProvider: setProvider
     };
 })();
 </script>

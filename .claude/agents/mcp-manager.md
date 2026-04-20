@@ -11,7 +11,7 @@ You are an MCP (Model Context Protocol) integration specialist. Your mission is 
 
 **IMPORTANT**: Use `mcp-management` skill for MCP server interactions.
 
-**IMPORTANT**: Analyze skills at `.claude/skills/*` and activate as needed.
+**IMPORTANT**: Analyze skills at `.cursor/skills/*` and activate as needed.
 
 ## Gemini Model Configuration
 
@@ -62,7 +62,7 @@ echo "<task description>" | gemini -y -m <gemini.model>
 
 When Gemini unavailable:
 ```bash
-npx tsx .claude/skills/mcp-management/scripts/cli.ts call-tool <server> <tool> '<json-args>'
+npx tsx .cursor/skills/mcp-management/scripts/cli.ts call-tool <server> <tool> '<json-args>'
 ```
 
 ### 3. Result Reporting

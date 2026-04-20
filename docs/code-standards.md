@@ -36,19 +36,13 @@ This document defines coding standards, file organization patterns, naming conve
 project-root/
 ├── .claude/                    # Claude Code configuration
 │   ├── agents/                # Agent definitions (*.md)
-│   ├── command-archive/       # Archived legacy command definitions
 │   ├── commands/              # Reserved compatibility directory (can be empty)
 │   ├── hooks/                # Git hooks and scripts
-│   ├── skills/               # Reusable knowledge modules
-│   │   └── [skill-name]/     # Individual skill directories
-│   │       ├── SKILL.md      # Skill definition
-│   │       └── references/   # Supporting materials
 │   └── rules/                # Development rules and protocols
+├── .cursor/skills/            # Curated agent skills (SKILL.md per skill)
 ├── .github/                   # GitHub-specific files
 │   └── workflows/            # CI/CD workflows
-├── docs/                      # Project documentation
-│   ├── research/             # Research reports
-│   └── *.md                  # Core documentation files
+├── docs/                      # Project documentation (*.md)
 ├── guide/                     # User guides
 ├── plans/                     # Implementation plans
 │   ├── reports/              # Agent communication reports
@@ -70,13 +64,7 @@ project-root/
 - Descriptive, role-based names
 - Examples: `planner.md`, `tester.md`, `git-manager.md`
 
-**Legacy Command Archive** (`.claude/command-archive/`):
-- Read-only historical command files moved during command-to-skill migration
-- Keep original kebab-case filenames for traceability
-- Do not add new runtime features here
-- Add new capabilities as skills in `.claude/skills/`
-
-**Skills** (`.claude/skills/`):
+**Skills** (`.cursor/skills/`):
 - Format: `[skill-name]/SKILL.md`
 - Use kebab-case for directory names
 - Main file always named `SKILL.md`

@@ -8,7 +8,7 @@ AI-powered SOC platform for threat analysis, IOC investigation, and email forens
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/conglambaomat/hihi)
 
-CABTA is a comprehensive, local-first security analysis platform designed for SOC analysts, incident responders, and threat hunters. It features a modern web dashboard, 20+ threat intelligence sources, advanced malware analysis, email forensics, and AI-powered investigation with optional LLM support via Ollama, Groq, Anthropic, or Gemini.
+CABTA is a comprehensive, local-first security analysis platform designed for SOC analysts, incident responders, and threat hunters. It features a modern web dashboard, 20+ threat intelligence sources, advanced malware analysis, email forensics, and AI-powered investigation with OpenRouter-backed LLM support for agent chat and analyst-assist summaries.
 
 CABTA currently lives inside the `hihi` workspace repository. Clone the workspace repo, then work from the `CABTA/` directory.
 
@@ -41,7 +41,7 @@ CABTA currently lives inside the `hihi` workspace repository. Clone the workspac
 | **Advanced Malware Analysis** | PE/ELF/Mach-O/APK/Office/PDF/Script/Archive analysis with deep inspection |
 | **Email Forensics** | SPF/DKIM/DMARC validation, BEC detection, phishing scoring, relay chain analysis |
 | **IOC Investigation** | IP, domain, URL, hash, email, CVE lookup across all TI sources with DGA and domain age detection |
-| **AI-Powered Analysis** | Optional LLM providers via OpenRouter, Ollama, Groq, Anthropic, or Gemini for threat summarization and context-aware verdicts |
+| **AI-Powered Analysis** | OpenRouter-backed LLM support for threat summarization, context-aware verdicts, and agent chat responses |
 | **Detection Rule Generation** | Auto-generated KQL, Splunk SPL, Sigma, YARA, Snort, FortiMail, Proofpoint, Mimecast rules |
 | **Case Management** | Track investigations, link analyses, add notes |
 | **STIX 2.1 Export** | Export IOCs as STIX bundles with TLP marking |
@@ -200,20 +200,14 @@ api_keys:
 
 # LLM Configuration
 llm:
-  provider: "openrouter"       # openrouter, ollama, groq, anthropic, gemini
-  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+  provider: "openrouter"
+  auto_failover: false
+  fallback_providers: []
+  openrouter_model: "arcee-ai/trinity-large-preview:free"
   openrouter_endpoint: "https://openrouter.ai/api/v1"
-  ollama_model: "llama3.1:8b"
-  ollama_endpoint: "http://localhost:11434"
-  groq_model: "openai/gpt-oss-20b"
-  groq_endpoint: "https://api.groq.com/openai/v1"
-  gemini_model: "gemini-2.5-flash"
-  gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
 
 api_keys:
   openrouter: "your-openrouter-api-key"
-  groq: "your-groq-api-key"
-  gemini: "your-gemini-api-key"
 ```
 
 ### API Key Sources

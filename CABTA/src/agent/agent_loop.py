@@ -7,23 +7,42 @@ analyst approval (WAITING_HUMAN).
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
 import time
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 
 from .agent_state import AgentPhase, AgentState
 from .agent_store import AgentStore
+from .case_memory_service import CaseMemoryService
+from .case_sync_service import CaseSyncService
+from .chat_intent_router import ChatIntentRouter
 from .entity_resolver import EntityResolver
 from .evidence_graph import EvidenceGraph
 from .hypothesis_manager import HypothesisManager
+from .investigation_planner import InvestigationPlanner
+from .log_query_planner import LogQueryPlanner
+from .next_action_planner import NextActionPlanner
+from .observation_normalizer import ObservationNormalizer
 from .profiles import AgentProfileRegistry
+from .prompt_composer import PromptComposer
+from .provider_chat_gateway import ProviderChatGateway
+from .provider_gateway import ProviderGateway
+from .provider_health_service import ProviderHealthService
+from .root_cause_engine import RootCauseEngine
+from .session_context_service import SessionContextService
+from .session_response_builder import SessionResponseBuilder
+from .specialist_router import SpecialistRouter
 from .specialist_supervisor import SpecialistSupervisor
+from .thread_store import ThreadStore
+from .thread_sync_service import ThreadSyncService
 from .tool_registry import ToolRegistry
 from ..utils.api_key_validator import get_valid_key, is_valid_api_key
 
@@ -114,6 +133,28 @@ IMPORTANT:
 - Always include the "action" key in your JSON response.
 """
 
+_CHAT_DIRECT_ANSWER_PROMPT = """\
+You are a Blue Team Security Agent continuing an analyst conversation.
+
+Investigation goal: {goal}
+
+Previous findings:
+{findings_block}
+
+{response_style_block}
+
+Current structured reasoning state:
+{reasoning_block}
+
+{profile_block}
+
+Answer the analyst directly in natural language using only the evidence that is already available.
+Do not output JSON.
+Do not request or call more tools in this response.
+Do not propose a playbook, workflow step, or next tool unless you are explicitly stating what evidence is still missing.
+If the evidence is still insufficient, say that clearly and explain what is missing.
+"""
+
 _SUMMARY_PROMPT = """\
 You are a Blue Team Security Agent. Summarise the following investigation
 in 3-5 sentences suitable for a SOC ticket.  Include the verdict
@@ -150,6 +191,8 @@ class AgentLoop:
         workflow_registry=None,
         governance_store=None,
         case_store=None,
+        thread_store=None,
+        case_memory_service=None,
     ):
         self.config = config
         self.tools = tool_registry
@@ -161,10 +204,62 @@ class AgentLoop:
         self.workflow_registry = workflow_registry
         self.governance_store = governance_store
         self.case_store = case_store
+        if thread_store is not None:
+            self.thread_store = thread_store
+        else:
+            inferred_db_path = None
+            if agent_store is not None and getattr(agent_store, "_db_path", None) is not None:
+                inferred_db_path = str(Path(agent_store._db_path).with_name("threads.db"))
+            self.thread_store = ThreadStore(db_path=inferred_db_path)
+        self.case_memory_service = case_memory_service
+        if self.case_memory_service is None and (case_store is not None or agent_store is not None):
+            self.case_memory_service = CaseMemoryService(case_store=case_store, agent_store=agent_store)
+        self.case_sync_service = CaseSyncService(
+            case_store=case_store,
+            case_memory_service=self.case_memory_service,
+            entity_resolver=None,
+            evidence_graph=None,
+        )
         self.specialist_supervisor = SpecialistSupervisor(agent_store) if agent_store is not None else None
+        self.specialist_router = SpecialistRouter(
+            workflow_registry=self.workflow_registry,
+            agent_profiles=self.agent_profiles,
+            notify=self._notify,
+            log_decision=self._log_decision,
+        )
+        self.investigation_planner = InvestigationPlanner()
+        self.log_query_planner = LogQueryPlanner()
         self.hypothesis_manager = HypothesisManager()
+        self.observation_normalizer = ObservationNormalizer()
         self.entity_resolver = EntityResolver()
         self.evidence_graph = EvidenceGraph()
+        self.case_sync_service.entity_resolver = self.entity_resolver
+        self.case_sync_service.evidence_graph = self.evidence_graph
+        self.root_cause_engine = RootCauseEngine()
+        self.chat_intent_router = ChatIntentRouter()
+        self.prompt_composer = PromptComposer()
+        self.next_action_planner = NextActionPlanner(
+            get_tool=self.tools.get_tool,
+            has_tool_result=self._has_tool_result,
+            guess_first_tool=self._guess_first_tool,
+            guess_tool_params=self._guess_tool_params,
+            latest_analyst_message=self._latest_analyst_message,
+            latest_focus_candidate=self._latest_focus_candidate,
+            resolve_authoritative_outcome=self._resolve_authoritative_outcome,
+            simple_chat_has_strong_evidence=self._simple_chat_has_strong_evidence,
+            looks_like_artifact_submission=self._looks_like_artifact_submission,
+            build_reasoning_search_request=self._build_reasoning_search_request,
+        )
+        self.session_context_service = SessionContextService(
+            store=self.store,
+            thread_store=self.thread_store,
+        )
+        self.session_response_builder = SessionResponseBuilder()
+        self.thread_sync_service = ThreadSyncService(
+            thread_store=self.thread_store,
+            store=self.store,
+            notify=self._notify,
+        )
 
         agent_cfg = config.get('agent', {})
         self.max_steps = agent_cfg.get('max_steps', 50)
@@ -172,10 +267,12 @@ class AgentLoop:
         self.chat_tool_cap = int(agent_cfg.get('chat_tool_cap', 14))
         self.chat_prompt_findings_limit = int(agent_cfg.get('chat_prompt_findings_limit', 5))
         self.chat_auto_enrich_limit = int(agent_cfg.get('chat_auto_enrich_limit', 1))
+        self.chat_response_timeout_seconds = float(agent_cfg.get('chat_response_timeout_seconds', 15))
+        self.llm_unavailable_cooldown_seconds = float(agent_cfg.get('llm_unavailable_cooldown_seconds', 30))
 
         # LLM connection settings (mirrors LLMAnalyzer)
         llm_cfg = config.get('llm', {})
-        self.provider = llm_cfg.get('provider', 'ollama')
+        self.provider = llm_cfg.get('provider', 'openrouter')
         self.ollama_endpoint = llm_cfg.get('ollama_endpoint', llm_cfg.get('base_url', 'http://localhost:11434'))
         self.ollama_model = llm_cfg.get('ollama_model', llm_cfg.get('model', 'llama3.1:8b'))
         self.anthropic_key = get_valid_key(config.get('api_keys', {}), 'anthropic') or ''
@@ -195,6 +292,15 @@ class AgentLoop:
             llm_cfg.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'),
         ).rstrip('/')
         self.gemini_model = llm_cfg.get('gemini_model', llm_cfg.get('model', 'gemini-2.5-flash'))
+        self.nvidia_key = (
+            get_valid_key(config.get('api_keys', {}), 'nvidia')
+            or (llm_cfg.get('api_key', '') if is_valid_api_key(llm_cfg.get('api_key', '')) else '')
+        )
+        self.nvidia_endpoint = llm_cfg.get(
+            'nvidia_endpoint',
+            llm_cfg.get('base_url', 'https://integrate.api.nvidia.com/v1'),
+        ).rstrip('/')
+        self.nvidia_model = llm_cfg.get('nvidia_model', llm_cfg.get('model', 'deepseek-ai/deepseek-v3.2'))
         self.openrouter_key = (
             get_valid_key(config.get('api_keys', {}), 'openrouter')
             or (llm_cfg.get('api_key', '') if is_valid_api_key(llm_cfg.get('api_key', '')) else '')
@@ -205,27 +311,45 @@ class AgentLoop:
         ).rstrip('/')
         self.openrouter_model = llm_cfg.get(
             'openrouter_model',
-            llm_cfg.get('model', 'nvidia/nemotron-3-super-120b-a12b:free'),
+            llm_cfg.get('model', 'arcee-ai/trinity-large-preview:free'),
         )
-        self.auto_failover = bool(llm_cfg.get('auto_failover', True))
+        self.openrouter_force_json_decision_mode = bool(
+            llm_cfg.get('openrouter_force_json_decision_mode', False)
+        )
+        self.auto_failover = bool(llm_cfg.get('auto_failover', False))
         configured_fallbacks = llm_cfg.get('fallback_providers', llm_cfg.get('fallback_order', []))
         if isinstance(configured_fallbacks, str):
             configured_fallbacks = [configured_fallbacks]
         self.fallback_providers = [
             str(provider).strip().lower()
-            for provider in (configured_fallbacks or ['groq', 'anthropic'])
+            for provider in (configured_fallbacks or [])
             if str(provider).strip()
         ]
-        self.timeout = aiohttp.ClientTimeout(total=120)
-        self.provider_runtime_status: Dict[str, Any] = {
-            "provider": self.provider,
-            "available": None,
-            "status": "unknown",
-            "error": None,
-            "http_status": None,
-            "checked_at": None,
-        }
-        self.provider_runtime_statuses: Dict[str, Dict[str, Any]] = {}
+        analysis_cfg = config.get('analysis', {})
+        llm_timeout_seconds = float(
+            llm_cfg.get(
+                'timeout_seconds',
+                analysis_cfg.get('llm_timeout_seconds', 25),
+            ) or 25
+        )
+        self.timeout = aiohttp.ClientTimeout(total=max(5.0, llm_timeout_seconds))
+        self.provider_health_service = ProviderHealthService(
+            primary_provider=self.provider,
+            auto_failover=self.auto_failover,
+            fallback_providers=self.fallback_providers,
+            llm_unavailable_cooldown_seconds=self.llm_unavailable_cooldown_seconds,
+            openrouter_force_json_decision_mode=self.openrouter_force_json_decision_mode,
+            model_name_resolver=self._active_model_name_from_config,
+            provider_configured_resolver=self._provider_is_configured_from_config,
+        )
+        self.provider_runtime_status = self.provider_health_service.provider_runtime_status
+        self.provider_runtime_statuses = self.provider_health_service.provider_runtime_statuses
+        self.provider_chat_gateway = ProviderChatGateway()
+        self.provider_gateway = ProviderGateway(
+            candidate_providers=self._candidate_providers,
+            primary_provider=lambda: self._normalize_provider(self.provider),
+            logger=logger,
+        )
 
         # Active sessions & pub-sub
         self._active_sessions: Dict[str, AgentState] = {}
@@ -248,11 +372,20 @@ class AgentLoop:
         """Start an autonomous investigation. Returns *session_id* immediately."""
 
         metadata = dict(metadata or {})
+        investigation_plan = self.investigation_planner.build_plan(
+            goal,
+            metadata=metadata,
+            workflow_registry=self.workflow_registry,
+            existing=metadata.get("investigation_plan"),
+        )
+        if not metadata.get("workflow_id") and investigation_plan.get("workflow_id"):
+            metadata["workflow_id"] = investigation_plan.get("workflow_id")
         specialist_team = self._resolve_specialist_team(metadata)
         lead_profile_id = metadata.get("agent_profile_id")
         active_specialist = specialist_team[0] if specialist_team else (lead_profile_id or "workflow_controller")
         metadata = {
             **metadata,
+            "investigation_plan": investigation_plan,
             "lead_agent_profile_id": lead_profile_id or active_specialist,
             "agent_profile_id": active_specialist,
             "specialist_team": specialist_team,
@@ -275,34 +408,43 @@ class AgentLoop:
         )
 
         effective_max_steps = max_steps if max_steps is not None else self.max_steps
+        thread_id = self._resolve_thread_id(session_id, case_id, metadata)
+        metadata["thread_id"] = thread_id
+        self.store.update_session_metadata(
+            session_id,
+            {
+                "thread_id": thread_id,
+                "investigation_plan": investigation_plan,
+            },
+            merge=True,
+        )
         state = AgentState(
             session_id=session_id,
             goal=goal,
             max_steps=effective_max_steps,
             agent_profile_id=active_specialist,
             workflow_id=metadata.get("workflow_id"),
+            investigation_plan=investigation_plan,
+            thread_id=thread_id,
         )
         state.configure_specialist_team(specialist_team, active_specialist=active_specialist)
-        state.reasoning_state = self.hypothesis_manager.bootstrap(goal, session_id)
-        state.entity_state = self.entity_resolver.bootstrap()
-        state.evidence_state = self.evidence_graph.bootstrap()
-        state.deterministic_decision = self._build_deterministic_decision_output(state)
-        state.agentic_explanation = self.hypothesis_manager.build_agentic_explanation(
-            state.reasoning_state,
-            goal=goal,
-            deterministic_decision=state.deterministic_decision,
-            entity_state=state.entity_state,
-            evidence_state=state.evidence_state,
+        self._maybe_record_thread_user_message(state, metadata)
+        self._restore_follow_up_context(session_id, state, metadata)
+        state.reasoning_state = self.hypothesis_manager.bootstrap(
+            goal,
+            session_id,
+            existing=state.reasoning_state,
+            investigation_plan=state.investigation_plan,
         )
-        state.evidence_state = self.evidence_graph.sync_reasoning(
-            state.evidence_state,
-            session_id=session_id,
-            reasoning_state=state.reasoning_state,
-            root_cause_assessment=state.agentic_explanation.get("root_cause_assessment", {}),
-        )
+        state.reasoning_state["session_id"] = session_id
+        latest_focus = self._latest_focus_candidate(state)
+        existing_focus = str(state.reasoning_state.get("goal_focus") or "").strip() if isinstance(state.reasoning_state, dict) else ""
+        if latest_focus and (not existing_focus or not self._goal_has_observable(existing_focus)):
+            state.reasoning_state["goal_focus"] = latest_focus
+        state.unresolved_questions = list(state.reasoning_state.get("open_questions", [])) if isinstance(state.reasoning_state, dict) else []
+        self._refresh_reasoning_outputs(session_id, state)
         self._active_sessions[session_id] = state
         self._approval_events[session_id] = asyncio.Event()
-        self._persist_reasoning_metadata(session_id, state)
 
         # Capture the main event loop so _notify() can safely push
         # messages to subscriber queues from background threads.
@@ -322,6 +464,22 @@ class AgentLoop:
         logger.info(f"[AGENT] Investigation started: {session_id} - {goal[:80]}")
         return session_id
 
+    @staticmethod
+    def _restore_state_from_snapshot(state: AgentState, snapshot: Dict[str, Any]) -> None:
+        SessionContextService.restore_state_from_snapshot(state, snapshot)
+
+    def _restore_follow_up_context(
+        self,
+        session_id: str,
+        state: AgentState,
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        return self.session_context_service.restore_follow_up_context(
+            session_id=session_id,
+            state=state,
+            metadata=metadata,
+        )
+
     def _record_llm_runtime_status(
         self,
         *,
@@ -331,22 +489,56 @@ class AgentLoop:
         error: Optional[str] = None,
         http_status: Optional[int] = None,
     ) -> None:
+        self.provider_health_service.record_runtime_status(
+            provider=provider,
+            model=model,
+            available=available,
+            error=error,
+            http_status=http_status,
+        )
+        self.provider_runtime_status = self.provider_health_service.provider_runtime_status
+        self.provider_runtime_statuses = self.provider_health_service.provider_runtime_statuses
+
+    def _runtime_status_for_provider(self, provider: Optional[str] = None) -> Dict[str, Any]:
         provider_name = self._normalize_provider(provider)
-        status = {
-            "provider": provider_name,
-            "model": model or self._active_model_name(provider_name),
-            "available": available,
-            "status": "ready" if available else "error",
-            "error": error,
-            "http_status": http_status,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.provider_runtime_statuses[provider_name] = status
-        if provider_name == self.provider:
-            self.provider_runtime_status = status
+        status = self.provider_health_service.runtime_status_for_provider(provider_name)
+        if status:
+            return status
+
+        legacy_status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
+        if isinstance(legacy_status, dict) and self._normalize_provider(legacy_status.get("provider")) == provider_name:
+            return legacy_status
+        return {}
+
+    def _provider_is_currently_unavailable(self, provider: Optional[str] = None) -> bool:
+        status = self._runtime_status_for_provider(provider)
+        return bool(status) and status.get("available") is False
+
+    def _provider_is_recently_unavailable(self, provider: Optional[str] = None) -> bool:
+        status = self._runtime_status_for_provider(provider)
+        if not status or status.get("available") is not False:
+            return False
+
+        checked_at = str(status.get("checked_at") or "").strip()
+        cooldown_seconds = max(0.0, float(self.llm_unavailable_cooldown_seconds or 0.0))
+        if cooldown_seconds <= 0:
+            return False
+        if not checked_at:
+            return True
+
+        try:
+            checked_at_dt = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+
+        if checked_at_dt.tzinfo is None:
+            checked_at_dt = checked_at_dt.replace(tzinfo=timezone.utc)
+
+        age_seconds = (datetime.now(timezone.utc) - checked_at_dt).total_seconds()
+        return age_seconds <= cooldown_seconds
 
     def _normalize_provider(self, provider: Optional[str]) -> str:
-        return str(provider or self.provider or 'ollama').strip().lower() or 'ollama'
+        return self.provider_health_service.normalize_provider(provider)
 
     @staticmethod
     def _is_groq_chat_model_compatible(model_name: str) -> bool:
@@ -357,7 +549,10 @@ class AgentLoop:
         return not any(token in normalized for token in incompatible_tokens)
 
     def _active_model_name(self, provider: Optional[str] = None) -> str:
-        provider_name = self._normalize_provider(provider)
+        return self._active_model_name_from_config(self._normalize_provider(provider))
+
+    def _active_model_name_from_config(self, provider_name: str) -> str:
+        provider_name = str(provider_name or 'openrouter').strip().lower() or 'openrouter'
         if provider_name == 'anthropic':
             return self.anthropic_model
         if provider_name == 'groq':
@@ -368,34 +563,46 @@ class AgentLoop:
             return self.gemini_model
         if provider_name == 'openrouter':
             return self.openrouter_model
+        if provider_name == 'nvidia':
+            return self.nvidia_model
         return self.ollama_model
 
     def _provider_is_configured(self, provider: Optional[str]) -> bool:
-        provider_name = self._normalize_provider(provider)
+        return self._provider_is_configured_from_config(self._normalize_provider(provider))
+
+    def _provider_is_configured_from_config(self, provider_name: str) -> bool:
+        provider_name = str(provider_name or 'openrouter').strip().lower() or 'openrouter'
         if provider_name == 'anthropic':
             return bool(self.anthropic_key)
         if provider_name == 'groq':
             return bool(self.groq_key)
         if provider_name == 'gemini':
             return bool(self.gemini_key)
+        if provider_name == 'nvidia':
+            return bool(self.nvidia_key)
         if provider_name == 'openrouter':
             return bool(self.openrouter_key)
         if provider_name == 'ollama':
             return bool(self.ollama_endpoint)
         return False
 
+    def _provider_prefers_json_decision_mode(self, provider: Optional[str] = None) -> bool:
+        """Return True only when a provider should avoid native tool calling."""
+        return self.provider_health_service.provider_prefers_json_decision_mode(provider)
+
     def _candidate_providers(self) -> List[str]:
-        candidates = [self.provider]
-        if not self.auto_failover:
-            return candidates
-        for provider in self.fallback_providers:
-            normalized = self._normalize_provider(provider)
-            if normalized in candidates:
-                continue
-            if not self._provider_is_configured(normalized):
-                continue
-            candidates.append(normalized)
-        return candidates
+        current_provider = self._normalize_provider(self.provider)
+        if hasattr(self.provider_health_service, "primary_provider"):
+            self.provider_health_service.primary_provider = current_provider
+        if hasattr(self.provider_health_service, "auto_failover"):
+            self.provider_health_service.auto_failover = bool(self.auto_failover)
+        if hasattr(self.provider_health_service, "fallback_providers"):
+            self.provider_health_service.fallback_providers = [
+                self._normalize_provider(provider)
+                for provider in list(self.fallback_providers or [])
+                if self._normalize_provider(provider)
+            ]
+        return self.provider_health_service.candidate_providers()
 
     async def approve_action(self, session_id: str) -> bool:
         """Approve the pending action so the loop can resume."""
@@ -501,35 +708,7 @@ class AgentLoop:
             return {"error": f"MCP client not available for tool: {original_name}"}
 
     def _resolve_specialist_team(self, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
-        """Resolve the ordered specialist team for a session."""
-        metadata = dict(metadata or {})
-        requested_team = metadata.get("specialist_team")
-        workflow_id = metadata.get("workflow_id")
-        workflow_team: List[str] = []
-        if workflow_id and self.workflow_registry is not None:
-            workflow = self.workflow_registry.get_workflow(workflow_id) or {}
-            workflow_team = [str(item).strip() for item in workflow.get("agents", []) if str(item).strip()]
-
-        candidates: List[str] = []
-        if isinstance(requested_team, list):
-            candidates.extend(str(item).strip() for item in requested_team if str(item).strip())
-        candidates.extend(workflow_team)
-
-        requested_profile = str(metadata.get("agent_profile_id") or "").strip()
-        if requested_profile and requested_profile not in candidates:
-            candidates.insert(0, requested_profile)
-
-        if not candidates:
-            candidates = [requested_profile or "workflow_controller"]
-
-        resolved: List[str] = []
-        for profile_id in candidates:
-            if not profile_id or profile_id in resolved:
-                continue
-            if self.agent_profiles is not None and self.agent_profiles.get_profile(profile_id) is None:
-                continue
-            resolved.append(profile_id)
-        return resolved or ["workflow_controller"]
+        return self.specialist_router.resolve_specialist_team(metadata)
 
     def _persist_specialist_metadata(
         self,
@@ -618,19 +797,30 @@ class AgentLoop:
         result: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Refresh structured reasoning state and persist it to session metadata."""
+        normalized_observations: List[Dict[str, Any]] = []
+        latest_quality_summary: Dict[str, Any] = {}
         if tool_name is not None:
             last_finding = state.findings[-1] if state.findings else {}
             finding_index = len(state.findings) - 1 if state.findings else 0
             step_number = int(last_finding.get("step", state.step_count))
-            state.reasoning_state = self.hypothesis_manager.revise(
-                state.reasoning_state,
-                goal=state.goal,
+            normalization = self.observation_normalizer.normalize(
                 session_id=session_id,
                 tool_name=tool_name,
                 params=params or {},
                 result=result or {},
-                finding_index=finding_index,
                 step_number=step_number,
+            )
+            normalized_observations = list(normalization.get("observations", []))
+            latest_quality_summary = dict(normalization.get("evidence_quality_summary", {}))
+            if normalized_observations:
+                state.active_observations = [*state.active_observations, *normalized_observations][-60:]
+            state.accepted_facts = self._merge_fact_snapshots(
+                state.accepted_facts,
+                list(normalization.get("accepted_facts_delta", [])),
+            )
+            state.evidence_quality_summary = self._combine_evidence_quality_summary(
+                state.evidence_quality_summary,
+                latest_quality_summary,
             )
             evidence_ref = {
                 "session_id": session_id,
@@ -638,8 +828,8 @@ class AgentLoop:
                 "finding_index": finding_index,
                 "tool_name": tool_name,
                 "summary": (
-                    state.reasoning_state.get("recent_evidence_refs", [{}])[-1].get("summary")
-                    if isinstance(state.reasoning_state, dict) and state.reasoning_state.get("recent_evidence_refs")
+                    str(normalized_observations[0].get("summary") or "").strip()
+                    if normalized_observations
                     else f"{tool_name} observation"
                 ),
                 "created_at": last_finding.get("timestamp") if isinstance(last_finding, dict) else None,
@@ -652,6 +842,7 @@ class AgentLoop:
                 result=result or {},
                 step_number=step_number,
                 evidence_ref=evidence_ref,
+                observations=normalized_observations,
             )
             state.evidence_state = self.evidence_graph.ingest_observation(
                 state.evidence_state,
@@ -660,36 +851,101 @@ class AgentLoop:
                 step_number=step_number,
                 evidence_ref=evidence_ref,
                 entity_state=state.entity_state,
+                observations=normalized_observations,
+            )
+            state.reasoning_state = self.hypothesis_manager.revise(
+                state.reasoning_state,
+                goal=state.goal,
+                session_id=session_id,
+                tool_name=tool_name,
+                params=params or {},
+                result=result or {},
+                finding_index=finding_index,
+                step_number=step_number,
+                observations=normalized_observations,
+                entity_state=state.entity_state,
+                evidence_state=state.evidence_state,
+                investigation_plan=state.investigation_plan,
             )
         else:
             state.reasoning_state = self.hypothesis_manager.bootstrap(
                 state.goal,
                 session_id,
                 existing=state.reasoning_state,
+                investigation_plan=state.investigation_plan,
             )
             state.entity_state = self.entity_resolver.bootstrap(state.entity_state)
             state.evidence_state = self.evidence_graph.bootstrap(state.evidence_state)
 
+        state.unresolved_questions = self._dedupe_text(
+            [
+                *(state.reasoning_state.get("open_questions", []) if isinstance(state.reasoning_state, dict) else []),
+                *(state.reasoning_state.get("missing_evidence", []) if isinstance(state.reasoning_state, dict) else []),
+            ]
+        )[:10]
         state.deterministic_decision = self._build_deterministic_decision_output(state)
+        root_cause_assessment = self.root_cause_engine.assess(
+            goal=state.goal,
+            reasoning_state=state.reasoning_state,
+            deterministic_decision=state.deterministic_decision,
+            evidence_state=state.evidence_state,
+            active_observations=state.active_observations,
+            unresolved_questions=state.unresolved_questions,
+        )
         state.agentic_explanation = self.hypothesis_manager.build_agentic_explanation(
             state.reasoning_state,
             goal=state.goal,
             deterministic_decision=state.deterministic_decision,
             entity_state=state.entity_state,
             evidence_state=state.evidence_state,
+            root_cause_assessment=root_cause_assessment,
         )
         state.evidence_state = self.evidence_graph.sync_reasoning(
             state.evidence_state,
             session_id=session_id,
             reasoning_state=state.reasoning_state,
-            root_cause_assessment=state.agentic_explanation.get("root_cause_assessment", {}),
+            root_cause_assessment=root_cause_assessment,
         )
         self._persist_reasoning_metadata(session_id, state)
 
+    def _normalize_terminal_snapshot_publication(self, state: AgentState) -> None:
+        lifecycle = str(getattr(state, "snapshot_lifecycle", "") or "").strip().lower()
+        if lifecycle in {"working", "candidate", "accepted", "published"}:
+            return
+        if state.phase != AgentPhase.COMPLETED:
+            return
+
+        root_cause = getattr(state, "root_cause_assessment", {}) or {}
+        accepted_facts = getattr(state, "accepted_facts", []) or []
+        reasoning_state = getattr(state, "reasoning_state", {}) or {}
+
+        has_root_cause = isinstance(root_cause, dict) and bool(str(root_cause.get("primary_root_cause") or "").strip())
+        has_accepted_facts = isinstance(accepted_facts, list) and any(isinstance(item, dict) for item in accepted_facts)
+        reasoning_status = str(reasoning_state.get("status") or "").strip().lower() if isinstance(reasoning_state, dict) else ""
+        reasoning_ready = reasoning_status in {"supported", "sufficient_evidence", "complete", "completed"}
+
+        if bool(getattr(state, "is_published", False)):
+            state.snapshot_lifecycle = "published"
+            return
+
+        if has_root_cause or has_accepted_facts or reasoning_ready:
+            state.snapshot_lifecycle = "accepted"
+            return
+
+        state.snapshot_lifecycle = "candidate"
+
     def _persist_reasoning_metadata(self, session_id: str, state: AgentState) -> None:
+        self._normalize_terminal_snapshot_publication(state)
+        snapshot_id = self._sync_thread_snapshot(session_id, state)
+        if snapshot_id:
+            state.session_snapshot_id = snapshot_id
         self.store.update_session_metadata(
             session_id,
             {
+                "thread_id": state.thread_id,
+                "session_snapshot_id": state.session_snapshot_id,
+                "investigation_plan": state.investigation_plan,
+                "normalized_observations": state.active_observations[-24:],
                 "reasoning_state": state.reasoning_state,
                 "entity_state": state.entity_state,
                 "evidence_state": state.evidence_state,
@@ -698,6 +954,11 @@ class AgentLoop:
                 "agentic_explanation": state.agentic_explanation,
                 "agentic_explanation_output": state.agentic_explanation,
                 "root_cause_assessment": state.agentic_explanation.get("root_cause_assessment", {}),
+                "active_observations": state.active_observations[-24:],
+                "accepted_facts": state.accepted_facts[-16:],
+                "accepted_facts_delta": state.accepted_facts[-12:],
+                "unresolved_questions": state.unresolved_questions,
+                "evidence_quality_summary": state.evidence_quality_summary,
             },
             merge=True,
         )
@@ -709,97 +970,24 @@ class AgentLoop:
         *,
         terminal_status: Optional[str] = None,
     ) -> None:
-        if self.case_store is None:
-            return
-        case_id = self._session_case_id(session_id)
-        if not case_id:
-            return
-
-        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
-        entity_summary = self.entity_resolver.summarize_for_case_event(state.entity_state)
-        evidence_summary = self.evidence_graph.summarize_for_case_event(state.evidence_state)
-        hypothesis_snapshot = state.reasoning_state.get("hypotheses", []) if isinstance(state.reasoning_state, dict) else []
-
-        self.case_store.add_event(
-            case_id,
-            event_type="agentic_reasoning_checkpoint",
-            title="Agentic reasoning checkpoint recorded",
-            payload={
-                "session_id": session_id,
-                "terminal_status": terminal_status,
-                "reasoning_status": state.reasoning_state.get("status") if isinstance(state.reasoning_state, dict) else None,
-                "deterministic_decision": state.deterministic_decision,
-                "root_cause_assessment": root_cause,
-                "hypotheses": hypothesis_snapshot[:6],
-                "entity_summary": entity_summary,
-                "entity_relationships": entity_summary.get("relationships", []),
-                "evidence_timeline": evidence_summary.get("timeline", []),
-                "evidence_edges": evidence_summary.get("edges", []),
-            },
+        self.case_sync_service.sync_reasoning_checkpoint(
+            case_id=self._session_case_id(session_id),
+            session_id=session_id,
+            state=state,
+            terminal_status=terminal_status,
         )
-        if isinstance(root_cause, dict) and root_cause.get("primary_root_cause"):
-            self.case_store.add_event(
-                case_id,
-                event_type="root_cause_assessment",
-                title=root_cause.get("summary") or "Root cause assessment updated",
-                payload={
-                    "session_id": session_id,
-                    "terminal_status": terminal_status,
-                    "root_cause_assessment": root_cause,
-                    "deterministic_decision": state.deterministic_decision,
-                    "entity_summary": entity_summary,
-                },
-            )
 
     def _sync_specialist_progress(self, session_id: str, state: AgentState, reason: str = "") -> None:
-        """Rotate the active specialist based on workflow progress."""
-        if not state.specialist_team:
-            return
-
-        if len(state.specialist_team) == 1:
-            state.active_specialist = state.specialist_team[0]
-            state.agent_profile_id = state.specialist_team[0]
-            state.specialist_index = 0
-            self._persist_specialist_metadata(session_id, state, reason=reason)
-            return
-
-        max_steps = max(state.max_steps, len(state.specialist_team), 1)
-        desired_index = min(
-            int((max(state.step_count, 0) / max_steps) * len(state.specialist_team)),
-            len(state.specialist_team) - 1,
+        self.specialist_router.sync_specialist_progress(
+            session_id=session_id,
+            state=state,
+            store=self.store,
+            persist_specialist_metadata=self._persist_specialist_metadata,
+            reason=reason,
         )
 
-        if desired_index != state.specialist_index:
-            from_profile = state.active_specialist
-            to_profile = state.specialist_team[desired_index]
-            handoff_reason = reason or f"Workflow progression moved ownership to specialist phase {desired_index + 1}"
-            handoff = state.record_specialist_handoff(from_profile, to_profile, handoff_reason)
-            self.store.add_step(
-                session_id,
-                state.step_count,
-                "specialist_handoff",
-                json.dumps(handoff, default=str),
-            )
-            self._notify(
-                session_id,
-                {
-                    "type": "specialist_handoff",
-                    "step": state.step_count,
-                    "from_profile": from_profile,
-                    "to_profile": to_profile,
-                    "reason": handoff_reason,
-                },
-            )
-            self._log_decision(
-                session_id,
-                state,
-                decision_type="specialist_handoff",
-                summary=f"Handoff from {from_profile or 'unassigned'} to {to_profile}",
-                rationale=handoff_reason,
-                metadata=handoff,
-            )
-
-        self._persist_specialist_metadata(session_id, state, reason=reason)
+    def _specialist_index_from_evidence(self, state: AgentState) -> Optional[int]:
+        return self.specialist_router.specialist_index_from_evidence(state)
 
     # ------------------------------------------------------------------ #
     #  Pub / Sub
@@ -864,6 +1052,7 @@ class AgentLoop:
             self._sync_specialist_progress(session_id, state, reason="Workflow session initialized.")
 
             while not state.is_terminal() and state.step_count < state.max_steps:
+                self._consume_pending_thread_command(session_id, state)
                 self._sync_specialist_progress(session_id, state)
                 # ---- THINK ----
                 state.phase = AgentPhase.THINKING
@@ -892,6 +1081,9 @@ class AgentLoop:
                     state.errors.append(self._provider_failure_message())
                     state.transition(AgentPhase.FAILED)
                     break
+
+                if self._consume_pending_thread_command(session_id, state):
+                    continue
 
                 # Record the thinking step
                 self.store.add_step(
@@ -928,6 +1120,7 @@ class AgentLoop:
                         "evidence_state": state.evidence_state,
                         "reasoning": decision.get('reasoning', ''),
                     })
+                    self._record_thread_assistant_message(state, summary)
                     self.store.add_step(
                         session_id, state.step_count, 'final_answer',
                         json.dumps(decision, default=str),
@@ -1087,21 +1280,47 @@ class AgentLoop:
                 # ---- Duplicate call guard ----
                 call_sig = (tool_name, json.dumps(decision.get('params', {}), sort_keys=True, default=str))
                 if call_sig in _prev_tool_calls:
-                    logger.warning(
-                        "[AGENT] Duplicate tool call detected: %s. "
-                        "Forcing final_answer.", tool_name,
+                    duplicate_tool = tool_name
+                    alternate = self._reasoning_guided_next_action(
+                        state,
+                        exclude_tools={tool_name},
                     )
-                    # Force conclusion instead of repeating
-                    if state.findings:
-                        break  # exit loop → generate summary
-                    # No findings at all → escalate to correlate_findings
-                    decision = {
-                        "action": "use_tool",
-                        "tool": "correlate_findings",
-                        "params": {"findings": state.findings},
-                        "reasoning": "Breaking duplicate loop",
-                    }
-                    call_sig = ("correlate_findings", "break")
+                    if alternate is not None:
+                        alt_sig = (
+                            alternate.get("tool", ""),
+                            json.dumps(alternate.get("params", {}), sort_keys=True, default=str),
+                        )
+                        if alt_sig not in _prev_tool_calls:
+                            decision = alternate
+                            tool_name = decision.get("tool", "")
+                            call_sig = alt_sig
+                            tool_def = self.tools.get_tool(tool_name)
+                            logger.warning(
+                                "[AGENT] Duplicate tool call detected for %s. Pivoting to %s instead.",
+                                duplicate_tool,
+                                alternate.get("tool", ""),
+                            )
+                    if call_sig in _prev_tool_calls:
+                        logger.warning(
+                            "[AGENT] Duplicate tool call detected: %s. "
+                            "Forcing final_answer.", duplicate_tool,
+                        )
+                        # Force conclusion instead of repeating
+                        if state.findings:
+                            break  # exit loop → generate summary
+                        # No findings at all → escalate via the best available pivot
+                        decision = self._build_next_action_from_context(
+                            state,
+                            exclude_tools={tool_name},
+                        )
+                        decision["reasoning"] = (
+                            "Breaking a duplicate loop. " + str(decision.get("reasoning") or "")
+                        ).strip()
+                        tool_name = decision.get("tool", "")
+                        call_sig = (
+                            tool_name,
+                            json.dumps(decision.get("params", {}), sort_keys=True, default=str),
+                        )
                 _prev_tool_calls.append(call_sig)
 
                 # ---- ACT ----
@@ -1275,6 +1494,12 @@ class AgentLoop:
             summary = await self._generate_summary(state)
             self.store.update_session_status(session_id, final_status, summary)
             self.store.update_session_findings(session_id, state.findings)
+            if summary and not any(
+                finding.get("type") == "final_answer"
+                for finding in state.findings
+                if isinstance(finding, dict)
+            ):
+                self._record_thread_assistant_message(state, summary)
 
             self._notify(session_id, {
                 "type": "completed",
@@ -1311,42 +1536,79 @@ class AgentLoop:
         all_tools = self.tools.get_tools_for_llm()
         # Filter tools to a manageable set for the LLM
         tools_json = self._filter_tools_for_goal(all_tools, state.goal, state)
-        if self._chat_prefers_direct_response(state):
+        allowed_tool_names = {
+            str(tool.get("function", {}).get("name", "")).strip()
+            for tool in tools_json
+            if str(tool.get("function", {}).get("name", "")).strip()
+        }
+        request_tools_json = list(tools_json)
+        model_only_chat = self._chat_should_force_model_answer_without_tools(state)
+        if model_only_chat:
             tools_json = []
-        has_native_tools = len(tools_json) > 0
+            request_tools_json = []
+            if self._provider_is_recently_unavailable(self.provider):
+                logger.info(
+                    "[AGENT] Skipping direct chat retry because %s is still marked unavailable within the cooldown window.",
+                    self._provider_display_name(self.provider),
+                )
+                return self._fallback_decision_without_llm(state)
+        has_native_tools = len(request_tools_json) > 0 and not self._provider_prefers_json_decision_mode(self.provider)
+        if not has_native_tools:
+            request_tools_json = []
 
-        if has_native_tools:
-            # Use the clean prompt that doesn't instruct JSON response format
-            # (avoids LLM stuffing decision JSON into tool_call arguments)
-            system_prompt = _SYSTEM_PROMPT.format(
-                goal=state.goal,
-                findings_block=findings_block,
-                response_style_block=response_style_block,
-                chat_decision_block=chat_decision_block,
-                reasoning_block=reasoning_block,
-                profile_block=profile_block,
-                workflow_block=workflow_block,
-                playbooks_block=playbooks_block,
-            )
-        else:
-            system_prompt = _SYSTEM_PROMPT_NO_TOOLS.format(
-                tools_block=tools_block,
-                goal=state.goal,
-                findings_block=findings_block,
-                response_style_block=response_style_block,
-                chat_decision_block=chat_decision_block,
-                reasoning_block=reasoning_block,
-                profile_block=profile_block,
-                workflow_block=workflow_block,
-                playbooks_block=playbooks_block,
-            )
-
-        messages = [
-            {"role": "user", "content": system_prompt},
-        ]
+        prompt_payload = self.prompt_composer.build_think_payload(
+            state=state,
+            tools_block=tools_block,
+            findings_block=findings_block,
+            response_style_block=response_style_block,
+            chat_decision_block=chat_decision_block,
+            reasoning_block=reasoning_block,
+            profile_block=profile_block,
+            workflow_block=workflow_block,
+            playbooks_block=playbooks_block,
+            model_only_chat=model_only_chat,
+            has_native_tools=has_native_tools,
+        )
+        messages = prompt_payload["messages"]
+        request_metadata = {
+            "prompt_mode": prompt_payload.get("prompt_mode"),
+            "provider_context_block": prompt_payload.get("provider_context_block"),
+            "prompt_envelope": prompt_payload.get("prompt_envelope"),
+            "model_only_chat": prompt_payload.get("model_only_chat"),
+            "uses_native_tools": prompt_payload.get("uses_native_tools"),
+            "planned_next_step_summary": self.session_response_builder.build_planned_next_step_summary(
+                decision=self._chat_short_circuit_decision(state)
+            ),
+        }
 
         # Attempt tool-calling API first, fall back to plain chat
-        raw = await self._chat_with_tools(messages, tools_json=tools_json)
+        try:
+            if model_only_chat:
+                raw = await asyncio.wait_for(
+                    self._chat_with_tools(
+                        messages,
+                        tools_json=request_tools_json,
+                        request_metadata=request_metadata,
+                    ),
+                    timeout=max(1.0, self.chat_response_timeout_seconds),
+                )
+            else:
+                raw = await self._chat_with_tools(
+                    messages,
+                    tools_json=request_tools_json,
+                    request_metadata=request_metadata,
+                )
+        except asyncio.TimeoutError:
+            self._record_llm_runtime_status(
+                provider=self.provider,
+                model=self._active_model_name(self.provider),
+                available=False,
+                error=(
+                    f"{self._provider_display_name(self.provider)} direct chat request timed out "
+                    f"after {self.chat_response_timeout_seconds:.0f}s"
+                ),
+            )
+            raw = None
         logger.info(f"[AGENT] LLM raw response type={type(raw).__name__}, "
                      f"preview={str(raw)[:500] if raw else 'None'}")
         if raw is None:
@@ -1354,7 +1616,12 @@ class AgentLoop:
 
         # If the LLM used native tool_call, convert to our decision dict
         if isinstance(raw, dict) and 'tool_calls' in raw:
-            return self._parse_tool_call_response(raw)
+            decision = self._parse_tool_call_response(raw)
+            return self._sanitize_llm_tool_decision(
+                state,
+                decision,
+                allowed_tool_names=allowed_tool_names,
+            )
 
         # Otherwise parse the text as JSON
         if isinstance(raw, str):
@@ -1362,9 +1629,13 @@ class AgentLoop:
             if parsed is not None:
                 # Normalise non-standard JSON formats into our decision dict
                 parsed = self._normalise_decision(parsed, state)
-                return parsed
+                return self._sanitize_llm_tool_decision(
+                    state,
+                    parsed,
+                    allowed_tool_names=allowed_tool_names,
+                )
             if raw.strip():
-                if state.findings or not has_native_tools or self._chat_prefers_direct_response(state):
+                if state.findings or not has_native_tools or model_only_chat:
                     return {
                         "action": "final_answer",
                         "answer": raw.strip(),
@@ -1375,19 +1646,53 @@ class AgentLoop:
                     "[AGENT] LLM gave text instead of tool call. "
                     "Auto-dispatching tool based on goal."
                 )
-                return {
-                    "action": "use_tool",
-                    "tool": self._guess_first_tool(state.goal),
-                    "params": self._guess_tool_params(state.goal),
-                    "reasoning": "Auto-dispatched: LLM did not call a tool",
-                }
+                decision = self._build_next_action_from_context(state)
+                decision["reasoning"] = (
+                    "Auto-dispatched after non-tool LLM text. "
+                    + str(decision.get("reasoning") or "")
+                ).strip()
+                return decision
             return None
 
         # Already a dict (from JSON-mode response)
         if isinstance(raw, dict):
-            return raw
+            return self._sanitize_llm_tool_decision(
+                state,
+                raw,
+                allowed_tool_names=allowed_tool_names,
+            )
 
         return None
+
+    def _sanitize_llm_tool_decision(
+        self,
+        state: AgentState,
+        decision: Optional[Dict[str, Any]],
+        *,
+        allowed_tool_names: set[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(decision, dict):
+            return decision
+        if decision.get("action") != "use_tool":
+            return decision
+
+        tool_name = str(decision.get("tool") or "").strip()
+        if not tool_name or not allowed_tool_names or tool_name in allowed_tool_names:
+            return decision
+
+        logger.warning(
+            "[AGENT] LLM selected hidden tool %s outside the allowed prompt tool set. Replacing it with a reasoning-guided pivot.",
+            tool_name,
+        )
+        replacement = self._build_next_action_from_context(
+            state,
+            exclude_tools={tool_name},
+        )
+        replacement["reasoning"] = (
+            "Sanitized an out-of-policy LLM tool selection. "
+            + str(replacement.get("reasoning") or "")
+        ).strip()
+        return replacement
 
     def _fallback_decision_without_llm(self, state: AgentState) -> Dict[str, Any]:
         """Return a safe evidence-first fallback when the LLM gives no decision.
@@ -1395,44 +1700,20 @@ class AgentLoop:
         The agent should continue investigating with real tools when possible
         instead of failing immediately at step 0.
         """
-        if not state.findings:
-            if self._chat_prefers_direct_response(state):
-                return {
-                    "action": "final_answer",
-                    "answer": self._build_direct_chat_fallback_answer(state.goal),
-                    "verdict": "UNKNOWN",
-                    "reasoning": "Fallback: direct analyst chat response without tool use.",
-                }
-            return {
-                "action": "use_tool",
-                "tool": self._guess_first_tool(state.goal),
-                "params": self._guess_tool_params(state.goal),
-                "reasoning": "Fallback: LLM returned no decision, bootstrapping the first evidence-gathering tool.",
-            }
-
-        last_tool = ""
-        for finding in reversed(state.findings):
-            if finding.get("type") == "tool_result":
-                last_tool = str(finding.get("tool") or "")
-                break
-
-        if last_tool != "correlate_findings" and self.tools.get_tool("correlate_findings") is not None:
-            return {
-                "action": "use_tool",
-                "tool": "correlate_findings",
-                "params": {"findings": state.findings[-10:]},
-                "reasoning": "Fallback: LLM returned no decision, so correlate the accumulated evidence.",
-            }
-
-        authoritative_outcome = self._resolve_authoritative_outcome(state)
-        verdict = authoritative_outcome["label"] if authoritative_outcome else "UNKNOWN"
-        answer = self._build_fallback_answer(state, authoritative_outcome)
-        return {
-            "action": "final_answer",
-            "answer": answer,
-            "verdict": verdict,
-            "reasoning": "Fallback: end the investigation with an evidence-preserving summary.",
-        }
+        return self.session_response_builder.build_fallback_decision_without_llm(
+            state=state,
+            chat_prefers_direct_response=self._chat_prefers_direct_response(state),
+            build_direct_chat_fallback_answer=self._build_direct_chat_fallback_answer,
+            goal=state.goal,
+            build_next_action_from_context=self._build_next_action_from_context,
+            has_tool=lambda tool_name: self.tools.get_tool(tool_name) is not None,
+            resolve_authoritative_outcome=self._resolve_authoritative_outcome,
+            is_chat_session=self._is_chat_session,
+            provider_is_currently_unavailable=self._provider_is_currently_unavailable,
+            provider_name=self.provider,
+            build_chat_model_unavailable_answer=self._build_chat_model_unavailable_answer,
+            build_fallback_answer=self._build_fallback_answer,
+        )
 
     @staticmethod
     def _extract_verdict(text: str) -> str:
@@ -1493,12 +1774,12 @@ class AgentLoop:
                 "[AGENT] LLM tried final_answer with no findings. "
                 "Auto-dispatching tool."
             )
-            return {
-                "action": "use_tool",
-                "tool": self._guess_first_tool(state.goal),
-                "params": self._guess_tool_params(state.goal),
-                "reasoning": "Auto-dispatched: LLM skipped tool use",
-            }
+            decision = self._build_next_action_from_context(state)
+            decision["reasoning"] = (
+                "Auto-dispatched because the LLM skipped evidence collection. "
+                + str(decision.get("reasoning") or "")
+            ).strip()
+            return decision
 
         # --- Bare params dict (no action/name/tool key) → auto-dispatch ---
         # LLM returned just the params like {"ioc": "..."} without wrapping
@@ -1509,17 +1790,83 @@ class AgentLoop:
             )
             guessed_tool = self._guess_first_tool(state.goal)
             guessed_params = self._guess_tool_params(state.goal)
-            # Merge LLM's parsed output with guessed params (LLM's take priority)
-            final_params = {**guessed_params, **parsed}
-            return {
-                "action": "use_tool",
-                "tool": guessed_tool,
-                "params": final_params,
-                "reasoning": "Auto-dispatched: LLM returned bare params",
-            }
+            decision = self._build_next_action_from_context(state)
+            if decision.get("action") == "use_tool":
+                final_params = {**guessed_params, **decision.get("params", {}), **parsed}
+                decision["params"] = final_params
+            decision["reasoning"] = (
+                "Auto-dispatched after bare LLM params. "
+                + str(decision.get("reasoning") or "")
+            ).strip()
+            return decision
 
         # --- Standard format: pass through ---
         return parsed
+
+    def _build_next_action_from_context(
+        self,
+        state: AgentState,
+        *,
+        exclude_tools: Optional[set] = None,
+    ) -> Dict[str, Any]:
+        guided = self._reasoning_guided_next_action(state, exclude_tools=exclude_tools)
+        if guided is not None:
+            return guided
+        return {
+            "action": "use_tool",
+            "tool": self._guess_first_tool(state.goal),
+            "params": self._guess_tool_params(state.goal),
+            "reasoning": "Heuristic bootstrap: no stronger reasoning-guided pivot was available.",
+        }
+
+    def _reasoning_guided_next_action(
+        self,
+        state: AgentState,
+        *,
+        exclude_tools: Optional[set] = None,
+    ) -> Optional[Dict[str, Any]]:
+        return self.next_action_planner.reasoning_guided_next_action(
+            state,
+            exclude_tools=exclude_tools,
+        )
+
+    def _build_reasoning_search_request(self, state: AgentState, questions: List[str]) -> Dict[str, Any]:
+        plan = self.log_query_planner.build_plan(
+            query=None,
+            focus=self._latest_focus_candidate(state),
+            analyst_request=self._latest_analyst_message(state),
+            lane=str((state.investigation_plan or {}).get("lane") or ""),
+            unresolved_questions=questions,
+            entity_state=state.entity_state,
+            timerange="24h",
+            max_results=200,
+        )
+        if isinstance(state.reasoning_state, dict):
+            state.reasoning_state["last_log_query_plan"] = copy.deepcopy(plan)
+        return {
+            "query": self._build_reasoning_search_query(state, questions, plan=plan),
+            "timerange": str(plan.get("timerange") or "24h"),
+            "reasoning": str(plan.get("reasoning") or "").strip(),
+            "plan": plan,
+        }
+
+    def _build_reasoning_search_query(
+        self,
+        state: AgentState,
+        questions: List[str],
+        *,
+        plan: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        subject = (
+            str((plan or {}).get("focus") or "").strip()
+            or self._latest_focus_candidate(state)
+            or self._latest_analyst_message(state)
+            or state.goal
+        )
+        lead_question = str(questions[0]).strip() if questions else ""
+        if lead_question:
+            return f"Investigate {subject}. {lead_question}"
+        return f"Investigate follow-on telemetry for {subject}"
 
     def _filter_tools_for_goal(
         self, all_tools: List[Dict], goal: str, state,
@@ -1538,6 +1885,16 @@ class AgentLoop:
             t for t in all_tools
             if not t.get('function', {}).get('name', '').count('.')
         ]
+        if self._is_lightweight_chat_session(state):
+            local_tools = [
+                t
+                for t in local_tools
+                if self._lightweight_chat_allows_local_tool(
+                    str(t.get("function", {}).get("name", "")),
+                    goal,
+                    state,
+                )
+            ]
 
         # Categorize MCP tools by relevance to the goal
         mcp_tools = [
@@ -1546,6 +1903,8 @@ class AgentLoop:
         ]
 
         if len(local_tools) + len(mcp_tools) <= max_tools:
+            if self._is_lightweight_chat_session(state):
+                return local_tools + mcp_tools
             return all_tools  # Small enough, send all
 
         # Score MCP tools by relevance
@@ -1610,6 +1969,65 @@ class AgentLoop:
             len(selected), len(all_tools),
         )
         return selected
+
+    def _lightweight_chat_allows_local_tool(
+        self,
+        tool_name: str,
+        goal: str,
+        state: AgentState,
+    ) -> bool:
+        """Keep lightweight analyst chat on investigative tools unless case work is explicit."""
+        focused_goal = self._focus_goal_text(goal).lower()
+        metadata = self._session_metadata(state.session_id)
+        has_case_context = bool(
+            self._session_case_id(state.session_id)
+            or metadata.get("chat_context_restored")
+        )
+        allowed = {
+            "investigate_ioc",
+            "analyze_malware",
+            "analyze_email",
+            "extract_iocs",
+            "correlate_findings",
+            "search_logs",
+            "search_threat_intel",
+        }
+        if any(
+            phrase in focused_goal
+            for phrase in (
+                "seen before",
+                "seen previously",
+                "history",
+                "historical",
+                "recall",
+                "known indicator",
+                "related indicator",
+                "overlap",
+            )
+        ):
+            allowed.add("recall_ioc")
+        if has_case_context or any(
+            phrase in focused_goal
+            for phrase in (
+                "case context",
+                "case status",
+                "case note",
+                "open case",
+                "create case",
+                "update case",
+                "link case",
+            )
+        ):
+            allowed.update(
+                {
+                    "get_case_context",
+                    "add_case_note",
+                    "create_case",
+                    "link_case_analysis",
+                    "update_case_status",
+                }
+            )
+        return tool_name in allowed
 
     def _get_enrichment_mcp_tools(
         self, primary_tool: str, params: dict, goal: str,
@@ -1779,6 +2197,123 @@ class AgentLoop:
             focused = focused.split("\n\nUse prior evidence", 1)[0].strip()
         return focused or goal
 
+    def _resolve_thread_id(self, session_id: str, case_id: Optional[str], metadata: Dict[str, Any]) -> Optional[str]:
+        return self.session_context_service.resolve_thread_id(
+            session_id=session_id,
+            case_id=case_id,
+            metadata=metadata,
+        )
+
+    def _maybe_record_thread_user_message(self, state: AgentState, metadata: Dict[str, Any]) -> None:
+        self.session_context_service.maybe_record_thread_user_message(
+            state=state,
+            metadata=metadata,
+        )
+
+    def _record_thread_assistant_message(self, state: AgentState, content: str) -> None:
+        self.session_context_service.record_thread_assistant_message(
+            state=state,
+            content=content,
+        )
+
+    def _build_thread_snapshot(self, state: AgentState) -> Dict[str, Any]:
+        return self.thread_sync_service.build_thread_snapshot(state)
+
+    def _sync_thread_snapshot(self, session_id: str, state: AgentState) -> Optional[str]:
+        return self.thread_sync_service.sync_thread_snapshot(
+            session_id=session_id,
+            state=state,
+        )
+
+    def _consume_pending_thread_command(self, session_id: str, state: AgentState) -> bool:
+        return self.thread_sync_service.consume_pending_thread_command(
+            session_id=session_id,
+            state=state,
+            dedupe_text=self._dedupe_text,
+        )
+
+    @staticmethod
+    def _merge_fact_snapshots(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in [*(existing or []), *(incoming or [])]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("observation_id") or item.get("summary") or "").strip().lower()
+            if not key:
+                continue
+            merged[key] = item
+        return list(merged.values())[-24:]
+
+    @staticmethod
+    def _combine_evidence_quality_summary(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        base = dict(existing or {})
+        if not incoming:
+            return base
+        existing_count = int(base.get("observation_count", 0) or 0)
+        incoming_count = int(incoming.get("observation_count", 0) or 0)
+        total_count = existing_count + incoming_count
+        existing_avg = float(base.get("average_quality", 0.0) or 0.0)
+        incoming_avg = float(incoming.get("average_quality", 0.0) or 0.0)
+        weighted_avg = 0.0
+        if total_count:
+            weighted_avg = ((existing_avg * existing_count) + (incoming_avg * incoming_count)) / total_count
+        typed = dict(base.get("typed_observations", {}) or {})
+        for key, value in (incoming.get("typed_observations", {}) or {}).items():
+            typed[str(key)] = int(typed.get(str(key), 0) or 0) + int(value or 0)
+        return {
+            "observation_count": total_count,
+            "average_quality": round(weighted_avg, 3),
+            "strong_observation_count": int(base.get("strong_observation_count", 0) or 0) + int(incoming.get("strong_observation_count", 0) or 0),
+            "typed_observations": typed,
+        }
+
+    @staticmethod
+    def _dedupe_text(values: List[str]) -> List[str]:
+        seen = set()
+        ordered: List[str] = []
+        for value in values:
+            clean = str(value or "").strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(clean)
+        return ordered
+
+    def _latest_analyst_message(self, state: AgentState) -> str:
+        metadata = self._session_metadata(state.session_id)
+        message = str(metadata.get("chat_user_message") or "").strip()
+        return message or self._focus_goal_text(state.goal).strip()
+
+    def _latest_focus_candidate(self, state: AgentState) -> str:
+        latest_message = self._latest_analyst_message(state)
+        if latest_message and self._goal_has_observable(latest_message):
+            params = self._guess_tool_params(latest_message)
+            for key in ("ioc", "file_path"):
+                candidate = str(params.get(key) or "").strip()
+                if candidate:
+                    return candidate
+
+        reasoning_state = state.reasoning_state if isinstance(state.reasoning_state, dict) else {}
+        candidate = str(reasoning_state.get("goal_focus") or "").strip()
+        if candidate and self._goal_has_observable(candidate):
+            return candidate
+
+        entity_state = state.entity_state if isinstance(state.entity_state, dict) else {}
+        entities = entity_state.get("entities", {}) if isinstance(entity_state.get("entities"), dict) else {}
+        for entity in entities.values():
+            if not isinstance(entity, dict):
+                continue
+            if str(entity.get("type") or "").lower() not in {"ip", "domain", "url", "hash", "email", "cve"}:
+                continue
+            candidate = str(entity.get("value") or "").strip()
+            if candidate:
+                return candidate
+
+        return ""
+
     def _session_metadata(self, session_id: str) -> Dict[str, Any]:
         session = self.store.get_session(session_id) if self.store is not None else None
         metadata = session.get("metadata", {}) if isinstance(session, dict) else {}
@@ -1790,6 +2325,20 @@ class AgentLoop:
             metadata.get("chat_mode")
             or metadata.get("ui_mode") == "chat"
             or str(metadata.get("response_style") or "").strip().lower() == "conversational"
+        )
+
+    def _chat_follow_up_requires_fresh_evidence(self, state: AgentState) -> bool:
+        metadata = self._session_metadata(state.session_id)
+        return bool(metadata.get("chat_follow_up_requires_fresh_evidence"))
+
+    def _chat_follow_up_can_answer_from_context(self, state: AgentState) -> bool:
+        return self.session_response_builder.chat_follow_up_can_answer_from_context(
+            is_chat_session=self._is_chat_session(state),
+            metadata=self._session_metadata(state.session_id),
+            requires_fresh_evidence=self._chat_follow_up_requires_fresh_evidence(state),
+            has_context_state=bool(state.active_observations or state.reasoning_state or state.accepted_facts),
+            latest_message=self._latest_analyst_message(state),
+            goal_has_observable=self._goal_has_observable,
         )
 
     def _is_lightweight_chat_session(self, state: AgentState) -> bool:
@@ -1842,16 +2391,13 @@ class AgentLoop:
         return any(marker in lower_goal for marker in artifact_markers)
 
     def _chat_prefers_direct_response(self, state: AgentState) -> bool:
-        if not self._is_chat_session(state) or state.findings:
-            return False
-        focused_goal = self._focus_goal_text(state.goal).strip()
-        if not focused_goal:
-            return True
-        if self._goal_has_observable(focused_goal):
-            return False
-        if self._looks_like_artifact_submission(focused_goal):
-            return False
-        return True
+        return self.session_response_builder.chat_prefers_direct_response(
+            is_chat_session=self._is_chat_session(state),
+            has_findings=bool(state.findings),
+            focused_goal=self._focus_goal_text(state.goal),
+            goal_has_observable=self._goal_has_observable,
+            looks_like_artifact_submission=self._looks_like_artifact_submission,
+        )
 
     def _is_simple_chat_goal(self, goal: str, primary_tool: str) -> bool:
         if primary_tool != "investigate_ioc":
@@ -1910,70 +2456,66 @@ class AgentLoop:
     def _build_response_style_block(self, state: AgentState) -> str:
         if not self._is_chat_session(state):
             return ""
-        return (
+        block = (
             "Response style for analyst chat:\n"
             "- When you have enough evidence, answer the analyst's question directly in the first sentence.\n"
             "- Use plain, practical SOC language instead of stiff report boilerplate.\n"
             "- After the direct answer, briefly explain the evidence and why it matters.\n"
             "- End with concrete next steps only if they add value."
         )
+        if self._session_metadata(state.session_id).get("chat_context_restored"):
+            block += "\n- Treat carried-over findings as live investigation context, not as a stale summary."
+        return block
 
     def _build_chat_decision_block(self, state: AgentState) -> str:
         if not self._is_chat_session(state):
             return ""
-        return (
+        block = (
             "Chat decision policy:\n"
             "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
             "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
             "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
         )
+        metadata = self._session_metadata(state.session_id)
+        if metadata.get("chat_context_restored"):
+            if metadata.get("chat_follow_up_requires_fresh_evidence"):
+                block += (
+                    "\n- This is a follow-up chat turn with carried-over findings. Continue from that context and gather fresh evidence only for the new pivot the analyst requested."
+                )
+            else:
+                block += (
+                    "\n- This is a follow-up chat turn with carried-over findings. Prefer answering from that restored evidence before starting new tool calls."
+                )
+        return block
 
     def _build_direct_chat_fallback_answer(self, goal: str) -> str:
-        provider_excerpt = self._provider_runtime_error_excerpt()
-        if provider_excerpt:
-            prefix = (
-                "The LLM is currently unavailable "
-                f"({provider_excerpt}), so I cannot provide a conversational analysis right now."
-            )
-        else:
-            prefix = (
-                "The LLM is currently unavailable, so I cannot provide a conversational analysis right now."
-            )
-        return (
-            f"{prefix} "
-            "Please share a concrete IOC, file path, email artifact, or log snippet if you want me to run the available investigation tools."
+        return self.session_response_builder.build_direct_chat_fallback_answer(
+            llm_unavailable_notice=self._llm_unavailable_notice(),
+        )
+
+    def _build_chat_model_unavailable_answer(self, state: AgentState) -> str:
+        return self.session_response_builder.build_chat_model_unavailable_answer(
+            state=state,
+            build_direct_chat_fallback_answer=self._build_direct_chat_fallback_answer,
+            goal=state.goal,
+            authoritative_outcome=self._resolve_authoritative_outcome(state),
+            fallback_evidence_points=lambda current_state, limit: self._fallback_evidence_points(current_state, limit=limit),
+            build_fallback_answer=self._build_fallback_answer,
+            llm_unavailable_notice=self._llm_unavailable_notice(),
         )
 
     def _build_tools_block(self) -> str:
         """Format registered tools into a readable list for the prompt."""
-        lines = []
-        for td in self.tools.list_tools():
-            approval_tag = " [REQUIRES APPROVAL]" if td.requires_approval else ""
-            params_desc = ", ".join(
-                f"{k}: {v.get('type', 'any')}"
-                for k, v in td.parameters.get("properties", {}).items()
-            )
-            lines.append(
-                f"- {td.name}({params_desc}){approval_tag}: {td.description}"
-            )
-        return "\n".join(lines) if lines else "(no tools registered)"
+        return self.prompt_composer.build_tools_block(self.tools.list_tools())
 
     def _build_playbooks_block(self) -> str:
         """Format available playbooks into a readable list for the prompt."""
-        if not hasattr(self, '_playbook_engine') or self._playbook_engine is None:
+        if not hasattr(self, "_playbook_engine") or self._playbook_engine is None:
             return ""
         try:
-            playbooks = self._playbook_engine.list_playbooks()
-            if not playbooks:
-                return ""
-            lines = ["Available playbooks (use run_playbook action to execute):"]
-            for pb in playbooks:
-                step_count = pb.get('step_count', 0)
-                desc = pb.get('description', '')
-                if len(desc) > 120:
-                    desc = desc[:120] + "..."
-                lines.append(f"- {pb['id']} ({step_count} steps): {desc}")
-            return "\n".join(lines)
+            return self.prompt_composer.build_playbooks_block(
+                self._playbook_engine.list_playbooks()
+            )
         except Exception:
             return ""
 
@@ -1981,19 +2523,12 @@ class AgentLoop:
         """Return specialist-agent guidance for the current session."""
         if self.agent_profiles is None:
             return ""
-        block = self.agent_profiles.get_prompt_block(state.agent_profile_id)
-        lines = []
-        if block:
-            lines.append("Specialist profile guidance:\n" + block)
-        if state.specialist_team:
-            lines.append(
-                "Active specialist team: "
-                + " -> ".join(state.specialist_team)
-            )
-            lines.append(
-                f"Current active specialist: {state.active_specialist or state.agent_profile_id or 'workflow_controller'}"
-            )
-        return "\n".join(line for line in lines if line)
+        return self.prompt_composer.build_profile_block(
+            state,
+            profile_prompt_block=self.agent_profiles.get_prompt_block(
+                state.agent_profile_id
+            ),
+        )
 
     def _build_workflow_block(self, state: AgentState) -> str:
         """Return workflow guardrails for the current session."""
@@ -2002,47 +2537,14 @@ class AgentLoop:
         workflow = self.workflow_registry.get_workflow(state.workflow_id)
         if not workflow:
             return ""
-
-        lines = [
-            f"Workflow context: {workflow.get('name', state.workflow_id)}",
-            f"Workflow backend: {workflow.get('execution_backend', 'agent')}",
-        ]
-        if workflow.get("description"):
-            lines.append("Workflow intent: " + str(workflow["description"]))
-        if workflow.get("use_case"):
-            lines.append("Workflow use case: " + str(workflow["use_case"]))
-        if workflow.get("agents"):
-            lines.append(
-                "Suggested specialist sequence: "
-                + ", ".join(str(agent) for agent in workflow["agents"])
-            )
-        if state.specialist_handoffs:
-            last_handoff = state.specialist_handoffs[-1]
-            lines.append(
-                "Latest specialist handoff: "
-                f"{last_handoff.get('from_profile') or 'unassigned'} -> {last_handoff.get('to_profile')}"
-            )
-        if workflow.get("tools_used"):
-            lines.append(
-                "Expected evidence tools: "
-                + ", ".join(str(tool) for tool in workflow["tools_used"])
-            )
-        sections = workflow.get("sections") or {}
-        operating_model = sections.get("operating_model")
-        if operating_model:
-            excerpt = self._section_excerpt(operating_model)
-            if excerpt:
-                lines.append("Workflow operating model: " + excerpt)
-        phase_sequence = sections.get("phase_sequence") or sections.get("phases")
-        if phase_sequence:
-            excerpt = self._section_excerpt(phase_sequence)
-            if excerpt:
-                lines.append("Workflow phases: " + excerpt)
-        lines.append(
-            "Workflow guardrail: follow the tool-backed workflow path and never "
-            "invent unsupported evidence."
+        latest_handoff = (
+            state.specialist_handoffs[-1] if state.specialist_handoffs else None
         )
-        return "\n".join(lines)
+        return self.prompt_composer.build_workflow_block(
+            state,
+            workflow=workflow,
+            latest_handoff=latest_handoff,
+        )
 
     @staticmethod
     def _section_excerpt(section_text: str, limit: int = 3) -> str:
@@ -2063,78 +2565,19 @@ class AgentLoop:
 
     def _build_findings_block(self, state: AgentState) -> str:
         """Summarise findings so far (capped to keep context manageable)."""
-        if not state.findings:
-            return "(none yet)"
-
-        max_findings = self.chat_prompt_findings_limit if self._is_chat_session(state) else 8
-        recent = state.findings[-max_findings:]
-        parts = []
-        for i, f in enumerate(recent):
-            step = f.get('step', i)
-            finding_type = str(f.get("type") or "finding")
-            if finding_type == "tool_result":
-                tool_name = str(f.get("tool") or "tool_result")
-                summary = self._describe_fallback_evidence(tool_name, f.get("result"))
-                if not summary:
-                    payload = f.get("result")
-                    preview = _truncate(json.dumps(payload, default=str), 220)
-                    summary = f"{tool_name} returned {preview}"
-                parts.append(f"[{step}] {summary}")
-            elif finding_type == "final_answer":
-                answer = _truncate(str(f.get("answer") or ""), 220)
-                parts.append(f"[{step}] final_answer: {answer}")
-            else:
-                preview = _truncate(json.dumps(f, default=str), 220)
-                parts.append(f"[{step}] {preview}")
-        return "\n".join(parts)
+        return self.prompt_composer.build_findings_block(
+            state,
+            is_chat_session=self._is_chat_session(state),
+            chat_prompt_findings_limit=self.chat_prompt_findings_limit,
+            describe_fallback_evidence=self._describe_fallback_evidence,
+        )
 
     def _build_reasoning_block(self, state: AgentState) -> str:
         """Return a compact structured reasoning snapshot for the prompt."""
-        reasoning_state = state.reasoning_state if isinstance(state.reasoning_state, dict) else {}
-        hypotheses = reasoning_state.get("hypotheses", []) if isinstance(reasoning_state, dict) else []
-        if not hypotheses:
-            return "(no structured hypotheses yet)"
-
-        lines: List[str] = []
-        status = str(reasoning_state.get("status") or "collecting_evidence")
-        lines.append(f"Reasoning status: {status}")
-
-        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
-        if isinstance(root_cause, dict) and root_cause.get("summary"):
-            lines.append(f"Root cause assessment: {_truncate(str(root_cause.get('summary')), 220)}")
-
-        entity_state = state.entity_state if isinstance(state.entity_state, dict) else {}
-        entities = entity_state.get("entities", {}) if isinstance(entity_state.get("entities"), dict) else {}
-        if entities:
-            entity_summaries = []
-            for entity in list(entities.values())[:5]:
-                if not isinstance(entity, dict):
-                    continue
-                entity_summaries.append(f"{entity.get('type')}={entity.get('value')}")
-            if entity_summaries:
-                lines.append("Tracked entities: " + ", ".join(entity_summaries))
-
-        open_questions = reasoning_state.get("open_questions", [])
-        if isinstance(open_questions, list) and open_questions:
-            lines.append("Open questions:")
-            question_limit = 2 if self._is_chat_session(state) and status == "sufficient_evidence" else 4
-            for question in open_questions[:question_limit]:
-                lines.append(f"- {question}")
-
-        lines.append("Hypotheses:")
-        for raw_hypothesis in hypotheses[:3]:
-            if not isinstance(raw_hypothesis, dict):
-                continue
-            statement = str(raw_hypothesis.get("statement") or "Unspecified hypothesis")
-            confidence = float(raw_hypothesis.get("confidence", 0.0) or 0.0)
-            status = str(raw_hypothesis.get("status") or "open")
-            support_count = len(raw_hypothesis.get("supporting_evidence_refs", []) or [])
-            contradict_count = len(raw_hypothesis.get("contradicting_evidence_refs", []) or [])
-            lines.append(
-                f"- {statement} "
-                f"(status={status}, confidence={confidence:.2f}, support={support_count}, contradict={contradict_count})"
-            )
-        return "\n".join(lines)
+        return self.prompt_composer.build_reasoning_block(
+            state,
+            is_chat_session=self._is_chat_session(state),
+        )
 
     @staticmethod
     def _has_tool_result(state: AgentState, tool_name: str) -> bool:
@@ -2163,14 +2606,25 @@ class AgentLoop:
             threat_score = payload.get("threat_score", payload.get("score"))
             if verdict in {"MALICIOUS", "SUSPICIOUS"}:
                 return True
+            if verdict in {"CLEAN", "BENIGN"}:
+                return True
             if severity in {"HIGH", "CRITICAL"}:
                 return True
+            if severity in {"LOW", "INFO"}:
+                return True
             if isinstance(threat_score, (int, float)) and threat_score >= 80:
+                return True
+            if isinstance(threat_score, (int, float)) and threat_score <= 20:
                 return True
         return False
 
     def _chat_short_circuit_decision(self, state: AgentState) -> Optional[Dict[str, Any]]:
         """Skip extra LLM turns when a simple analyst chat already has enough evidence."""
+        if not state.findings:
+            bootstrap = self._build_initial_chat_tool_decision(state)
+            if bootstrap is not None:
+                return bootstrap
+
         if not self._is_lightweight_chat_session(state):
             return None
         if not state.findings:
@@ -2213,13 +2667,47 @@ class AgentLoop:
             )
             or self._simple_chat_has_strong_evidence(state)
         ):
-            return {
-                "action": "final_answer",
-                "answer": self._build_fallback_answer(state, authoritative_outcome),
-                "verdict": authoritative_outcome["label"],
-                "reasoning": "Short-circuit: the simple analyst chat already has sufficient evidence-backed reasoning.",
-            }
+            return None
         return None
+
+    def _chat_should_force_model_answer_without_tools(self, state: AgentState) -> bool:
+        """Use the model for the wording when evidence is already sufficient."""
+        if not self._is_chat_session(state):
+            return False
+        if self._chat_prefers_direct_response(state):
+            return True
+        if self._chat_follow_up_can_answer_from_context(state):
+            return True
+        if not self._is_lightweight_chat_session(state):
+            return False
+        if not state.findings:
+            return False
+
+        authoritative_outcome = self._resolve_authoritative_outcome(state)
+        if authoritative_outcome is None:
+            return False
+        if not self._has_tool_result(state, "correlate_findings"):
+            return False
+
+        reasoning_status = (
+            str(state.reasoning_state.get("status") or "")
+            if isinstance(state.reasoning_state, dict)
+            else ""
+        )
+        root_cause = (
+            state.agentic_explanation.get("root_cause_assessment", {})
+            if isinstance(state.agentic_explanation, dict)
+            else {}
+        )
+        return bool(
+            reasoning_status == "sufficient_evidence"
+            or (
+                isinstance(root_cause, dict)
+                and root_cause.get("status") == "supported"
+                and root_cause.get("supporting_evidence_refs")
+            )
+            or self._simple_chat_has_strong_evidence(state)
+        )
 
     def _session_case_id(self, session_id: str) -> Optional[str]:
         session = self.store.get_session(session_id)
@@ -2283,6 +2771,15 @@ class AgentLoop:
                         "workflow_id": state.workflow_id,
                         "agent_profile_id": state.agent_profile_id,
                         "goal": state.goal,
+                        "thread_id": state.thread_id,
+                        "chat_intent": self._session_metadata(state.session_id).get("chat_intent"),
+                        "goal_focus": self._latest_focus_candidate(state),
+                        "unresolved_questions": list(state.unresolved_questions),
+                        "log_query_plan": (
+                            copy.deepcopy(state.reasoning_state.get("last_log_query_plan", {}))
+                            if isinstance(state.reasoning_state, dict)
+                            else {}
+                        ),
                     },
                     **params,
                 )
@@ -2383,44 +2880,31 @@ class AgentLoop:
 
         return None
 
+    def _build_evidence_backed_answer(
+        self,
+        state: AgentState,
+        authoritative_outcome: Optional[Dict[str, str]],
+        *,
+        include_runtime_notice: bool,
+    ) -> str:
+        return self.session_response_builder.build_evidence_backed_answer(
+            state=state,
+            authoritative_outcome=authoritative_outcome,
+            include_runtime_notice=include_runtime_notice,
+            llm_unavailable_notice=self._llm_unavailable_notice,
+            build_chat_specific_fallback=self._build_chat_specific_fallback,
+            fallback_evidence_points=self._fallback_evidence_points,
+        )
+
     def _build_fallback_answer(
         self, state: AgentState, authoritative_outcome: Optional[Dict[str, str]],
     ) -> str:
         """Build a deterministic evidence-backed answer when LLM calls fail."""
-        sentences: List[str] = []
-        chat_specific = self._build_chat_specific_fallback(state)
-        if chat_specific:
-            sentences.append(chat_specific)
-
-        if state.step_count:
-            sentences.append(
-                f"The investigation completed {state.step_count} steps before switching to a deterministic fallback summary."
-            )
-
-        if authoritative_outcome:
-            sentences.append(f"Evidence-backed outcome: {authoritative_outcome['label']}.")
-        else:
-            sentences.append("The investigation collected evidence, but no authoritative verdict was finalized.")
-
-        evidence_points = self._fallback_evidence_points(state)
-        if evidence_points:
-            sentences.append("Key evidence: " + " ".join(evidence_points))
-
-        root_cause = state.agentic_explanation.get("root_cause_assessment", {}) if isinstance(state.agentic_explanation, dict) else {}
-        root_cause_summary = str(root_cause.get("summary") or "").strip()
-        if root_cause_summary:
-            sentences.append(f"Current investigative explanation: {root_cause_summary}")
-
-        missing_evidence = state.agentic_explanation.get("missing_evidence", []) if isinstance(state.agentic_explanation, dict) else []
-        if isinstance(missing_evidence, list) and missing_evidence:
-            sentences.append(f"Main evidence gap: {str(missing_evidence[0])}")
-
-        provider_excerpt = self._provider_runtime_error_excerpt()
-        if provider_excerpt:
-            sentences.append(f"LLM fallback reason: {provider_excerpt}")
-
-        sentences.append("This summary was generated directly from the collected evidence so the analyst can continue without losing context.")
-        return " ".join(sentences)[:2000]
+        return self.session_response_builder.build_fallback_answer(
+            state=state,
+            authoritative_outcome=authoritative_outcome,
+            build_evidence_backed_answer=self._build_evidence_backed_answer,
+        )
 
     def _build_chat_specific_fallback(self, state: AgentState) -> str:
         """Answer simple analyst lookup questions directly from collected evidence."""
@@ -2492,26 +2976,27 @@ class AgentLoop:
             return f"For {subject}, the strongest current mapping is {details[0]}."
         return f"For {subject}, the strongest current mapping is {details[0]} and {details[1]}."
 
+    def _llm_unavailable_notice(self) -> str:
+        status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
+        return self.session_response_builder.llm_unavailable_notice(
+            status=status,
+            provider_name=self.provider,
+            active_model_name=self._active_model_name,
+            provider_display_name=self._provider_display_name,
+            provider_runtime_error_excerpt=self._provider_runtime_error_excerpt,
+        )
+
+    def _provider_display_name(self, provider: Optional[str] = None) -> str:
+        return self.session_response_builder.provider_display_name(
+            self._normalize_provider(provider),
+        )
+
     def _provider_runtime_error_excerpt(self) -> str:
         status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
-        if not status or status.get("available", True):
-            return ""
-
-        raw_error = str(status.get("error") or status.get("message") or "").strip()
-        if not raw_error:
-            return ""
-
-        lowered = raw_error.lower()
-        provider_name = str(status.get("provider") or self.provider or "llm").capitalize()
-        if "429" in raw_error and "quota" in lowered:
-            return f"{provider_name} HTTP 429 quota exceeded."
-        if "503" in raw_error and ("high demand" in lowered or "overloaded" in lowered):
-            return f"{provider_name} HTTP 503 service overloaded."
-
-        compact = " ".join(raw_error.split())
-        if len(compact) > 180:
-            compact = compact[:177] + "..."
-        return compact
+        return self.session_response_builder.provider_runtime_error_excerpt(
+            status=status,
+            provider_display_name=self._provider_display_name,
+        )
 
     @classmethod
     def _fallback_evidence_points(cls, state: AgentState, limit: int = 3) -> List[str]:
@@ -2624,48 +3109,42 @@ class AgentLoop:
         """Ask the LLM to produce a concise investigation summary."""
         authoritative_outcome = self._resolve_authoritative_outcome(state)
 
-        if not state.findings and state.errors:
-            return (
-                "Investigation failed before evidence collection. "
-                + " ".join(str(err) for err in state.errors[:2])
-            )[:2000]
-
-        # If there is a final_answer finding, prefer its explanation but keep
-        # any verdict/severity prefix tied to evidence-backed tool results.
-        for f in reversed(state.findings):
-            if f.get("type") == "final_answer":
-                answer = f.get("answer", "")
-                if answer:
-                    if authoritative_outcome:
-                        return f"[{authoritative_outcome['label']}] {answer}"
-                    return answer
-
-        # Otherwise ask LLM to summarise
         findings_json = json.dumps(state.findings[-15:], default=str, indent=1)
-        prompt = _SUMMARY_PROMPT.format(
+        prompt = self.prompt_composer.build_summary_prompt(
             goal=state.goal,
             response_style_block=self._build_response_style_block(state),
             reasoning_block=self._build_reasoning_block(state),
             step_count=state.step_count,
-            findings_json=findings_json[:4000],
+            findings_json=findings_json,
         )
 
         try:
-            raw = await self._call_llm_text(prompt)
-            if raw:
-                return raw[:2000]
+            return await self.session_response_builder.generate_summary(
+                state=state,
+                authoritative_outcome=authoritative_outcome,
+                prompt=prompt,
+                call_llm_text=self._call_llm_text,
+                is_chat_session=self._is_chat_session,
+                provider_is_currently_unavailable=self._provider_is_currently_unavailable,
+                provider_name=self.provider,
+                build_chat_model_unavailable_answer=self._build_chat_model_unavailable_answer,
+                build_fallback_answer=self._build_fallback_answer,
+            )
         except Exception as exc:
             logger.warning(f"[AGENT] Summary generation failed: {exc}")
-
-        # Fallback
-        return self._build_fallback_answer(state, authoritative_outcome)
+            if self._is_chat_session(state) and self._provider_is_currently_unavailable(self.provider):
+                return self._build_chat_model_unavailable_answer(state)
+            return self._build_fallback_answer(state, authoritative_outcome)
 
     # ================================================================== #
     #  LLM communication
     # ================================================================== #
 
     async def _chat_with_tools(
-        self, messages: List[Dict], tools_json: Optional[List[Dict]] = None,
+        self,
+        messages: List[Dict],
+        tools_json: Optional[List[Dict]] = None,
+        request_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Any]:
         """Call the LLM with a messages list and available tools.
 
@@ -2673,105 +3152,104 @@ class AgentLoop:
         Returns raw response text/dict or None on failure.
         """
         tools_payload = tools_json if tools_json is not None else self.tools.get_tools_for_llm()
-
-        for provider_name in self._candidate_providers():
-            response = await self._chat_with_tools_via_provider(
-                provider_name,
-                messages,
-                tools_payload,
-            )
-            if response is not None:
-                if provider_name != self.provider:
-                    logger.info(
-                        "[AGENT] Chat tool-call failover succeeded via %s after %s was unavailable.",
-                        provider_name,
-                        self.provider,
-                    )
-                return response
-
-        logger.error("[AGENT] All configured chat providers failed: %s", ", ".join(self._candidate_providers()))
-        return None
+        return await self.provider_gateway.chat_with_failover(
+            invoke_provider_chat=self._chat_with_tools_via_provider,
+            messages=messages,
+            tools_payload=tools_payload,
+            request_metadata=request_metadata,
+        )
 
     async def _call_llm_text(self, prompt: str) -> Optional[str]:
         """Simple single-prompt call returning plain text (for summaries)."""
-        for provider_name in self._candidate_providers():
-            response = await self._call_llm_text_via_provider(provider_name, prompt)
-            if response is not None:
-                if provider_name != self.provider:
-                    logger.info(
-                        "[AGENT] Text generation failover succeeded via %s after %s was unavailable.",
-                        provider_name,
-                        self.provider,
-                    )
-                return response
-
-        logger.error("[AGENT] All configured text-generation providers failed: %s", ", ".join(self._candidate_providers()))
-        return None
+        return await self.provider_gateway.text_with_failover(
+            invoke_provider_text=self._call_llm_text_via_provider,
+            prompt=prompt,
+        )
 
     async def _chat_with_tools_via_provider(
         self,
         provider_name: str,
         messages: List[Dict],
         tools_json: List[Dict],
+        request_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Any]:
-        normalized = self._normalize_provider(provider_name)
-        if normalized == 'ollama':
-            return await self._ollama_chat(messages, tools_json)
-        if normalized == 'anthropic':
-            return await self._anthropic_chat(messages, tools_json)
-        if normalized == 'groq':
-            return await self._groq_chat(messages, tools_json)
-        if normalized == 'gemini':
-            return await self._gemini_chat(messages, tools_json)
-        if normalized == 'openrouter':
-            return await self._openrouter_chat(messages, tools_json)
-        logger.error("[AGENT] Unsupported provider configured: %s", normalized)
-        return None
+        metadata = dict(request_metadata or {})
+        request = self.provider_chat_gateway.build_chat_request(
+            provider_name=provider_name,
+            messages=messages,
+            tools_json=tools_json,
+            model_only_chat=bool(metadata.get("model_only_chat")) or not bool(tools_json),
+            prompt_envelope=metadata.get("prompt_envelope"),
+        )
+        return await self.provider_gateway.dispatch_chat_provider(
+            provider_name=request.get("provider", provider_name),
+            request=request,
+            extract_chat_messages=self.provider_chat_gateway.extract_chat_messages,
+            extract_chat_tools=self.provider_chat_gateway.extract_chat_tools,
+            invoke_ollama=self._ollama_chat,
+            invoke_anthropic=self._anthropic_chat,
+            invoke_groq=self._groq_chat,
+            invoke_gemini=self._gemini_chat,
+            invoke_nvidia=self._nvidia_chat,
+            invoke_openrouter=self._openrouter_chat,
+            logger=logger,
+            normalize_provider=self._normalize_provider,
+        )
+
+    def _build_direct_chat_opening_answer(self, state: AgentState) -> str:
+        """Return an immediate conversational answer for chat turns without artifacts."""
+        return self.session_response_builder.build_direct_chat_opening_answer(
+            prefers_direct_response=self._chat_prefers_direct_response(state),
+            latest_message=self._latest_analyst_message(state),
+        )
+
+    def _build_initial_chat_tool_decision(self, state: AgentState) -> Optional[Dict[str, Any]]:
+        """Start artifact-based chat with the primary investigation tool immediately."""
+        return self.session_response_builder.build_initial_chat_tool_decision(
+            is_chat_session=self._is_chat_session(state),
+            has_findings=bool(state.findings),
+            prefers_direct_response=self._chat_prefers_direct_response(state),
+            latest_message=self._latest_analyst_message(state),
+            goal_has_observable=self._goal_has_observable,
+            looks_like_artifact_submission=self._looks_like_artifact_submission,
+            build_next_action_from_context=self._build_next_action_from_context,
+            state=state,
+        )
 
     async def _call_llm_text_via_provider(self, provider_name: str, prompt: str) -> Optional[str]:
-        normalized = self._normalize_provider(provider_name)
-        if normalized == 'ollama':
-            return await self._ollama_generate(prompt)
-        if normalized == 'anthropic':
-            return await self._anthropic_generate(prompt)
-        if normalized == 'groq':
-            return await self._groq_generate(prompt)
-        if normalized == 'gemini':
-            return await self._gemini_generate(prompt)
-        if normalized == 'openrouter':
-            return await self._openrouter_generate(prompt)
-        logger.error("[AGENT] Unsupported provider configured: %s", normalized)
-        return None
+        request = self.provider_chat_gateway.build_text_request(
+            provider_name=provider_name,
+            prompt=prompt,
+        )
+        return await self.provider_gateway.dispatch_text_provider(
+            provider_name=request.get("provider", provider_name),
+            request=request,
+            extract_text_prompt=self.provider_chat_gateway.extract_text_prompt,
+            invoke_ollama=self._ollama_generate,
+            invoke_anthropic=self._anthropic_generate,
+            invoke_groq=self._groq_generate,
+            invoke_gemini=self._gemini_generate,
+            invoke_nvidia=self._nvidia_generate,
+            invoke_openrouter=self._openrouter_generate,
+            logger=logger,
+            normalize_provider=self._normalize_provider,
+        )
 
     def _provider_failure_message(self) -> str:
         """Return a provider-aware troubleshooting hint."""
-        if self.provider == 'groq':
-            return (
-                "LLM returned no decision. Verify the Groq API key is configured, "
-                f"the endpoint '{self.groq_endpoint}' is reachable, and model "
-                f"'{self.groq_model}' is available."
-            )
-        if self.provider == 'anthropic':
-            return (
-                "LLM returned no decision. Verify the Anthropic API key is configured "
-                f"and model '{self.anthropic_model}' is available."
-            )
-        if self.provider == 'gemini':
-            return (
-                "LLM returned no decision. Verify the Gemini API key is configured, "
-                f"the endpoint '{self.gemini_endpoint}' is reachable, and model "
-                f"'{self.gemini_model}' is available."
-            )
-        if self.provider == 'openrouter':
-            return (
-                "LLM returned no decision. Verify the OpenRouter API key is configured, "
-                f"the endpoint '{self.openrouter_endpoint}' is reachable, and model "
-                f"'{self.openrouter_model}' is available."
-            )
-        return (
-            "LLM returned no decision. Verify Ollama is running "
-            f"({self.ollama_endpoint}) and model '{self.ollama_model}' "
-            "is pulled. Run: ollama pull " + self.ollama_model
+        return self.session_response_builder.provider_failure_message(
+            provider=self.provider,
+            groq_endpoint=self.groq_endpoint,
+            groq_model=self.groq_model,
+            anthropic_model=self.anthropic_model,
+            gemini_endpoint=self.gemini_endpoint,
+            gemini_model=self.gemini_model,
+            nvidia_endpoint=self.nvidia_endpoint,
+            nvidia_model=self.nvidia_model,
+            openrouter_endpoint=self.openrouter_endpoint,
+            openrouter_model=self.openrouter_model,
+            ollama_endpoint=self.ollama_endpoint,
+            ollama_model=self.ollama_model,
         )
 
     # ---- Ollama ---- #
@@ -3125,6 +3603,136 @@ class AgentLoop:
                 error=f"Groq request failed: {exc}",
             )
             logger.error(f"[AGENT] Groq generate failed: {exc}")
+            return None
+
+    async def _nvidia_chat(
+        self, messages: List[Dict], tools: List[Dict],
+    ) -> Optional[Any]:
+        """NVIDIA Build OpenAI-compatible /chat/completions with tool calling."""
+        if not self.nvidia_key:
+            self._record_llm_runtime_status(
+                provider='nvidia',
+                model=self._active_model_name('nvidia'),
+                available=False,
+                error="NVIDIA Build API key not configured.",
+            )
+            logger.warning("[AGENT] No NVIDIA Build API key configured")
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.nvidia_key}",
+                "Content-Type": "application/json",
+            }
+            payload: Dict[str, Any] = {
+                "model": self.nvidia_model,
+                "messages": messages,
+                "temperature": 0.2,
+                "stream": False,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.nvidia_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            provider='nvidia',
+                            model=self._active_model_name('nvidia'),
+                            available=False,
+                            error=f"NVIDIA Build HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] NVIDIA Build chat error {resp.status}: {body[:300]}")
+                        return None
+
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        provider='nvidia',
+                        model=self._active_model_name('nvidia'),
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+
+                    if message.get("tool_calls"):
+                        return {"tool_calls": message["tool_calls"]}
+
+                    return message.get("content", "")
+
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                provider='nvidia',
+                model=self._active_model_name('nvidia'),
+                available=False,
+                error=f"NVIDIA Build request failed: {exc}",
+            )
+            logger.error(f"[AGENT] NVIDIA Build chat failed: {exc}", exc_info=True)
+            return None
+
+    async def _nvidia_generate(self, prompt: str) -> Optional[str]:
+        """NVIDIA Build /chat/completions for plain text responses."""
+        if not self.nvidia_key:
+            self._record_llm_runtime_status(
+                provider='nvidia',
+                model=self._active_model_name('nvidia'),
+                available=False,
+                error="NVIDIA Build API key not configured.",
+            )
+            return None
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.nvidia_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.nvidia_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "stream": False,
+            }
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f"{self.nvidia_endpoint}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._record_llm_runtime_status(
+                            provider='nvidia',
+                            model=self._active_model_name('nvidia'),
+                            available=False,
+                            error=f"NVIDIA Build HTTP {resp.status}: {body[:200]}",
+                            http_status=resp.status,
+                        )
+                        logger.error(f"[AGENT] NVIDIA Build generate error {resp.status}: {body[:200]}")
+                        return None
+                    data = await resp.json()
+                    self._record_llm_runtime_status(
+                        provider='nvidia',
+                        model=self._active_model_name('nvidia'),
+                        available=True,
+                        http_status=resp.status,
+                    )
+                    choices = data.get("choices", [])
+                    message = choices[0].get("message", {}) if choices else {}
+                    return message.get("content", "")
+        except Exception as exc:
+            self._record_llm_runtime_status(
+                provider='nvidia',
+                model=self._active_model_name('nvidia'),
+                available=False,
+                error=f"NVIDIA Build request failed: {exc}",
+            )
+            logger.error(f"[AGENT] NVIDIA Build generate failed: {exc}")
             return None
 
     async def _openrouter_chat(

@@ -151,7 +151,7 @@ async function main() {
     lines.push(`- Concise, list unresolved Qs at end`);
     // Python venv rules (if venv exists)
     if (skillsVenv) {
-      lines.push(`- Python scripts in .claude/skills/: Use \`${skillsVenv}\``);
+      lines.push(`- Python scripts in .cursor/skills/: Use \`${skillsVenv}\``);
       lines.push(`- Never use global pip install`);
     }
 

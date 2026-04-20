@@ -7,8 +7,8 @@
  * Hook file kept for reference; will be redesigned in future release.
  *
  * Original design:
- *   SessionStart: move overlapping local skills to .claude/skills/.shadowed/
- *   SessionEnd:   restore .shadowed/ skills back to .claude/skills/
+ *   SessionStart: move overlapping local skills to .cursor/skills/.shadowed/
+ *   SessionEnd:   restore .shadowed/ skills back to .cursor/skills/
  *
  * Problem: Non-atomic file operations + shared manifest = race condition
  * when multiple Claude Code sessions run in the same directory.

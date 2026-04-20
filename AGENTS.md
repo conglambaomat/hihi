@@ -26,12 +26,13 @@ If the task mentions any of the following, start in `CABTA/`:
 
 Read these first:
 
-1. `./CABTA/README.md`
-2. `./CABTA/AGENTS.md`
-3. `./CABTA/docs/system-design.md`
-4. `./CABTA/docs/codebase-summary.md`
-5. `./CABTA/docs/code-standards.md`
-6. `./CABTA/TEST-MANIFEST.md`
+1. `./CABTA/docs/ONBOARDING.md` (read order by task type)
+2. `./CABTA/README.md`
+3. `./CABTA/AGENTS.md`
+4. `./CABTA/docs/system-design.md`
+5. `./CABTA/docs/codebase-summary.md`
+6. `./CABTA/docs/code-standards.md`
+7. `./CABTA/TEST-MANIFEST.md`
 
 If the task is ambiguous, default to `CABTA/`.
 
@@ -64,3 +65,7 @@ For those tasks, read:
 - Root `README.md` is a workspace landing page, not the product README for CABTA.
 - Root `docs/` are not the source of truth for CABTA runtime behavior.
 - When working inside `CABTA/`, follow `CABTA/AGENTS.md` over this file.
+
+## GitNexus (optional)
+
+If the GitNexus MCP integration is available, you may use it for impact analysis and navigation. It is **not** required for every edit. See [`docs/gitnexus-workflow.md`](docs/gitnexus-workflow.md).

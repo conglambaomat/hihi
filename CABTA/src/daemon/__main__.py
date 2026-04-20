@@ -1,4 +1,4 @@
-"""Minimal entrypoint for the optional AISA headless SOC daemon."""
+"""Minimal entrypoint for the optional CABTA headless SOC daemon."""
 
 from __future__ import annotations
 

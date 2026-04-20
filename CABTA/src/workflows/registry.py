@@ -1,4 +1,4 @@
-"""Markdown-backed workflow registry for the AISA orchestration plane."""
+"""Markdown-backed workflow registry for the CABTA orchestration plane."""
 
 from __future__ import annotations
 
@@ -110,11 +110,178 @@ class WorkflowRegistry:
             for workflow in sorted(self._workflows.values(), key=lambda item: item.name)
         ]
 
+    def validate_workflow_definition(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a markdown workflow definition/frontmatter contract."""
+        issues: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+
+        if not isinstance(definition, dict):
+            return {
+                "valid": False,
+                "issues": [{"level": "error", "message": "Workflow definition must be a mapping/dict"}],
+                "warnings": [],
+            }
+
+        workflow_id = str(definition.get("id") or definition.get("name") or "").strip()
+        name = str(
+            definition.get("display-name")
+            or definition.get("display_name")
+            or definition.get("name")
+            or ""
+        ).strip()
+        execution_backend = str(
+            definition.get("execution-backend")
+            or definition.get("execution_backend")
+            or "agent"
+        ).strip().lower()
+
+        if not workflow_id:
+            issues.append({"level": "error", "message": "Workflow must declare id or name"})
+        if not name:
+            issues.append({"level": "error", "message": "Workflow must declare a display name or name"})
+        if execution_backend not in {"agent", "playbook"}:
+            issues.append(
+                {
+                    "level": "error",
+                    "message": f"Unsupported execution backend '{execution_backend}'",
+                }
+            )
+
+        playbook_id = definition.get("playbook-id") or definition.get("playbook_id")
+        if execution_backend == "playbook" and not playbook_id:
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "Playbook-backed workflows must declare playbook-id",
+                }
+            )
+        if execution_backend == "agent" and playbook_id:
+            warnings.append(
+                {
+                    "level": "warning",
+                    "message": "Agent-backed workflow declares playbook-id; value will be ignored unless backend is playbook",
+                }
+            )
+
+        approval_mode = str(
+            definition.get("approval-mode")
+            or definition.get("approval_mode")
+            or "inherited"
+        ).strip().lower()
+        if approval_mode not in {"inherited", "none", "analyst"}:
+            issues.append(
+                {
+                    "level": "error",
+                    "message": f"Unsupported approval mode '{approval_mode}'",
+                }
+            )
+
+        headless_ready = bool(
+            definition.get("headless-ready")
+            or definition.get("headless_ready")
+            or False
+        )
+
+        required_tools = list(definition.get("required-tools") or definition.get("required_tools") or [])
+        required_servers = list(
+            definition.get("required-mcp-servers") or definition.get("required_mcp_servers") or []
+        )
+        required_features = list(
+            definition.get("required-features") or definition.get("required_features") or []
+        )
+        agents = list(definition.get("agents") or [])
+        capabilities = list(definition.get("capabilities") or [])
+
+        if not required_tools and not required_servers and not required_features:
+            warnings.append(
+                {
+                    "level": "warning",
+                    "message": "Workflow declares no required tools, servers, or features",
+                }
+            )
+        if not agents:
+            warnings.append(
+                {
+                    "level": "warning",
+                    "message": "Workflow declares no explicit agents/specialists",
+                }
+            )
+        if not capabilities:
+            warnings.append(
+                {
+                    "level": "warning",
+                    "message": "Workflow declares no capability tags",
+                }
+            )
+
+        if headless_ready and approval_mode == "analyst":
+            warnings.append(
+                {
+                    "level": "warning",
+                    "message": "Headless-ready workflow still requires analyst approval checkpoints",
+                }
+            )
+
+        return {
+            "valid": not any(item.get("level") == "error" for item in issues),
+            "issues": issues,
+            "warnings": warnings,
+            "execution_backend": execution_backend,
+            "approval_mode": approval_mode,
+            "headless_ready": headless_ready,
+            "requires_playbook": bool(execution_backend == "playbook"),
+            "required_tools": required_tools,
+            "required_mcp_servers": required_servers,
+            "required_features": required_features,
+            "dependency_count": len(required_tools) + len(required_servers) + len(required_features),
+            "agent_count": len(agents),
+            "capability_count": len(capabilities),
+        }
+
     def get_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         workflow = self._workflows.get(workflow_id)
         if workflow is None:
             return None
         return workflow.to_detail_dict()
+
+    def describe_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        workflow = self._workflows.get(workflow_id)
+        if workflow is None:
+            return None
+
+        detail = workflow.to_detail_dict()
+        validation = self.validate_workflow_definition(
+            {
+                "id": workflow.workflow_id,
+                "name": workflow.name,
+                "description": workflow.description,
+                "execution_backend": workflow.execution_backend,
+                "playbook_id": workflow.playbook_id,
+                "agents": list(workflow.agents),
+                "capabilities": list(workflow.capabilities),
+                "required_tools": list(workflow.required_tools),
+                "required_mcp_servers": list(workflow.required_mcp_servers),
+                "required_features": list(workflow.required_features),
+                "approval_mode": workflow.approval_mode,
+                "headless_ready": workflow.headless_ready,
+            }
+        )
+
+        detail["validation"] = validation
+        detail["execution_contract"] = {
+            "multi_agent": len(workflow.agents) > 1,
+            "headless_ready": workflow.headless_ready,
+            "approval_mode": workflow.approval_mode,
+            "requires_playbook": bool(workflow.execution_backend.lower() == "playbook"),
+            "supports_headless_execution": bool(workflow.headless_ready and workflow.approval_mode != "analyst"),
+            "dependency_count": validation.get("dependency_count", 0),
+            "required_dependencies": {
+                "tools": list(workflow.required_tools),
+                "mcp_servers": list(workflow.required_mcp_servers),
+                "features": list(workflow.required_features),
+            },
+        }
+        return detail
 
     def build_goal(
         self,

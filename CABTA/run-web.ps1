@@ -15,22 +15,70 @@ if (-not (Test-Path $pythonPath)) {
     throw "Python venv not found at $pythonPath"
 }
 
+function Get-ListeningProcessId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port
+    )
+
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $listener) {
+        return $null
+    }
+
+    return $listener.OwningProcess
+}
+
+function Clear-ListeningPort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port
+    )
+
+    $listenerPid = Get-ListeningProcessId -Port $Port
+    if (-not $listenerPid) {
+        return
+    }
+
+    if ($listenerPid -eq $PID) {
+        throw "Refusing to stop the current PowerShell process while clearing port $Port."
+    }
+
+    $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerPid" -ErrorAction SilentlyContinue
+    $listenerName = if ($listenerProcess -and $listenerProcess.Name) { $listenerProcess.Name } else { "PID $listenerPid" }
+
+    Write-Host "Port $Port is in use by $listenerName ($listenerPid). Stopping it before launch..." -ForegroundColor Yellow
+
+    try {
+        Stop-Process -Id $listenerPid -Force -ErrorAction Stop
+    } catch {
+        $stillListening = Get-ListeningProcessId -Port $Port
+        if ($stillListening) {
+            throw
+        }
+    }
+
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 250
+        if (-not (Get-ListeningProcessId -Port $Port)) {
+            return
+        }
+    }
+
+    throw "Port $Port is still in use after stopping PID $listenerPid."
+}
+
 Set-Location $projectRoot
 $env:CABTA_HOST = $BindHost
 $env:CABTA_PORT = "$Port"
 
+Clear-ListeningPort -Port $Port
+
 if ($Foreground) {
     & $pythonPath -m src.web.run_local
     exit $LASTEXITCODE
-}
-
-$existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-    Select-Object -First 1 -ExpandProperty OwningProcess
-
-if ($existing) {
-    Write-Host "Port $Port is already in use by PID $existing." -ForegroundColor Yellow
-    Write-Host "Open http://$BindHost`:$Port if CABTA is already running, or stop that process first." -ForegroundColor Yellow
-    exit 1
 }
 
 $process = Start-Process `

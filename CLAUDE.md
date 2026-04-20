@@ -10,12 +10,13 @@ Before planning or implementing, route yourself to the correct project context.
 
 If the task is about the product, security analysis features, the dashboard, MCP exposure, or any path under `CABTA/`, read these first:
 
-1. `./CABTA/README.md`
-2. `./CABTA/AGENTS.md`
-3. `./CABTA/docs/system-design.md`
-4. `./CABTA/docs/codebase-summary.md`
-5. `./CABTA/docs/code-standards.md`
-6. `./CABTA/TEST-MANIFEST.md`
+1. `./CABTA/docs/ONBOARDING.md` (what to read next by task — start here)
+2. `./CABTA/README.md`
+3. `./CABTA/AGENTS.md`
+4. `./CABTA/docs/system-design.md`
+5. `./CABTA/docs/codebase-summary.md`
+6. `./CABTA/docs/code-standards.md`
+7. `./CABTA/TEST-MANIFEST.md`
 
 If the task is ambiguous, choose this path.
 
@@ -23,7 +24,7 @@ If the task is ambiguous, choose this path.
 
 Use root context first only when the task explicitly targets:
 
-- `.claude/` workflows, hooks, skills, or settings
+- `.claude/` workflows, hooks, or settings (skill markdown lives under `.cursor/skills/`)
 - root `plans/`
 - root `docs/`
 - release or packaging scripts at the repo root
@@ -45,3 +46,7 @@ For those tasks, read:
 - The root `README.md` is a workspace index. It does not define CABTA's architecture.
 - Root `docs/` mainly describe shared agent tooling and historical scaffolding. They are not CABTA's source of truth.
 - When touching root tooling, follow `./.claude/rules/development-rules.md`.
+
+## GitNexus (optional)
+
+If GitNexus MCP is connected, prefer it for impact-aware refactors when appropriate. It is not mandatory for routine edits. Details: [`docs/gitnexus-workflow.md`](docs/gitnexus-workflow.md).

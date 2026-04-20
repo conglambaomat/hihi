@@ -1459,45 +1459,11 @@ var AgentChat = (function() {
         fetch('/api/config/llm-health')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var provider = String(data.provider || 'openrouter').toLowerCase();
-
-                if (provider === 'openrouter' && !data.available) {
+                if (!data.available) {
                     addBubble(
                         '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
                         '<strong>OpenRouter is not ready.</strong> Add a valid OpenRouter API key in <a href="/settings">Settings</a> to enable the AI agent.' +
                         (data.error ? '<br><small>' + esc(data.error) + '</small>' : ''),
-                        'system'
-                    );
-                } else if (provider === 'ollama' && !data.available) {
-                    addBubble(
-                        '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
-                        '<strong>Ollama is not ready.</strong> The AI agent needs a working LLM runtime.' +
-                        '<br>Start Ollama with: <code>ollama serve</code>' +
-                        '<br>Then pull a model: <code>ollama pull ' + esc(data.configured_model || 'llama3.1:8b') + '</code>',
-                        'system'
-                    );
-                } else if (provider === 'groq' && !data.available) {
-                    addBubble(
-                        '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
-                        '<strong>Groq is not ready.</strong> Add a valid Groq API key in <a href="/settings">Settings</a> to enable the AI agent.' +
-                        (data.error ? '<br><small>' + esc(data.error) + '</small>' : ''),
-                        'system'
-                    );
-                } else if (provider === 'anthropic' && !data.available) {
-                    addBubble(
-                        '<i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>' +
-                        '<strong>Anthropic is not ready.</strong> Add a valid Anthropic API key in <a href="/settings">Settings</a> to enable the AI agent.' +
-                        (data.error ? '<br><small>' + esc(data.error) + '</small>' : ''),
-                        'system'
-                    );
-                } else if (provider === 'ollama' && !data.model_available) {
-                    var available = (data.available_models || []).join(', ') || 'none';
-                    addBubble(
-                        '<i class="bi bi-exclamation-circle-fill text-warning me-1"></i>' +
-                        '<strong>Model "' + esc(data.configured_model) + '" not found!</strong>' +
-                        '<br>Available models: ' + esc(available) +
-                        '<br>Pull it with: <code>ollama pull ' + esc(data.configured_model) + '</code>' +
-                        '<br>Or change the model in <a href="/settings">Settings</a>.',
                         'system'
                     );
                 }
@@ -2101,11 +2067,22 @@ var AgentChat = (function() {
         }
     }
 
+    function renderChatHistoryMessages(messages) {
+        (Array.isArray(messages) ? messages : []).forEach(function(message) {
+            if (!message || !message.content) return;
+            var role = String(message.role || '').toLowerCase();
+            if (role === 'user') addBubble(message.content, 'user');
+            else if (role === 'assistant' || role === 'agent') addBubble(message.content, 'agent');
+            else addBubble(message.content, 'system');
+        });
+    }
+
     function renderStoredSession(data) {
         var msgs = document.getElementById('chatMessages');
         while (msgs.firstChild) msgs.removeChild(msgs.firstChild);
 
         resetSessionMetrics();
+        renderChatHistoryMessages(data.chat_history_messages);
 
         var meta = data.metadata || {};
         var displayGoal = data.chat_user_message || meta.chat_user_message || data.goal;

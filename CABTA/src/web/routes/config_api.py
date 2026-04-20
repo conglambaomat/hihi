@@ -38,7 +38,6 @@ API_KEY_CATALOG = [
     {'key': 'threatzone', 'label': 'ThreatZone', 'placeholder': 'API key'},
     {'key': 'joesandbox', 'label': 'Joe Sandbox', 'placeholder': 'API key'},
     {'key': 'openrouter', 'label': 'OpenRouter', 'placeholder': 'API key'},
-    {'key': 'gemini', 'label': 'Google Gemini', 'placeholder': 'API key'},
     {'key': 'abusech', 'label': 'abuse.ch / ThreatFox', 'placeholder': 'Auth-Key'},
 ]
 
@@ -58,12 +57,23 @@ def _mask_secret_value(value):
     return value
 
 
+def _provider_label(provider: str) -> str:
+    normalized = str(provider or '').strip().lower()
+    if normalized == 'openrouter':
+        return 'OpenRouter'
+    if not normalized:
+        return 'LLM'
+    return normalized.title()
+
+
 def _runtime_llm_config(request: Request):
     """Return the active LLM config from app state."""
-    config = dict(getattr(request.app.state, 'config', {}) or {})
+    from src.utils.config import enforce_openrouter_only
+
+    config = enforce_openrouter_only(dict(getattr(request.app.state, 'config', {}) or {}))
     llm_cfg = config.get('llm', {}) if isinstance(config, dict) else {}
     api_keys = config.get('api_keys', {}) if isinstance(config, dict) else {}
-    provider = str(llm_cfg.get('provider') or 'openrouter').strip().lower() or 'openrouter'
+    provider = 'openrouter'
     return llm_cfg, api_keys, provider
 
 
@@ -110,7 +120,7 @@ def _apply_runtime_llm_signal(result: dict, runtime_signal: dict | None) -> dict
         merged['status'] = 'degraded'
         merged['error'] = runtime_signal.get('error') or merged.get('error')
         merged['message'] = (
-            f"{merged['provider'].title()} is configured, but the latest live runtime call failed."
+            f"{_provider_label(merged['provider'])} is configured, but the latest live runtime call failed."
         )
     elif runtime_signal.get('available') is True:
         merged['available'] = True
@@ -139,114 +149,20 @@ async def _build_llm_health_result(request: Request, endpoint: str = 'http://loc
         'available_models': [],
     }
 
-    if provider == 'openrouter':
-        has_key = is_valid_api_key(api_keys.get('openrouter')) or is_valid_api_key(llm_cfg.get('api_key'))
-        result.update({
-            'configured_model': llm_cfg.get('openrouter_model', llm_cfg.get('model', 'nvidia/nemotron-3-super-120b-a12b:free')),
-            'endpoint': str(llm_cfg.get('openrouter_endpoint', llm_cfg.get('base_url', 'https://openrouter.ai/api/v1'))).rstrip('/'),
-            'available': has_key,
-            'model_available': has_key,
-            'status': 'configured' if has_key else 'degraded',
-            'message': (
-                'OpenRouter is configured for AISA agent and analyst-assist workflows.'
-                if has_key else
-                'OpenRouter is selected as the LLM provider, but the API key is missing.'
-            ),
-            'error': None if has_key else 'OpenRouter API key not configured.',
-        })
-        return _apply_runtime_llm_signal(result, runtime_signal)
-
-    if provider == 'groq':
-        has_key = is_valid_api_key(api_keys.get('groq')) or is_valid_api_key(llm_cfg.get('api_key'))
-        result.update({
-            'configured_model': llm_cfg.get('groq_model', llm_cfg.get('model', 'openai/gpt-oss-20b')),
-            'endpoint': str(llm_cfg.get('groq_endpoint', llm_cfg.get('base_url', 'https://api.groq.com/openai/v1'))).rstrip('/'),
-            'available': has_key,
-            'model_available': has_key,
-            'status': 'configured' if has_key else 'degraded',
-            'message': (
-                'Groq is configured for AISA agent and analyst-assist workflows.'
-                if has_key else
-                'Groq is selected as the LLM provider, but the API key is missing.'
-            ),
-            'error': None if has_key else 'Groq API key not configured.',
-        })
-        return _apply_runtime_llm_signal(result, runtime_signal)
-
-    if provider == 'anthropic':
-        has_key = is_valid_api_key(api_keys.get('anthropic'))
-        result.update({
-            'configured_model': llm_cfg.get('anthropic_model', llm_cfg.get('model', 'claude-sonnet-4-20250514')),
-            'endpoint': 'https://api.anthropic.com/v1',
-            'available': has_key,
-            'model_available': has_key,
-            'status': 'configured' if has_key else 'degraded',
-            'message': (
-                'Anthropic is configured for AISA agent and analyst-assist workflows.'
-                if has_key else
-                'Anthropic is selected as the LLM provider, but the API key is missing.'
-            ),
-            'error': None if has_key else 'Anthropic API key not configured.',
-        })
-        return _apply_runtime_llm_signal(result, runtime_signal)
-
-    if provider == 'gemini':
-        has_key = is_valid_api_key(api_keys.get('gemini')) or is_valid_api_key(llm_cfg.get('api_key'))
-        result.update({
-            'configured_model': llm_cfg.get('gemini_model', llm_cfg.get('model', 'gemini-2.5-flash')),
-            'endpoint': str(
-                llm_cfg.get('gemini_endpoint', llm_cfg.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'))
-            ).rstrip('/'),
-            'available': has_key,
-            'model_available': has_key,
-            'status': 'configured' if has_key else 'degraded',
-            'message': (
-                'Gemini is configured for AISA agent and analyst-assist workflows.'
-                if has_key else
-                'Gemini is selected as the LLM provider, but the API key is missing.'
-            ),
-            'error': None if has_key else 'Gemini API key not configured.',
-        })
-        return _apply_runtime_llm_signal(result, runtime_signal)
-
-    base = str(endpoint or llm_cfg.get('ollama_endpoint') or llm_cfg.get('base_url') or 'http://localhost:11434').rstrip('/')
+    has_key = is_valid_api_key(api_keys.get('openrouter')) or is_valid_api_key(llm_cfg.get('api_key'))
     result.update({
-        'configured_model': llm_cfg.get('ollama_model', llm_cfg.get('model', 'llama3.1:8b')),
-        'endpoint': base,
-        'ollama_running': False,
+        'configured_model': llm_cfg.get('openrouter_model', llm_cfg.get('model', 'arcee-ai/trinity-large-preview:free')),
+        'endpoint': str(llm_cfg.get('openrouter_endpoint', llm_cfg.get('base_url', 'https://openrouter.ai/api/v1'))).rstrip('/'),
+        'available': has_key,
+        'model_available': has_key,
+        'status': 'configured' if has_key else 'degraded',
+        'message': (
+            'OpenRouter is configured for CABTA agent and analyst-assist workflows.'
+            if has_key else
+            'OpenRouter is selected as the LLM provider, but the API key is missing.'
+        ),
+        'error': None if has_key else 'OpenRouter API key not configured.',
     })
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=5)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f'{base}/api/tags') as resp:
-                if resp.status == 200:
-                    result['ollama_running'] = True
-                    data = await resp.json()
-                    models = data.get('models', [])
-                    result['available_models'] = [m.get('name', '') for m in models]
-
-                    configured = result['configured_model']
-                    for model in models:
-                        name = model.get('name', '')
-                        if name == configured or name.startswith(configured.split(':')[0]):
-                            result['model_available'] = True
-                            break
-
-                    result['available'] = result['model_available']
-                    result['status'] = 'configured' if result['model_available'] else 'degraded'
-                    result['message'] = (
-                        f"Ollama is running and model '{configured}' is available."
-                        if result['model_available'] else
-                        f"Ollama is running, but model '{configured}' is not available locally."
-                    )
-                else:
-                    result['error'] = f'Ollama returned HTTP {resp.status}'
-                    result['message'] = 'Ollama is configured but did not answer normally.'
-    except Exception as exc:
-        result['error'] = f'Cannot connect to Ollama: {exc}'
-        result['message'] = 'Ollama is selected as the LLM provider, but the local runtime is not reachable.'
-
     return _apply_runtime_llm_signal(result, runtime_signal)
 
 
@@ -342,7 +258,7 @@ async def health(request: Request):
             request,
             health=payload,
             page_title='System Health',
-            page_subtitle='Runtime readiness for AISA web, LLM, sandbox, and core services',
+            page_subtitle='Runtime readiness for CABTA web, LLM, sandbox, and core services',
         )
         return templates.TemplateResponse(request, 'config_health.html', context)
 
@@ -356,7 +272,7 @@ async def info(request: Request):
     capability_catalog = getattr(request.app.state, 'capability_catalog', None)
     capability_summary = capability_catalog.build_summary(request.app) if capability_catalog else {}
     return {
-        'app': 'AISA',
+        'app': 'CABTA',
         'version': '2.0.0',
         'python': sys.version,
         'platform': platform.platform(),
@@ -491,7 +407,7 @@ async def save_settings(request: Request):
 
     try:
         import yaml
-        from src.utils.config import merge_with_defaults
+        from src.utils.config import enforce_openrouter_only, merge_with_defaults
         from src.utils.config_history import snapshot_config
         from src.web.runtime_refresh import (
             apply_runtime_config_bridges,
@@ -505,19 +421,24 @@ async def save_settings(request: Request):
             except Exception as history_exc:
                 logger.warning("[CONFIG] Pre-save config snapshot failed: %s", history_exc)
         config_file.parent.mkdir(parents=True, exist_ok=True)
+        persisted = enforce_openrouter_only(existing)
         with open(config_file, 'w', encoding='utf-8') as f:
-            yaml.dump(existing, f, default_flow_style=False, allow_unicode=True)
+            yaml.dump(persisted, f, default_flow_style=False, allow_unicode=True)
         post_save_snapshot = None
         try:
             post_save_snapshot = snapshot_config(config_file, reason='post-web-settings-save')
         except Exception as history_exc:
             logger.warning("[CONFIG] Post-save config snapshot failed: %s", history_exc)
-        merged = apply_runtime_config_bridges(merge_with_defaults(existing))
-        request.app.state.config = merged
-        request.app.state.web_provider.config = merged
+        merged = apply_runtime_config_bridges(merge_with_defaults(persisted))
+        runtime_merged = apply_runtime_config_bridges(
+            merge_with_defaults(existing, normalize_llm=False),
+            normalize_llm=False,
+        )
+        request.app.state.config = runtime_merged
+        request.app.state.web_provider.config = runtime_merged
         if 'api_keys' in body or 'mcp_servers' in body:
             await reconnect_startup_mcp_servers(request.app)
-        await refresh_runtime_components(request.app, merged)
+        await refresh_runtime_components(request.app, runtime_merged)
         logger.info("[CONFIG] Settings saved to %s", config_file)
         return {
             'status': 'saved',

@@ -13,6 +13,58 @@ class WorkflowService:
         self.agent_store = agent_store
         self.case_store = case_store
 
+    def describe_workflow_runtime(self, app: Any, workflow_id: str) -> Dict[str, Any]:
+        workflow = self.workflow_registry.get_workflow(workflow_id)
+        if workflow is None:
+            raise ValueError(f"Workflow '{workflow_id}' not found")
+
+        registry_describe = getattr(self.workflow_registry, "describe_workflow", None)
+        workflow_contract = (
+            registry_describe(workflow_id)
+            if callable(registry_describe)
+            else dict(workflow)
+        )
+        dependency_status = self.validate_dependencies(app, workflow_id)
+
+        runs = self.list_runs(limit=20, workflow_id=workflow_id)
+        recent_statuses = [run.get("status") for run in runs if run.get("status")]
+        active_runs = sum(1 for status in recent_statuses if status in {"active", "running", "waiting_approval"})
+        completed_runs = sum(1 for status in recent_statuses if status == "completed")
+
+        execution_contract = workflow_contract.get("execution_contract", {}) if isinstance(workflow_contract, dict) else {}
+
+        return {
+            "workflow": workflow_contract,
+            "dependency_status": dependency_status,
+            "run_contract": {
+                "supports_headless": bool(workflow.get("headless_ready")),
+                "supports_headless_execution": bool(
+                    execution_contract.get(
+                        "supports_headless_execution",
+                        workflow.get("headless_ready") and workflow.get("approval_mode", "inherited") != "analyst",
+                    )
+                ),
+                "approval_mode": workflow.get("approval_mode", "inherited"),
+                "execution_backend": workflow.get("execution_backend", "agent"),
+                "requires_playbook": bool(workflow.get("playbook_id")),
+                "dependency_count": int(
+                    execution_contract.get(
+                        "dependency_count",
+                        len(workflow.get("required_tools", []))
+                        + len(workflow.get("required_mcp_servers", []))
+                        + len(workflow.get("required_features", [])),
+                    )
+                ),
+                "dependency_status_label": dependency_status.get("status", "unknown"),
+                "is_dependency_blocked": dependency_status.get("status") == "blocked",
+                "is_dependency_degraded": dependency_status.get("status") == "degraded",
+                "recent_run_count": len(runs),
+                "active_run_count": active_runs,
+                "completed_run_count": completed_runs,
+                "recent_statuses": recent_statuses[:10],
+            },
+        }
+
     def validate_dependencies(self, app: Any, workflow_id: str) -> Dict[str, Any]:
         workflow = self.workflow_registry.get_workflow(workflow_id)
         if workflow is None:
@@ -84,6 +136,12 @@ class WorkflowService:
         return {
             "workflow_id": workflow_id,
             "status": status,
+            "blocked": status == "blocked",
+            "degraded": status == "degraded",
+            "dependency_count": len(workflow.get("required_tools", []))
+            + len(workflow.get("required_mcp_servers", []))
+            + len(workflow.get("required_features", []))
+            + (1 if playbook_dependency is not None else 0),
             "required_tools": {
                 "available": available_required_tools,
                 "missing": missing_required_tools,
@@ -159,6 +217,10 @@ class WorkflowService:
             "current_phase": current_phase,
             "phase_index": phase_index,
             "phases": phases,
+            "execution_backend": workflow.get("execution_backend", "agent"),
+            "headless_ready": bool(workflow.get("headless_ready")),
+            "approval_mode": workflow.get("approval_mode", "inherited"),
+            "requires_playbook": bool(workflow.get("playbook_id")),
             "created_at": session.get("created_at"),
             "completed_at": session.get("completed_at"),
             "summary": session.get("summary"),

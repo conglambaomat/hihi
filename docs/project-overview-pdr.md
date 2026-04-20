@@ -90,7 +90,7 @@ Provide a production-ready template that:
 - `/brainstorm` - Solution ideation and evaluation
 - `/debug` - Deep issue analysis
 
-**Skill Organization** (`.claude/skills/`):
+**Skill Organization** (`.cursor/skills/`):
 Command behavior is implemented via skill directories:
 - `bootstrap/` - Project initialization workflows
 - `docs/` - Documentation generation and updates
@@ -100,7 +100,7 @@ Command behavior is implemented via skill directories:
 
 ### 3. Extensive Skills Library (47+ Skills)
 
-**Organized by Domain** (`.claude/skills/`):
+**Organized by Domain** (`.cursor/skills/`):
 
 **AI & Vision**: ai-artist, ai-multimodal, agent-browser
 **Authentication**: better-auth

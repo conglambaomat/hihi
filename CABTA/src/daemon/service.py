@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .queue_store import DaemonQueueStore
@@ -21,6 +22,9 @@ class HeadlessSOCDaemon:
         self.workflow_registry = workflow_registry
         self.workflow_service = workflow_service
         self.queue_store = queue_store or DaemonQueueStore()
+        self._worker_state: Dict[str, Dict[str, Any]] = {}
+        self._last_cycle_summary: Optional[Dict[str, Any]] = None
+        self._last_cycle_results: List[Dict[str, Any]] = []
 
     def daemon_config(self) -> Dict[str, Any]:
         return dict((self.config or {}).get("daemon", {}) or {})
@@ -30,7 +34,11 @@ class HeadlessSOCDaemon:
 
     def list_schedules(self) -> List[Dict[str, Any]]:
         schedules = self.daemon_config().get("schedules", [])
-        return [dict(item) for item in schedules if isinstance(item, dict)]
+        return [
+            dict(item)
+            for item in schedules
+            if isinstance(item, dict) and item.get("enabled", True)
+        ]
 
     def build_status(self, app: Optional[Any] = None) -> Dict[str, Any]:
         schedules = self.list_schedules()
@@ -46,8 +54,50 @@ class HeadlessSOCDaemon:
                 except Exception:
                     validation.append({"workflow_id": workflow_id, "status": "invalid"})
         ready_count = sum(1 for item in validation if item.get("status") == "ready")
+        daemon_cfg = self.daemon_config()
+        worker_states = self.worker_states()
+        active_workers = [item for item in worker_states if item.get("status") == "running"]
         return {
             "enabled": self.is_enabled(),
+            "runtime_mode": "thread_per_session",
+            "queue_enabled": True,
+            "resumable_jobs": True,
+            "resumable_job_model": {
+                "enabled": True,
+                "resume_token": "queue_state_resume_token",
+                "resume_from_statuses": ["failed", "cancelled"],
+                "resume_target_status": "queued",
+                "resume_scope": "queue_state_only",
+            },
+            "approval_aware": True,
+            "bounded_concurrency": {
+                "enabled": True,
+                "max_workers": int(daemon_cfg.get("max_workers", 1) or 1),
+                "cycle_limit": int(daemon_cfg.get("cycle_limit", 5) or 5),
+                "arbitration": "queue_leasing",
+                "policy": "prefer_fewer_stable_jobs",
+            },
+            "lease_policy": {
+                "lease_timeout_seconds": int(daemon_cfg.get("lease_timeout_seconds", 300) or 300),
+                "retry_backoff_seconds": int(daemon_cfg.get("retry_backoff_seconds", 60) or 60),
+                "lease_expiry_transition": "retry_scheduled",
+                "retryable_statuses": ["blocked"],
+                "terminal_statuses": ["completed", "failed", "cancelled"],
+                "cancellation_clears_lease": True,
+            },
+            "worker_supervision": {
+                "enabled": True,
+                "compatibility_mode": "thread_per_session",
+                "worker_count": len(worker_states),
+                "active_workers": len(active_workers),
+                "workers": worker_states,
+                "last_cycle": dict(self._last_cycle_summary or {}),
+            },
+            "migration_path": {
+                "current": "optional_headless_daemon",
+                "compatibility_path": "thread_per_session",
+                "target": "queue_backed_worker_runtime",
+            },
             "schedule_count": len(schedules),
             "ready_schedules": ready_count,
             "schedules": schedules,
@@ -142,40 +192,136 @@ class HeadlessSOCDaemon:
             "dependency_status": dependency_status,
         }
 
+    def worker_states(self) -> List[Dict[str, Any]]:
+        return [
+            dict({"worker_id": worker_id}, **state)
+            for worker_id, state in sorted(self._worker_state.items())
+        ]
+
+    def mark_worker_running(self, worker_id: str, *, cycle_limit: int) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        state = self._worker_state.get(worker_id) or {}
+        state.update(
+            {
+                "status": "running",
+                "started_at": state.get("started_at") or now,
+                "last_heartbeat_at": now,
+                "last_cycle_started_at": now,
+                "last_cycle_finished_at": state.get("last_cycle_finished_at"),
+                "last_result_count": state.get("last_result_count", 0),
+                "cycle_limit": int(cycle_limit),
+                "last_error": "",
+            }
+        )
+        self._worker_state[worker_id] = state
+        return dict({"worker_id": worker_id}, **state)
+
+    def mark_worker_idle(
+        self,
+        worker_id: str,
+        *,
+        result_count: int,
+        cycle_limit: int,
+        last_error: str = "",
+    ) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        state = self._worker_state.get(worker_id) or {}
+        state.update(
+            {
+                "status": "idle" if not last_error else "error",
+                "started_at": state.get("started_at") or now,
+                "last_heartbeat_at": now,
+                "last_cycle_finished_at": now,
+                "last_result_count": int(result_count),
+                "cycle_limit": int(cycle_limit),
+                "last_error": (last_error or "")[:1000],
+            }
+        )
+        self._worker_state[worker_id] = state
+        return dict({"worker_id": worker_id}, **state)
+
     async def run_cycle(self, app: Any, *, worker_id: str = "headless-soc", limit: int = 5) -> List[Dict[str, Any]]:
         """Run one queue-backed daemon cycle against enabled schedules."""
         if not self.is_enabled():
             return []
 
         daemon_cfg = self.daemon_config()
-        self.queue_store.release_stale_leases(
-            lease_timeout_seconds=int(daemon_cfg.get("lease_timeout_seconds", 300) or 300)
-        )
-        self.queue_store.seed_schedules(self.list_schedules())
-        leased_jobs = self.queue_store.lease_due_jobs(worker_id, limit=limit)
+        lease_timeout_seconds = int(daemon_cfg.get("lease_timeout_seconds", 300) or 300)
+        cycle_limit = int(daemon_cfg.get("cycle_limit", limit) or limit)
+        effective_limit = min(max(1, limit), max(1, cycle_limit))
 
-        results: List[Dict[str, Any]] = []
-        retry_backoff = int(daemon_cfg.get("retry_backoff_seconds", 60) or 60)
-        for job in leased_jobs:
-            schedule = dict(job.get("schedule") or {})
-            dispatch = await self.dispatch_schedule(app, schedule)
-            dispatch["queue_job_id"] = job["id"]
-            results.append(dispatch)
+        self.mark_worker_running(worker_id, cycle_limit=effective_limit)
+        cycle_started_at = datetime.now(timezone.utc).isoformat()
 
-            if dispatch.get("status") == "running":
-                self.queue_store.complete_job(job["id"], session_id=dispatch.get("session_id"))
-                continue
-
-            retryable = dispatch.get("status") in {"blocked"}
-            error = dispatch.get("reason") or dispatch.get("dependency_status", {}).get("status") or dispatch.get("status", "unknown_error")
-            retry_state = self.queue_store.fail_job(
-                job["id"],
-                str(error),
-                retryable=retryable,
-                base_backoff_seconds=retry_backoff,
+        try:
+            released_leases = self.queue_store.release_stale_leases(
+                lease_timeout_seconds=lease_timeout_seconds
             )
-            dispatch["queue_retry"] = retry_state
-        return results
+            seeded_jobs = self.queue_store.seed_schedules(self.list_schedules())
+            leased_jobs = self.queue_store.lease_due_jobs(
+                worker_id,
+                limit=effective_limit,
+                lease_timeout_seconds=lease_timeout_seconds,
+            )
+
+            results: List[Dict[str, Any]] = []
+            retry_backoff = int(daemon_cfg.get("retry_backoff_seconds", 60) or 60)
+            for job in leased_jobs:
+                schedule = dict(job.get("schedule") or {})
+                dispatch = await self.dispatch_schedule(app, schedule)
+                dispatch["queue_job_id"] = job["id"]
+                dispatch["resume_token"] = job.get("resume_token")
+                dispatch["worker_id"] = worker_id
+                dispatch["runtime_mode"] = "thread_per_session"
+                dispatch["lease_expires_at"] = job.get("lease_expires_at")
+                results.append(dispatch)
+
+                if dispatch.get("status") == "running":
+                    self.queue_store.complete_job(job["id"], session_id=dispatch.get("session_id"))
+                    continue
+
+                retryable = dispatch.get("status") in {"blocked"}
+                error = dispatch.get("reason") or dispatch.get("dependency_status", {}).get("status") or dispatch.get("status", "unknown_error")
+                retry_state = self.queue_store.fail_job(
+                    job["id"],
+                    str(error),
+                    retryable=retryable,
+                    base_backoff_seconds=retry_backoff,
+                )
+                dispatch["queue_retry"] = retry_state
+
+            self._last_cycle_results = [dict(item) for item in results]
+            self._last_cycle_summary = {
+                "worker_id": worker_id,
+                "status": "completed",
+                "runtime_mode": "thread_per_session",
+                "started_at": cycle_started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "released_stale_leases": released_leases,
+                "seeded_jobs": seeded_jobs,
+                "leased_jobs": len(leased_jobs),
+                "result_count": len(results),
+                "cycle_limit": effective_limit,
+            }
+            self.mark_worker_idle(worker_id, result_count=len(results), cycle_limit=effective_limit)
+            return results
+        except Exception as exc:
+            self._last_cycle_summary = {
+                "worker_id": worker_id,
+                "status": "error",
+                "runtime_mode": "thread_per_session",
+                "started_at": cycle_started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "cycle_limit": effective_limit,
+                "error": str(exc)[:1000],
+            }
+            self.mark_worker_idle(
+                worker_id,
+                result_count=0,
+                cycle_limit=effective_limit,
+                last_error=str(exc),
+            )
+            raise
 
     async def run_once(self, runner: Callable[[Dict[str, Any]], Any]) -> List[Any]:
         """Execute one polling cycle by delegating schedules to *runner*."""

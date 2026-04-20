@@ -1,8 +1,10 @@
-# Root Workspace Technique Assessment for AISA
+# Root Workspace Technique Assessment for CABTA
 
 ## Purpose
 
-This document records which techniques from the root workspace are worth adapting into AISA, and which ones should remain developer tooling only.
+This document records which techniques from the root workspace are worth adapting into CABTA, and which ones should remain developer tooling only.
+
+Legacy naming note: older strategic material may still refer to this product direction as `AISA` / `AI Security Assistant`. For implementation, architecture, UI, and new docs, treat `CABTA` as the canonical product name.
 
 The root repository is not a second product runtime. It is a mixed workspace containing:
 
@@ -11,7 +13,7 @@ The root repository is not a second product runtime. It is a mixed workspace con
 - hook-based policy tooling
 - release and documentation automation
 
-That distinction matters. The goal is not to copy the root repo into AISA. The goal is to selectively adopt the highest-value techniques.
+That distinction matters. The goal is not to copy the root repo into CABTA. The goal is to selectively adopt the highest-value techniques.
 
 ## Repos Reviewed
 
@@ -22,12 +24,11 @@ Reviewed root workspace areas:
 - `.claude/hooks/*`
 - `.claude/scripts/*`
 - `guide/*`
-- `docs/research/*`
 - `docs/agent-teams-guide.md`
-- `docs/skill-native-task.md`
+- `docs/gitnexus-workflow.md`
 - `scripts/*`
 
-Reviewed AISA context to map compatibility:
+Reviewed CABTA context to map compatibility:
 
 - `CABTA/README.md`
 - `CABTA/AGENTS.md`
@@ -37,7 +38,7 @@ Reviewed AISA context to map compatibility:
 
 ## Executive Conclusion
 
-Yes. The root workspace contains several techniques that can improve AISA without forcing a large rewrite.
+Yes. The root workspace contains several techniques that can improve CABTA without forcing a large rewrite.
 
 The strongest reusable techniques are:
 
@@ -46,7 +47,7 @@ The strongest reusable techniques are:
 3. centralized environment and secret resolution
 4. machine-readable capability catalogs
 
-These fit AISA well because AISA already has:
+These fit CABTA well because CABTA already has:
 
 - agent execution
 - MCP expansion
@@ -72,9 +73,9 @@ What the root workspace does well:
 - distinguishes safe exploration from noisy or dangerous scanning
 - turns policy into runtime behavior instead of documentation only
 
-Why this matters for AISA:
+Why this matters for CABTA:
 
-AISA already runs agent tools, MCP tools, playbooks, and user-triggered automation over untrusted inputs. It should protect:
+CABTA already runs agent tools, MCP tools, playbooks, and user-triggered automation over untrusted inputs. It should protect:
 
 - uploaded samples
 - case data
@@ -105,10 +106,10 @@ Priority:
 
 ### 2. Prompt-Injection Defense by Architecture
 
-Root evidence:
+Root evidence (patterns described in archived upstream research; local copies were removed to reduce doc duplication):
 
-- `docs/research/architectural-defense-prompt-injection.md`
-- `docs/research/preventing-prompt-injection-in-skills.md`
+- Architectural separation of untrusted content vs privileged tool selection
+- Skills and hooks as policy surfaces
 
 What the root workspace does well:
 
@@ -260,9 +261,8 @@ Priority:
 
 Root evidence:
 
-- `docs/skill-native-task.md`
+- `guide/SKILLS.md` / `guide/SKILLS.yaml` (curated skill catalog)
 - `.claude/hooks/session-init.cjs`
-- `docs/skills-interconnection-map.md`
 
 Why it is useful:
 
@@ -325,7 +325,7 @@ These are useful references, but should not be imported into AISA runtime as-is:
 - skill-marketplace assumptions
 - developer-only orchestration docs as runtime product logic
 
-## Recommended Integration Roadmap for AISA
+## Recommended Integration Roadmap for CABTA
 
 ### Phase 1. Guardrails and trust boundaries
 

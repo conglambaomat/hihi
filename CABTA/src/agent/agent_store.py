@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..utils.runtime_paths import runtime_cache_dir
+
 logger = logging.getLogger(__name__)
 
 def _default_db_path() -> Path:
@@ -23,7 +25,7 @@ def _default_db_path() -> Path:
 
     home_override = os.environ.get('CABTA_HOME')
     home_path = Path(home_override) if home_override else Path.home()
-    return home_path / '.blue-team-assistant' / 'cache' / 'agent.db'
+    return (runtime_cache_dir() if not home_override else home_path / 'cache') / 'agent.db'
 
 
 _DEFAULT_DB = _default_db_path()

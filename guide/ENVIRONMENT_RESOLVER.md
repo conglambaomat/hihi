@@ -9,11 +9,11 @@ All Claude Code skills now use a centralized environment variable resolver (`~/.
 Environment variables are resolved in this order (highest to lowest):
 
 1. **process.env** - Runtime environment variables (HIGHEST)
-2. **PROJECT/.claude/skills/\<skill\>/.env** - Project skill-specific overrides
-3. **PROJECT/.claude/skills/.env** - Project shared across all skills
+2. **PROJECT/.cursor/skills/\<skill\>/.env** - Project skill-specific overrides
+3. **PROJECT/.cursor/skills/.env** - Project shared across all skills
 4. **PROJECT/.claude/.env** - Project global defaults
-5. **~/.claude/skills/\<skill\>/.env** - User skill-specific overrides
-6. **~/.claude/skills/.env** - User shared across all skills
+5. **~/.cursor/skills/\<skill\>/.env** - User skill-specific overrides
+6. **~/.cursor/skills/.env** - User shared across all skills
 7. **~/.claude/.env** - User global defaults (LOWEST)
 
 ## Benefits
@@ -124,7 +124,7 @@ Result: When working in PROJECT, skills use `team-shared-key`.
 # ~/.claude/.env
 GEMINI_API_KEY=default-key
 
-# ~/.claude/skills/ai-multimodal/.env
+# ~/.cursor/skills/ai-multimodal/.env
 GEMINI_API_KEY=high-quota-key
 ```
 Result: ai-multimodal uses `high-quota-key`, other skills use `default-key`.
@@ -150,11 +150,11 @@ Environment Variable Resolution Hierarchy
 
 Priority order (highest to lowest):
 1. process.env - Runtime environment
-2. Project skill-specific (ai-multimodal) ✗ /path/to/project/.claude/skills/ai-multimodal/.env
-3. Project skills shared          ✓ /path/to/project/.claude/skills/.env
+2. Project skill-specific (ai-multimodal) ✗ /path/to/project/.cursor/skills/ai-multimodal/.env
+3. Project skills shared          ✓ /path/to/project/.cursor/skills/.env
 4. Project global                 ✓ /path/to/project/.claude/.env
-5. User skill-specific (ai-multimodal) ✗ /Users/user/.claude/skills/ai-multimodal/.env
-6. User skills shared             ✓ /Users/user/.claude/skills/.env
+5. User skill-specific (ai-multimodal) ✗ /Users/user/.cursor/skills/ai-multimodal/.env
+6. User skills shared             ✓ /Users/user/.cursor/skills/.env
 7. User global                    ✓ /Users/user/.claude/.env
 ```
 
@@ -190,7 +190,7 @@ Shows step-by-step where the resolver looks:
 ✗ GEMINI_API_KEY not in: Runtime environment
 ✗ GEMINI_API_KEY not in: Project skill-specific (ai-multimodal) (file not found)
 ✓ GEMINI_API_KEY found in: Project skills shared
-  Path: /path/to/project/.claude/skills/.env
+  Path: /path/to/project/.cursor/skills/.env
 ```
 
 ## Migration Guide
@@ -234,10 +234,10 @@ api_key = resolve_env('API_KEY_NAME', skill='skill-name')
 ## Updated Files
 
 1. **.claude/.env.example** - Added resolver reference
-2. **.claude/skills/.env.example** - Added resolver reference
-3. **.claude/skills/ai-multimodal/.env.example** - Added resolver reference
-4. **.claude/skills/ai-multimodal/scripts/gemini_batch_process.py** - Integrated resolver
-5. **.claude/skills/ai-multimodal/SKILL.md** - Updated documentation
+2. **.cursor/skills/.env.example** - Added resolver reference
+3. **.cursor/skills/ai-multimodal/.env.example** - Added resolver reference
+4. **.cursor/skills/ai-multimodal/scripts/gemini_batch_process.py** - Integrated resolver
+5. **.cursor/skills/ai-multimodal/SKILL.md** - Updated documentation
 
 ## Next Steps
 
@@ -246,7 +246,7 @@ api_key = resolve_env('API_KEY_NAME', skill='skill-name')
 3. **Create config files** as needed:
    - `~/.claude/.env` for personal defaults
    - `.claude/.env` in projects for team defaults
-   - `.claude/skills/<skill>/.env` for skill-specific overrides
+   - `.cursor/skills/<skill>/.env` for skill-specific overrides
 
 ## Support
 

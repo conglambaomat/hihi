@@ -17,9 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..utils.runtime_paths import runtime_cache_dir
+
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB = Path.home() / '.blue-team-assistant' / 'cache' / 'cases.db'
+_DEFAULT_DB = runtime_cache_dir() / 'cases.db'
 
 
 class CaseStore:

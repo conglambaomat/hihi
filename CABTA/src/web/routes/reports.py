@@ -51,7 +51,7 @@ async def get_mitre_layer(request: Request, analysis_id: str):
 
     # Build Navigator layer
     layer = {
-        'name': f'AISA Analysis {analysis_id}',
+        'name': f'CABTA Analysis {analysis_id}',
         'versions': {'attack': '14', 'navigator': '4.9', 'layer': '4.5'},
         'domain': 'enterprise-attack',
         'description': f'Auto-generated from analysis {analysis_id}',

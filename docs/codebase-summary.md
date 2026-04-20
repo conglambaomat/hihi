@@ -14,15 +14,13 @@ ClaudeKit Engineer is a comprehensive boilerplate template for building professi
 claudekit-engineer/
 ├── .claude/               # Claude Code configuration
 │   ├── agents/           # Specialized agent definitions (14 agents)
-│   ├── command-archive/  # Archived legacy command definitions
 │   ├── commands/         # Reserved compatibility directory (empty/minimal)
 │   ├── hooks/            # Git hooks and scripts
-│   ├── skills/           # Specialized skills library (20+ skills)
 │   └── workflows/        # Development workflow definitions
 ├── .github/             # GitHub Actions workflows
 │   └── workflows/       # CI/CD automation
 ├── docs/                # Project documentation
-│   └── research/        # Research reports directory
+├── .cursor/skills/      # Curated agent skills (see guide/SKILLS.md)
 ├── guide/               # User guides and references
 ├── plans/               # Implementation plans and reports
 │   ├── reports/         # Agent-to-agent communication
@@ -83,7 +81,7 @@ claudekit-engineer/
 - `/debug` - Issue debugging
 - `/fix` - Bug fixes
 
-**Skill Directories** (`.claude/skills/`):
+**Skill Directories** (`.cursor/skills/`):
 - `bootstrap/` - Project initialization workflows
 - `docs/` - Documentation workflows
 - `plan/` - Planning variants
@@ -269,10 +267,10 @@ Types:
 - `code-standards.md` - Coding standards and structure
 - `codebase-summary.md` - This file
 - `system-architecture.md` - Architecture documentation
-- `project-roadmap.md` - Development roadmap
-- `project-changelog.md` - Detailed changelog
-- `statusline-windows-support.md` - Windows statusline setup guide
-- `statusline-architecture.md` - Technical statusline implementation
+- `gitnexus-workflow.md` - Optional GitNexus MCP workflow
+- `vibe-coding-operating-model.md` - Workspace delivery discipline
+
+Roadmap and release history: see root `README.md` and `CHANGELOG.md`. CABTA product docs live under `CABTA/docs/`.
 
 **Documentation Triggers**:
 - Feature implementation completion

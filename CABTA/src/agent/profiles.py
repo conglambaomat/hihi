@@ -1,4 +1,4 @@
-"""Specialist agent profiles for the AISA orchestration plane.
+"""Specialist agent profiles for the CABTA orchestration plane.
 
 These profiles are inspired by Vigil's role-specialized orchestration model,
 but they are explicitly scoped so CABTA remains the source of truth for

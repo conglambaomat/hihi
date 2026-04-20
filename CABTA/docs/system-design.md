@@ -1,8 +1,8 @@
-# AISA System Design
+# CABTA System Design
 
 ## Purpose
 
-This document is the primary system-design source of truth for AISA.
+This document is the primary system-design source of truth for CABTA.
 
 Use it when vibe coding to decide:
 
@@ -10,7 +10,7 @@ Use it when vibe coding to decide:
 - which layer owns a change
 - what should be adopted from Vigil-inspired ideas
 - what must stay deterministic
-- how AISA should evolve without breaking analyst trust
+- how CABTA should evolve without breaking analyst trust
 
 This file is intentionally operational and implementation-facing.
 
@@ -30,8 +30,9 @@ For most non-trivial work, read in this order:
 
 ## System Identity
 
-- Canonical product name: `AISA`
-- Expanded name: `AI Security Assistant`
+- Canonical product name: `CABTA`
+- Expanded name: `Cyan Agent Blue Team Assistant`
+- Historical aliases still present in some legacy docs/code: `AISA`, `AI Security Assistant`, `Blue Team Assistant`, `mcp-for-soc`
 - Current repo/application path: `CABTA/`
 - Primary product mode: `localhost web application`
 - Secondary interfaces:
@@ -39,14 +40,15 @@ For most non-trivial work, read in this order:
   - MCP server
   - Python import
 
-When implementation and branding disagree, prefer:
+When implementation and historical wording disagree, prefer:
 
-- `AISA` for product/UI/docs
-- `CABTA/` for current file layout and compatibility
+- `CABTA` for product, UI, architecture, and new documentation
+- explicit legacy-name notes only where backward compatibility or historical context matters
+- `CABTA/` for file layout and compatibility
 
 ## Product Thesis
 
-AISA is a local-first AI SOC assistant platform with two tightly connected planes:
+CABTA is a local-first AI SOC assistant platform with two tightly connected planes:
 
 1. a deterministic analysis plane
 2. an agentic investigation plane
@@ -60,9 +62,9 @@ The system should combine both without collapsing one into the other.
 
 The integration model is asymmetric by design.
 
-### AISA analysis core
+### CABTA analysis core
 
-AISA remains the authoritative owner of:
+CABTA remains the authoritative owner of:
 
 - evidence extraction
 - enrichment normalization
@@ -90,8 +92,8 @@ It does not replace the analysis core.
 
 If a workflow or agent needs evidence, it must obtain that evidence through:
 
-- AISA tool orchestrators
-- AISA analyzers and integrations
+- CABTA tool orchestrators
+- CABTA analyzers and integrations
 - approved MCP tools
 - future case, graph, or timeline services built on real data
 
@@ -126,7 +128,7 @@ Workflow phases may:
 - recommend actions
 - summarize conclusions
 
-They may not override CABTA/AISA scoring as the final verdict source for analysis flows.
+They may not override CABTA scoring as the final verdict source for analysis flows.
 
 ### 3. Local-first by default
 
@@ -148,7 +150,7 @@ They must not fake success.
 
 ### 5. Workflow power without black-box behavior
 
-As AISA adds Vigil-inspired workflow and agent power, it must remain:
+As CABTA adds Vigil-inspired workflow and agent power, it must remain:
 
 - readable
 - inspectable
@@ -169,7 +171,7 @@ Do not silently rewrite contracts used by:
 
 ### 7. Integrate by seam, not by rewrite
 
-Vigil-inspired ideas should enter AISA through explicit seams:
+Vigil-inspired ideas should enter CABTA through explicit seams:
 
 - new orchestration layers
 - new case/intelligence layers
@@ -320,7 +322,7 @@ Own:
 
 ## Target Architecture Summary
 
-AISA should be treated as a web-first analyst platform built from two connected planes.
+CABTA should be treated as a web-first analyst platform built from two connected planes.
 
 ### Analysis Plane
 
@@ -427,7 +429,7 @@ Responsibilities:
 - invoke analyzers, integrations, scoring, and reporting
 - preserve stable result contracts
 
-This remains AISA's deterministic operational heart.
+This remains CABTA's deterministic operational heart.
 Workflow and agent layers should call into this layer instead of bypassing it.
 
 ### 5. Analyzer Layer
@@ -719,7 +721,7 @@ A machine-readable view of:
 
 ## MCP and Integration Strategy
 
-MCP remains the primary extensibility surface for AISA.
+MCP remains the primary extensibility surface for CABTA.
 
 The long-term target is:
 
@@ -733,7 +735,7 @@ It is "clear integration control plane plus explicit workflow/tool expectations.
 
 The best analysis direction remains:
 
-- AISA tools produce evidence and verdicts
+- CABTA tools produce evidence and verdicts
 - workflow and agent layers consume and organize those outputs
 
 ## Implementation Lanes
@@ -800,7 +802,7 @@ A change is done only if:
 - degraded states are honest
 - docs reflect the change
 - relevant tests were updated or explicitly deferred
-- new Vigil-inspired concepts do not weaken AISA's local-first and analyst-trust rules
+- new Vigil-inspired concepts do not weaken CABTA's local-first and analyst-trust rules
 
 ## Unresolved Questions
 

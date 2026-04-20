@@ -3,6 +3,7 @@ Author: Ugur Ates
 Agent API routes - Investigation management.
 """
 
+import json
 import logging
 from typing import Dict, List, Optional
 
@@ -71,6 +72,20 @@ def _decorate_session_payload(session: Dict) -> Dict:
         payload['chat_user_message'] = metadata.get('chat_user_message')
     if payload.get('chat_parent_session_id') is None and metadata.get('chat_parent_session_id') is not None:
         payload['chat_parent_session_id'] = metadata.get('chat_parent_session_id')
+    if payload.get('thread_id') is None and metadata.get('thread_id') is not None:
+        payload['thread_id'] = metadata.get('thread_id')
+    if payload.get('session_snapshot_id') is None and metadata.get('session_snapshot_id') is not None:
+        payload['session_snapshot_id'] = metadata.get('session_snapshot_id')
+    if payload.get('investigation_plan') is None and metadata.get('investigation_plan') is not None:
+        payload['investigation_plan'] = metadata.get('investigation_plan')
+    if payload.get('active_observations') is None and metadata.get('active_observations') is not None:
+        payload['active_observations'] = metadata.get('active_observations')
+    if payload.get('accepted_facts') is None and metadata.get('accepted_facts') is not None:
+        payload['accepted_facts'] = metadata.get('accepted_facts')
+    if payload.get('unresolved_questions') is None and metadata.get('unresolved_questions') is not None:
+        payload['unresolved_questions'] = metadata.get('unresolved_questions')
+    if payload.get('evidence_quality_summary') is None and metadata.get('evidence_quality_summary') is not None:
+        payload['evidence_quality_summary'] = metadata.get('evidence_quality_summary')
     if payload.get('reasoning_state') is None and metadata.get('reasoning_state') is not None:
         payload['reasoning_state'] = metadata.get('reasoning_state')
     if payload.get('entity_state') is None and metadata.get('entity_state') is not None:
@@ -88,6 +103,75 @@ def _decorate_session_payload(session: Dict) -> Dict:
     if payload.get('root_cause_assessment') is None and metadata.get('root_cause_assessment') is not None:
         payload['root_cause_assessment'] = metadata.get('root_cause_assessment')
     return payload
+
+
+def _chat_history_messages(store, session: Dict) -> Dict[str, List[Dict]]:
+    """Build the user/assistant turns that precede the current chat session."""
+    chain: List[Dict] = []
+    current = session if isinstance(session, dict) else None
+    seen = set()
+
+    while isinstance(current, dict):
+        current_id = str(current.get('id') or current.get('session_id') or '').strip()
+        if not current_id or current_id in seen:
+            break
+        seen.add(current_id)
+        chain.append(current)
+
+        metadata = current.get('metadata', {}) if isinstance(current.get('metadata'), dict) else {}
+        parent_id = str(metadata.get('chat_parent_session_id') or '').strip()
+        if not parent_id:
+            break
+        current = store.get_session(parent_id) if store is not None else None
+
+    chain.reverse()
+    history_messages: List[Dict] = []
+    thread_session_ids = [
+        str(item.get('id') or item.get('session_id') or '').strip()
+        for item in chain
+        if str(item.get('id') or item.get('session_id') or '').strip()
+    ]
+
+    for item in chain[:-1]:
+        payload = _decorate_session_payload(item)
+        prompt = str(payload.get('chat_user_message') or payload.get('goal') or '').strip()
+        if prompt:
+            history_messages.append({
+                'role': 'user',
+                'content': prompt,
+                'session_id': payload.get('session_id'),
+                'created_at': payload.get('created_at'),
+            })
+
+        findings = payload.get('findings', [])
+        if isinstance(findings, str):
+            try:
+                findings = json.loads(findings)
+            except json.JSONDecodeError:
+                findings = []
+        answer = ''
+        if isinstance(findings, list):
+            for finding in reversed(findings):
+                if isinstance(finding, dict) and finding.get('type') == 'final_answer':
+                    answer = str(finding.get('answer') or '').strip()
+                    if answer:
+                        break
+        if not answer:
+            answer = str(payload.get('summary') or '').strip()
+        if answer:
+            history_messages.append({
+                'role': 'assistant',
+                'content': answer,
+                'session_id': payload.get('session_id'),
+                'created_at': payload.get('completed_at') or payload.get('created_at'),
+                'status': payload.get('status'),
+            })
+
+    return {
+        'chat_history_messages': history_messages,
+        'chat_thread_session_ids': thread_session_ids,
+        'chat_root_session_id': thread_session_ids[0] if thread_session_ids else None,
+    }
 
 
 def _pending_approval_id(request: Request, session_id: str) -> Optional[str]:
@@ -275,6 +359,7 @@ async def get_session(request: Request, session_id: str):
     session = _decorate_session_payload(session)
     session['steps'] = steps
     session['specialist_tasks'] = specialist_tasks
+    session.update(_chat_history_messages(store, session))
     # Include live state if available
     agent_loop = request.app.state.agent_loop
     if agent_loop:

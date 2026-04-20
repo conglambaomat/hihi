@@ -13,7 +13,7 @@ def main() -> None:
     output_path = Path(".claude/scripts/commands_data.yaml")
     output_path.write_text(
         "# Commands have been migrated to skills.\n"
-        "# See .claude/skills/ck-help/scripts/skills_data.yaml for the current catalog.\n"
+        "# See .cursor/skills/ck-help/scripts/skills_data.yaml for the current catalog.\n"
         "[]\n",
         encoding="utf-8",
     )

@@ -1,5 +1,5 @@
 """
-Runtime refresh helpers for AISA web settings and MCP-aware tooling.
+Runtime refresh helpers for CABTA web settings and MCP-aware tooling.
 """
 
 from __future__ import annotations
@@ -11,13 +11,16 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
-def apply_runtime_config_bridges(config: Dict[str, Any]) -> Dict[str, Any]:
+def apply_runtime_config_bridges(config: Dict[str, Any], *, normalize_llm: bool = True) -> Dict[str, Any]:
     """Return a config copy with runtime-only bridges applied.
 
     This keeps user-facing configuration simple while ensuring built-in MCP
     servers receive the credentials they need from the main API key store.
     """
-    bridged = deepcopy(config or {})
+    from src.utils.config import enforce_openrouter_only
+
+    raw_config = deepcopy(config or {})
+    bridged = enforce_openrouter_only(raw_config) if normalize_llm else raw_config
     api_keys = bridged.setdefault("api_keys", {})
     mcp_servers = bridged.get("mcp_servers", [])
 
@@ -69,6 +72,7 @@ async def reconnect_startup_mcp_servers(app) -> None:
 async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
     """Rebuild long-lived runtime objects so web changes apply immediately."""
     from src.agent.agent_loop import AgentLoop
+    from src.agent.case_memory_service import CaseMemoryService
     from src.agent.playbook_engine import PlaybookEngine
     from src.agent.sandbox_orchestrator import SandboxOrchestrator
     from src.agent.tool_registry import ToolRegistry
@@ -136,6 +140,15 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
             logger.warning("[CONFIG] MCP tool refresh failed: %s", exc)
 
     agent_loop = None
+    case_memory_service = None
+    try:
+        case_memory_service = CaseMemoryService(
+            case_store=getattr(app.state, "case_store", None),
+            agent_store=getattr(app.state, "agent_store", None),
+        )
+    except Exception as exc:
+        logger.warning("[CONFIG] CaseMemoryService refresh failed: %s", exc)
+
     try:
         agent_loop = AgentLoop(
             config=config,
@@ -146,6 +159,8 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
             workflow_registry=getattr(app.state, "workflow_registry", None),
             governance_store=getattr(app.state, "governance_store", None),
             case_store=getattr(app.state, "case_store", None),
+            thread_store=getattr(app.state, "thread_store", None),
+            case_memory_service=case_memory_service,
         )
     except Exception as exc:
         logger.warning("[CONFIG] AgentLoop refresh failed: %s", exc)
@@ -168,6 +183,7 @@ async def refresh_runtime_components(app, config: Dict[str, Any]) -> None:
     app.state.tool_registry = tool_registry
     app.state.agent_loop = agent_loop
     app.state.playbook_engine = playbook_engine
+    app.state.case_memory_service = case_memory_service
     try:
         app.state.workflow_service = WorkflowService(
             workflow_registry=getattr(app.state, "workflow_registry", None),

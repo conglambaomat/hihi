@@ -5,16 +5,22 @@ Chat API routes - Interactive agent conversation.
 
 import json
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .agent import _decorate_session_payload
+from src.agent.chat_intent_router import ChatIntentRouter
+from src.agent.session_response_builder import SessionResponseBuilder
+
+from .agent import _chat_history_messages, _decorate_session_payload
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DEFAULT_CHAT_AGENT_PROFILE = "investigator"
+_intent_router = ChatIntentRouter()
+_response_builder = SessionResponseBuilder()
 
 
 class ChatMessage(BaseModel):
@@ -111,6 +117,67 @@ def _finding_snapshot(findings, limit: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _message_requests_fresh_evidence(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+
+    explanation_patterns = (
+        "why",
+        "how did",
+        "what evidence",
+        "summarize",
+        "summary",
+        "recap",
+        "explain",
+        "because",
+        "tai sao",
+        "vi sao",
+        "giai thich",
+        "tom tat",
+        "bang chung",
+        "dua tren",
+        "what did you find",
+    )
+    if any(pattern in text for pattern in explanation_patterns):
+        return False
+
+    investigation_patterns = (
+        "investigate",
+        "pivot",
+        "check",
+        "analyze",
+        "lookup",
+        "look up",
+        "search",
+        "hunt",
+        "query",
+        "scan",
+        "enrich",
+        "triage",
+        "verify",
+        "confirm",
+        "correlate",
+        "find related",
+        "pull",
+        "dieu tra",
+        "kiem tra",
+        "phan tich",
+        "tra cuu",
+        "xac minh",
+        "tim them",
+        "san",
+        "quet",
+    )
+    if any(pattern in text for pattern in investigation_patterns):
+        return True
+
+    if re.search(r"\b(pivot|registrar|infrastructure|related hosts?|related domains?)\b", text):
+        return True
+
+    return False
+
+
 def _build_follow_up_goal(session: dict, message: str) -> str:
     previous_goal = str(session.get("goal") or "").strip()
     if previous_goal.lower().startswith("(follow-up to previous investigation:"):
@@ -118,8 +185,9 @@ def _build_follow_up_goal(session: dict, message: str) -> str:
         previous_goal = remainder.strip() or previous_goal
     previous_summary = str(session.get("summary") or "").strip()
     evidence_snapshot = _finding_snapshot(session.get("findings"))
+    needs_fresh_evidence = _message_requests_fresh_evidence(message)
 
-    blocks = ["Continue the previous security investigation using tool-based reasoning."]
+    blocks = ["Continue the previous analyst conversation about the security investigation."]
     if previous_goal:
         blocks.append(f"Previous investigation goal:\n{previous_goal}")
     if previous_summary:
@@ -127,9 +195,17 @@ def _build_follow_up_goal(session: dict, message: str) -> str:
     if evidence_snapshot:
         blocks.append(f"Previous evidence snapshot:\n{evidence_snapshot}")
     blocks.append(f"New analyst request:\n{message.strip()}")
-    blocks.append(
-        "Use prior evidence when relevant, but gather fresh evidence with tools before reaching a conclusion."
-    )
+    if needs_fresh_evidence:
+        blocks.append(
+            "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
+            "Gather fresh evidence with tools if the analyst is asking for a new pivot or if the carried-over evidence is still insufficient."
+        )
+    else:
+        blocks.append(
+            "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
+            "If the analyst is asking for explanation, recap, or judgment from the current evidence, answer directly from that carried-over context. "
+            "Only use tools if the current evidence is insufficient."
+        )
     return "\n\n".join(blocks)
 
 
@@ -178,17 +254,81 @@ async def send_message(request: Request, body: ChatMessage):
         session = store.get_session(body.session_id)
         if not session:
             raise HTTPException(404, "Session not found")
+        metadata = _session_metadata(session)
+        thread_store = getattr(request.app.state, "thread_store", None)
+        case_memory_service = getattr(request.app.state, "case_memory_service", None)
+        thread_id = str(metadata.get("thread_id") or "").strip()
+        if not thread_id and thread_store is not None and session.get("status") == "active":
+            thread_id = thread_store.ensure_thread(
+                case_id=session.get("case_id"),
+                root_session_id=body.session_id,
+                status="active",
+            )
+            store.update_session_metadata(body.session_id, {"thread_id": thread_id}, merge=True)
+        intent_payload = _intent_router.classify(body.message)
+        latest_snapshot = thread_store.get_latest_snapshot(thread_id) if thread_store and thread_id else {}
+        thread_payload = thread_store.get_thread(thread_id) if thread_store and thread_id else {}
+        snapshot = latest_snapshot.get("snapshot", {}) if isinstance(latest_snapshot, dict) else {}
+        thread_summary = ""
+        if isinstance(thread_payload, dict):
+            thread_summary = str(thread_payload.get("thread_summary") or "").strip()
 
         # If session is still active, return status
         if session.get('status') == 'active':
+            command_id = None
+            if thread_store and thread_id:
+                thread_store.append_message(
+                    thread_id=thread_id,
+                    role="user",
+                    content=body.message,
+                    session_id=body.session_id,
+                    metadata={"intent": intent_payload["intent"], "queued_while_active": True},
+                )
+                command_id = thread_store.enqueue_command(
+                    thread_id=thread_id,
+                    content=body.message,
+                    session_id=body.session_id,
+                    intent=intent_payload["intent"],
+                    payload={
+                        "intent": intent_payload["intent"],
+                        "requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
+                        "queued_while_active": True,
+                    },
+                )
             return {
                 "session_id": body.session_id,
                 "status": "active",
-                "response": "The investigation is still running. Check the progress via WebSocket.",
+                "response": "The investigation is still running. Your follow-up directive was queued for the active session.",
+                "thread_id": thread_id or None,
+                "queued_command_id": command_id,
+                "queued_intent": intent_payload["intent"],
             }
 
         # If session is completed/failed, start a new investigation with context
-        context = _build_follow_up_goal(session, body.message)
+        case_memory_context = None
+        if not snapshot and case_memory_service is not None and session.get("case_id"):
+            case_memory_context = case_memory_service.get_case_memory(session.get("case_id"))
+            accepted_snapshot = (
+                case_memory_context.get("accepted_snapshot", {})
+                if isinstance(case_memory_context, dict)
+                else {}
+            )
+            if isinstance(accepted_snapshot, dict) and accepted_snapshot:
+                snapshot = accepted_snapshot
+                thread_summary = thread_summary or str(case_memory_context.get("summary") or "").strip()
+                thread_id = thread_id or str(case_memory_context.get("thread_id") or "").strip()
+
+        if snapshot:
+            context = _response_builder.build_follow_up_goal(
+                previous_goal=str(session.get("goal") or ""),
+                thread_summary=thread_summary,
+                snapshot=snapshot,
+                message=body.message,
+                intent=intent_payload["intent"],
+                requires_fresh_evidence=bool(intent_payload["requires_fresh_evidence"]),
+            )
+        else:
+            context = _build_follow_up_goal(session, body.message)
         session_id = await agent_loop.investigate(
             context,
             case_id=session.get('case_id'),
@@ -199,12 +339,17 @@ async def send_message(request: Request, body: ChatMessage):
                 "response_style": "conversational",
                 "chat_user_message": body.message,
                 "chat_parent_session_id": body.session_id,
+                "thread_id": thread_id or None,
+                "chat_intent": intent_payload["intent"],
+                "chat_follow_up_requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
+                "case_memory_context": case_memory_context if isinstance(case_memory_context, dict) else None,
             },
         )
         return {
             "session_id": session_id,
             "status": "processing",
             "response": "Follow-up investigation started.",
+            "thread_id": thread_id or None,
         }
     else:
         # New investigation - LLM will see available playbooks and may auto-select one
@@ -247,6 +392,7 @@ async def get_chat_session(request: Request, session_id: str):
     steps = store.get_steps(session_id)
     session = _decorate_session_payload(session)
     session['steps'] = steps
+    session.update(_chat_history_messages(store, session))
     # Include live state if available
     agent_loop = request.app.state.agent_loop
     if agent_loop:

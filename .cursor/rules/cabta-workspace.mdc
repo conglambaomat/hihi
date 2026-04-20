@@ -1,0 +1,36 @@
+---
+description: Routes ambiguous work to CABTA and states scoring invariants (hihi monorepo)
+alwaysApply: true
+---
+
+# Cursor — workspace rules
+
+## Default context
+
+- Repository **hihi** hosts **`CABTA/`** as the primary product (local-first SOC / DFIR platform).
+- If the task is **ambiguous**, assume work targets **`CABTA/`** unless the user explicitly names root tooling (`.claude/`, root `plans/`, root `docs/`, packaging scripts).
+
+## Read first (4–6 files) — product work under `CABTA/`
+
+1. `CABTA/docs/ONBOARDING.md` — single read order and task-specific short lists  
+2. `CABTA/README.md`  
+3. `CABTA/AGENTS.md`  
+4. `CABTA/docs/system-design.md` — architecture  
+5. `CABTA/docs/codebase-summary.md` — map of packages  
+6. `CABTA/docs/feature-truth-matrix.md` — when changing runtime, integrations, demos, or “what is really wired”  
+
+For root-only tasks: `README.md`, `.claude/rules/development-rules.md`, and the specific root doc or script.
+
+## Verdicts and scoring (CABTA)
+
+- **Do not** treat LLM output as the authoritative source for final threat **verdict** or **numeric score**.
+- Deterministic **analyzers + scoring + evidence paths** own verdict-bearing outputs; LLMs **explain, summarize, route tools, and assist** — consistent with `CABTA/AGENTS.md`.
+
+## Naming
+
+- **`CABTA`** is the canonical product name in code, UI, and new docs.
+- Historical aliases (`AISA`, `Blue Team Assistant`, etc.) may appear in older docs; do not spread new ambiguous branding — follow `CABTA/AGENTS.md`.
+
+## Optional tooling
+
+- **GitNexus** MCP is optional. If unavailable, do not block edits — see repo `docs/gitnexus-workflow.md`.

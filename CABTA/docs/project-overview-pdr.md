@@ -1,17 +1,16 @@
-# AISA Project Overview
+# CABTA Project Overview
+
+> **Naming (authoritative for implementation):** **`CABTA`** is the canonical product name in code, UI, and new documentation — see [`AGENTS.md`](../AGENTS.md). This document remains a **strategic / historical** overview and may reference **AISA** as a legacy alias for the same product direction, not a second codebase. **Architecture and structure:** use [`system-design.md`](system-design.md) as the technical source of truth (do not duplicate long architecture sections here).
 
 ## Product Identity
 
-- Canonical UI/product name: `AISA`
-- Expanded name: `AI Security Assistant`
-- Current repo/application path: `CABTA/`
+- Canonical implementation and shipping name: `CABTA` (Cyan Agent Blue Team Assistant); repository path: `CABTA/`
+- Historical strategic alias in older material: `AISA` / `AI Security Assistant`
 - Primary product mode: `web-first localhost SOC and DFIR workbench`
-
-For implementation, treat `AISA` as the product identity and `CABTA/` as the current repository and package location until an explicit migration is planned.
 
 ## Product Thesis
 
-AISA should evolve from a strong local-first analysis toolkit into a local-first AI SOC assistant platform.
+CABTA should evolve from a strong local-first analysis toolkit into a local-first AI SOC assistant platform.
 
 Its long-term value is not only:
 
@@ -30,11 +29,11 @@ It is the combination of:
 
 In short:
 
-AISA should become an analyst-owned investigation platform, not just a set of analyzers and not a black-box AI SOC.
+CABTA should become an analyst-owned investigation platform, not just a set of analyzers and not a black-box AI SOC.
 
 ## Product Purpose
 
-AISA helps defenders move from raw security inputs to trustworthy investigation outcomes.
+CABTA helps defenders move from raw security inputs to trustworthy investigation outcomes.
 
 It should turn alerts, artifacts, and hypotheses into:
 
@@ -48,9 +47,9 @@ It should turn alerts, artifacts, and hypotheses into:
 
 ## Strategic Direction
 
-AISA should combine:
+CABTA should combine:
 
-### AISA's existing strengths
+### CABTA's existing strengths
 
 - local-first operation
 - broad IOC, file, and email analysis coverage
@@ -71,7 +70,7 @@ AISA should combine:
 
 The goal is not to copy Vigil mechanically.
 
-The goal is to adapt the best ideas into AISA's architecture while preserving AISA's strongest constraints:
+The goal is to adapt the best ideas into CABTA's architecture while preserving CABTA's strongest constraints:
 
 - evidence first
 - deterministic verdicts
@@ -82,9 +81,9 @@ The goal is to adapt the best ideas into AISA's architecture while preserving AI
 
 The integration direction is intentionally asymmetric.
 
-### AISA owns the analysis core
+### CABTA owns the analysis core
 
-AISA remains the system of record for:
+CABTA remains the system of record for:
 
 - artifact analysis
 - evidence extraction
@@ -93,7 +92,7 @@ AISA remains the system of record for:
 - verdict governance
 - analyst-facing evidence outputs
 
-That means verdict-bearing flows still belong to AISA's existing core:
+That means verdict-bearing flows still belong to CABTA's existing core:
 
 - IOC investigation
 - file analysis
@@ -109,7 +108,7 @@ Vigil should be treated as the source of ideas and patterns for:
 - optional headless SOC daemon behavior
 - richer investigation coordination
 
-These features should sit around the AISA core, not replace it.
+These features should sit around the CABTA core, not replace it.
 
 ### Tool-first integration rule
 
@@ -117,14 +116,14 @@ Workflow execution must gather evidence through real tools and services.
 
 In practice, that means:
 
-- workflows call AISA analyzers, orchestrators, integrations, scoring, and MCP tools
+- workflows call CABTA analyzers, orchestrators, integrations, scoring, and MCP tools
 - agents summarize, organize, plan, and recommend
 - agents do not invent investigative evidence
 - workflows do not substitute model speculation for tool execution
 
 ### Verdict rule
 
-For any flow that produces a security verdict, the final verdict must come from the AISA scoring and evidence path.
+For any flow that produces a security verdict, the final verdict must come from the CABTA scoring and evidence path.
 
 Agent outputs may:
 
@@ -188,7 +187,7 @@ These need a clear extensibility model with runtime visibility and safe agent ac
 
 ### 5. Local-first users still need "platform power"
 
-AISA should remain useful on a single analyst machine, but still grow toward:
+CABTA should remain useful on a single analyst machine, but still grow toward:
 
 - richer workflow orchestration
 - case intelligence
@@ -213,7 +212,7 @@ LLMs may explain and assist, but they do not replace final verdict authority.
 
 ### Evidence-Linked Investigation Plane
 
-AISA should support longer-lived investigations through:
+CABTA should support longer-lived investigations through:
 
 - cases
 - workflows
@@ -224,7 +223,7 @@ AISA should support longer-lived investigations through:
 
 ### Specialist AI Agents
 
-AISA should move toward role-based assistants such as:
+CABTA should move toward role-based assistants such as:
 
 - triage
 - investigator
@@ -263,7 +262,7 @@ AI actions must be governed with:
 
 ### MCP-First Extensibility
 
-AISA should continue treating MCP as the main expansion surface for:
+CABTA should continue treating MCP as the main expansion surface for:
 
 - SIEM
 - EDR
@@ -307,7 +306,7 @@ The main product path must remain useful:
 
 ## Non-Goals
 
-AISA should not become:
+CABTA should not become:
 
 - an LLM-only verdict engine
 - a cloud-required SOC platform for basic use
@@ -325,7 +324,7 @@ AISA should not become:
 
 ## What Effective Vibe Coding Needs
 
-To build AISA effectively after learning from Vigil, the repo needs docs that keep five things explicit:
+To build CABTA effectively after learning from Vigil, the repo needs docs that keep five things explicit:
 
 1. which layers own deterministic analysis versus agentic orchestration
 2. which Vigil ideas should be adopted directly, adapted carefully, or avoided

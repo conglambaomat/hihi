@@ -471,6 +471,186 @@ class PlaybookEngine:
         """Alias for ``list_playbooks`` -- lists all available playbooks."""
         return self.list_playbooks()
 
+    def validate_playbook_definition(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a human-readable playbook definition without executing it."""
+        issues: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+
+        if not isinstance(definition, dict):
+            return {
+                "valid": False,
+                "issues": [{"level": "error", "message": "Playbook definition must be a mapping/dict"}],
+                "warnings": [],
+                "step_count": 0,
+                "tool_count": 0,
+            }
+
+        steps = definition.get("steps", [])
+        if not isinstance(steps, list) or not steps:
+            return {
+                "valid": False,
+                "issues": [{"level": "error", "message": "Playbook must declare a non-empty steps list"}],
+                "warnings": [],
+                "step_count": 0,
+                "tool_count": 0,
+            }
+
+        parsed_steps: List[PlaybookStep] = []
+        step_names: List[str] = []
+        for index, raw_step in enumerate(steps, start=1):
+            if not isinstance(raw_step, dict):
+                issues.append(
+                    {"level": "error", "step": index, "message": f"Step #{index} must be a mapping/dict"}
+                )
+                continue
+            try:
+                parsed = PlaybookStep.from_dict(raw_step)
+                parsed_steps.append(parsed)
+                step_names.append(parsed.name)
+            except Exception as exc:
+                issues.append(
+                    {"level": "error", "step": index, "message": f"Step #{index} is invalid: {exc}"}
+                )
+
+        duplicates = sorted({name for name in step_names if step_names.count(name) > 1})
+        for name in duplicates:
+            issues.append({"level": "error", "step_name": name, "message": f"Duplicate step name: {name}"})
+
+        declared_tools: List[str] = []
+        terminal_actions: List[str] = []
+        approval_steps: List[str] = []
+        conditional_steps: List[str] = []
+        loop_steps: List[str] = []
+        timeout_steps: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        known_steps = set(step_names)
+
+        for parsed in parsed_steps:
+            if parsed.tool:
+                if parsed.tool not in declared_tools:
+                    declared_tools.append(parsed.tool)
+            if parsed.action == "final_answer":
+                terminal_actions.append(parsed.name)
+            if parsed.requires_approval:
+                approval_steps.append(parsed.name)
+            if parsed.condition:
+                conditional_steps.append(parsed.name)
+            if parsed.for_each:
+                loop_steps.append(parsed.name)
+
+            timeout_steps.append(
+                {
+                    "name": parsed.name,
+                    "timeout": int(parsed.timeout or 0),
+                }
+            )
+
+            if not parsed.tool and not parsed.action and not parsed.requires_approval and not parsed.condition and not parsed.for_each:
+                warnings.append(
+                    {
+                        "level": "warning",
+                        "step_name": parsed.name,
+                        "message": "Step has no tool, action, condition, approval, or iteration semantics",
+                    }
+                )
+
+            if parsed.requires_approval and not parsed.tool:
+                warnings.append(
+                    {
+                        "level": "warning",
+                        "step_name": parsed.name,
+                        "message": "Approval step has no tool; approval will pause without executing a tool call",
+                    }
+                )
+
+            if parsed.for_each and not parsed.tool:
+                warnings.append(
+                    {
+                        "level": "warning",
+                        "step_name": parsed.name,
+                        "message": "for_each is declared without a tool; iteration may not do useful work",
+                    }
+                )
+
+            if int(parsed.timeout or 0) <= 0:
+                issues.append(
+                    {
+                        "level": "error",
+                        "step_name": parsed.name,
+                        "message": "timeout must be greater than 0 seconds",
+                    }
+                )
+
+            for edge_type, target in (("on_success", parsed.on_success), ("on_failure", parsed.on_failure)):
+                if not target:
+                    continue
+                edges.append({"from": parsed.name, "to": target, "type": edge_type})
+                if target != "end" and target not in known_steps:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "step_name": parsed.name,
+                            "message": f"{edge_type} references unknown step '{target}'",
+                        }
+                    )
+
+        return {
+            "valid": not any(item.get("level") == "error" for item in issues),
+            "issues": issues,
+            "warnings": warnings,
+            "step_count": len(parsed_steps),
+            "tool_count": len(declared_tools),
+            "declared_tools": declared_tools,
+            "terminal_actions": terminal_actions,
+            "approval_steps": approval_steps,
+            "conditional_steps": conditional_steps,
+            "loop_steps": loop_steps,
+            "timeout_steps": timeout_steps,
+            "max_timeout_seconds": max((item["timeout"] for item in timeout_steps), default=0),
+            "edges": edges,
+        }
+
+    def describe_playbook(self, playbook_id: str) -> Optional[Dict[str, Any]]:
+        """Return an inspectable contract for a playbook before execution."""
+        pb = self._cache.get(playbook_id)
+        if not pb:
+            return None
+
+        public_playbook = self.get_playbook(playbook_id)
+        if public_playbook is None:
+            return None
+
+        validation = self.validate_playbook_definition(
+            {
+                "id": public_playbook.get("id"),
+                "name": public_playbook.get("name"),
+                "description": public_playbook.get("description"),
+                "steps": public_playbook.get("steps", []),
+            }
+        )
+
+        parsed_steps = pb.get("_parsed_steps", [])
+        approval_steps = [step.name for step in parsed_steps if getattr(step, "requires_approval", False)]
+        conditional_steps = [step.name for step in parsed_steps if getattr(step, "condition", None)]
+        loop_steps = [step.name for step in parsed_steps if getattr(step, "for_each", None)]
+
+        return {
+            **public_playbook,
+            "validation": validation,
+            "execution_contract": {
+                "approval_steps": approval_steps,
+                "conditional_steps": conditional_steps,
+                "loop_steps": loop_steps,
+                "timeout_steps": validation.get("timeout_steps", []),
+                "max_timeout_seconds": validation.get("max_timeout_seconds", 0),
+                "branch_edges": validation.get("edges", []),
+                "terminal_actions": validation.get("terminal_actions", []),
+                "supports_resume_approval": bool(approval_steps),
+                "supports_iteration": bool(loop_steps),
+                "human_readable_source": pb.get("source", "unknown") in {"builtin", "file", "database"},
+            },
+        }
+
     def load_playbook(self, yaml_path: str) -> Dict:
         """Load a single YAML playbook from a file path and register it.
 
@@ -500,10 +680,15 @@ class PlaybookEngine:
             definition["source"] = "file"
             definition["file"] = str(path.resolve())
 
-            steps = definition.get("steps", [])
-            if not steps:
-                return {"error": f"Playbook {path.name} has no steps"}
+            validation = self.validate_playbook_definition(definition)
+            if not validation.get("valid"):
+                first_error = next(
+                    (item.get("message") for item in validation.get("issues", []) if item.get("level") == "error"),
+                    "Playbook validation failed",
+                )
+                return {"error": first_error, "validation": validation}
 
+            steps = definition.get("steps", [])
             parsed = [PlaybookStep.from_dict(s) for s in steps]
             definition["_parsed_steps"] = parsed
 
@@ -518,6 +703,7 @@ class PlaybookEngine:
                 "step_count": len(parsed),
                 "source": "file",
                 "file": str(path.resolve()),
+                "validation": validation,
             }
 
         except Exception as exc:

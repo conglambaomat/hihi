@@ -1,1 +1,1 @@
-"""Workflow registry package for AISA orchestration definitions."""
+"""Workflow registry package for CABTA orchestration definitions."""

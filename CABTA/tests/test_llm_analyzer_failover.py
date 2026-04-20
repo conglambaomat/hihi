@@ -17,7 +17,7 @@ def _llm_config():
             'provider': 'gemini',
             'gemini_model': 'gemini-3-flash-preview',
             'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
-            'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
+            'openrouter_model': 'arcee-ai/trinity-large-preview:free',
             'openrouter_endpoint': 'https://openrouter.ai/api/v1',
             'groq_model': 'meta-llama/llama-prompt-guard-2-86m',
             'groq_endpoint': 'https://api.groq.com/openai/v1',
@@ -86,6 +86,53 @@ def test_llm_analyzer_rejects_prompt_guard_as_summary_model():
     assert analyzer._resolved_provider_model('groq') == 'openai/gpt-oss-20b'
 
 
+@pytest.mark.asyncio
+async def test_llm_analyzer_nvidia_rate_limit_does_not_fail_over():
+    analyzer = LLMAnalyzer({
+        'api_keys': {
+            'nvidia': 'nvapi-valid-build-key-abcdefghijklmnopqrstuvwxyz123456',
+            'groq': 'gsk_valid_groq_key_for_suite_alpha_abcdef987654321',
+        },
+        'llm': {
+            'provider': 'nvidia',
+            'nvidia_model': 'deepseek-ai/deepseek-v3.2',
+            'nvidia_endpoint': 'https://integrate.api.nvidia.com/v1',
+            'auto_failover': True,
+            'fallback_providers': ['groq'],
+        },
+    })
+
+    async def _nvidia_failure(_prompt):
+        analyzer._record_runtime_status(
+            provider='nvidia',
+            model=analyzer._resolved_provider_model('nvidia'),
+            available=False,
+            error='NVIDIA Build HTTP 429: rate limit exceeded',
+            http_status=429,
+        )
+        return {'error': 'NVIDIA Build HTTP 429: rate limit exceeded'}
+
+    analyzer._call_nvidia_api = AsyncMock(side_effect=_nvidia_failure)
+    analyzer._call_groq_api = AsyncMock(return_value={
+        'verdict': 'MALICIOUS',
+        'analysis': 'unexpected fallback',
+        'recommendations': [],
+    })
+
+    result = await analyzer.analyze_ioc_results('8.8.8.8', 'ip', {
+        'threat_score': 5,
+        'sources_checked': 1,
+        'sources_flagged': 0,
+        'sources': {},
+    })
+
+    assert result['provider'] == 'nvidia'
+    assert result['model'] == 'deepseek-ai/deepseek-v3.2'
+    assert result['rate_limited'] is True
+    assert 'did not fall back' in result['note'].lower()
+    analyzer._call_groq_api.assert_not_awaited()
+
+
 def test_llm_analyzer_openrouter_provider_config():
     analyzer = LLMAnalyzer({
         'api_keys': {
@@ -93,7 +140,7 @@ def test_llm_analyzer_openrouter_provider_config():
         },
         'llm': {
             'provider': 'openrouter',
-            'openrouter_model': 'nvidia/nemotron-3-super-120b-a12b:free',
+            'openrouter_model': 'arcee-ai/trinity-large-preview:free',
             'openrouter_endpoint': 'https://openrouter.ai/api/v1',
             'auto_failover': False,
             'fallback_providers': [],
@@ -102,5 +149,5 @@ def test_llm_analyzer_openrouter_provider_config():
 
     assert analyzer.provider == 'openrouter'
     assert analyzer.openrouter_key == 'sk-or-v1-valid-openrouter-key-abcdefghijklmnopqrstuvwxyz123456'
-    assert analyzer._resolved_provider_model('openrouter') == 'nvidia/nemotron-3-super-120b-a12b:free'
+    assert analyzer._resolved_provider_model('openrouter') == 'arcee-ai/trinity-large-preview:free'
     assert analyzer.openrouter_endpoint == 'https://openrouter.ai/api/v1'

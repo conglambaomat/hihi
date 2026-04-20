@@ -4,17 +4,17 @@ Centralized environment variable resolver for Claude Code skills.
 
 Resolves environment variables following the Claude Code hierarchy:
 1. process.env                    - Runtime environment (HIGHEST)
-2. .claude/skills/<skill>/.env    - Project skill-specific
-3. .claude/skills/.env            - Project shared
+2. .cursor/skills/<skill>/.env   - Project skill-specific
+3. .cursor/skills/.env            - Project shared
 4. .claude/.env                   - Project global
-5. ~/.claude/skills/<skill>/.env  - User skill-specific
-6. ~/.claude/skills/.env          - User shared
+5. ~/.cursor/skills/<skill>/.env - User skill-specific
+6. ~/.cursor/skills/.env          - User shared
 7. ~/.claude/.env                 - User global (LOWEST)
 
 Usage:
     from resolve_env import resolve_env
 
-    api_key = resolve_env('GEMINI_API_KEY', skill='ai-multimodal')
+    api_key = resolve_env('GEMINI_API_KEY', skill='docs-seeker')
     api_key = resolve_env('GEMINI_API_KEY')  # Without skill context
 """
 
@@ -105,12 +105,12 @@ def get_env_file_paths(skill: Optional[str] = None) -> List[Tuple[str, Path]]:
         if skill:
             paths.append((
                 f"Project skill-specific ({skill})",
-                project_root / '.claude' / 'skills' / skill / '.env'
+                project_root / '.cursor' / 'skills' / skill / '.env'
             ))
 
         paths.append((
             "Project skills shared",
-            project_root / '.claude' / 'skills' / '.env'
+            project_root / '.cursor' / 'skills' / '.env'
         ))
 
         paths.append((
@@ -122,12 +122,12 @@ def get_env_file_paths(skill: Optional[str] = None) -> List[Tuple[str, Path]]:
     if skill:
         paths.append((
             f"User skill-specific ({skill})",
-            home / '.claude' / 'skills' / skill / '.env'
+            home / '.cursor' / 'skills' / skill / '.env'
         ))
 
     paths.append((
         "User skills shared",
-        home / '.claude' / 'skills' / '.env'
+        home / '.cursor' / 'skills' / '.env'
     ))
 
     paths.append((

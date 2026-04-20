@@ -11,20 +11,18 @@ api_keys:
   greynoise: ""           # https://viz.greynoise.io/account/api-key
   urlscan: ""             # https://urlscan.io/user/profile/
   openrouter: ""          # https://openrouter.ai/keys
-  groq: ""                # https://console.groq.com/keys
   gemini: ""              # https://aistudio.google.com/app/apikey
 
 # LLM Configuration (Optional - for AI-powered analysis)
 llm:
-  provider: "openrouter"  # Options: openrouter, ollama, groq, anthropic, gemini
-  auto_failover: false    # Set true only if you want CABTA to fall back to other providers
+  provider: "openrouter"  # CABTA is configured to use OpenRouter-only for hosted LLM access
+  auto_failover: false    # Keep false if you want CABTA to warn on provider errors instead of falling back
   fallback_providers: []
-  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+  openrouter_force_json_decision_mode: false  # Set true only if a specific OpenRouter model fails native tool calling
+  openrouter_model: "arcee-ai/trinity-large-preview:free"
   openrouter_endpoint: "https://openrouter.ai/api/v1"
   ollama_model: "llama3.1:8b"
   ollama_endpoint: "http://localhost:11434"
-  groq_model: "openai/gpt-oss-20b"
-  groq_endpoint: "https://api.groq.com/openai/v1"
   anthropic_model: "claude-sonnet-4-20250514"
   gemini_model: "gemini-2.5-flash"
   gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -36,6 +34,7 @@ agent:
   chat_tool_cap: 14             # For quick analyst chat questions, expose a smaller tool set to the LLM
   chat_prompt_findings_limit: 5 # Keep the live chat prompt focused on the most relevant recent evidence
   chat_auto_enrich_limit: 1     # For simple IOC chat, auto-run only the highest-value enrichment pivot
+  chat_response_timeout_seconds: 15
 
 # Analysis Settings
 analysis:

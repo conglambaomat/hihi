@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Scan .claude/skills directory and extract skill metadata.
+Scan .cursor/skills directory and extract skill metadata.
 """
 
 import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 try:
@@ -41,6 +43,8 @@ EXACT_CATEGORY_MAP = {
     "cook": "utilities",
     "fix": "utilities",
     "team": "dev-tools",
+    "context-engineering": "utilities",
+    "web-testing": "dev-tools",
 }
 
 def extract_frontmatter(content: str) -> Dict:
@@ -91,13 +95,13 @@ def scan_skills(base_path: Path) -> List[Dict]:
         if skill_name == 'template-skill':
             continue
 
-        # Handle nested skills (like document-skills/*)
-        if skill_dir.parent.name != 'skills':
+        # Handle nested skills (e.g. gitnexus/*) — parent folder name is not the root `skills` dir
+        if skill_dir.parent.name != "skills":
             parent_name = skill_dir.parent.name
             skill_name = f"{parent_name}/{skill_name}"
 
         try:
-            content = skill_file.read_text()
+            content = skill_file.read_text(encoding="utf-8", errors="replace")
             frontmatter = extract_frontmatter(content)
 
             description = frontmatter.get('description', '')
@@ -109,7 +113,7 @@ def scan_skills(base_path: Path) -> List[Dict]:
 
             skill_entry = {
                 'name': skill_name,
-                'path': str(skill_file.relative_to(Path('.claude/skills'))),
+                'path': str(skill_file.relative_to(base_path)),
                 'description': description,
                 'category': category,
                 'has_scripts': (skill_dir / 'scripts').exists(),
@@ -132,6 +136,9 @@ def categorize_skill(name: str, description: str, content: str) -> str:
     lower_name = name.lower()
     if lower_name in EXACT_CATEGORY_MAP:
         return EXACT_CATEGORY_MAP[lower_name]
+
+    if "gitnexus" in lower_name:
+        return "dev-tools"
 
     # AI/ML
     if any(x in lower_name for x in ['ai-', 'gemini', 'multimodal', 'adk']):
@@ -183,9 +190,23 @@ def group_by_category(skills: List[Dict]) -> Dict[str, List[Dict]]:
 
     return categories
 
+def _safe_console_text(s: str, max_len: int = 80) -> str:
+    """ASCII-safe line for Windows consoles that are not UTF-8."""
+    if not s:
+        return ""
+    t = s[:max_len].replace("\n", " ")
+    return t.encode("ascii", errors="replace").decode("ascii")
+
+
 def main():
     """Main execution."""
-    base_path = Path('.claude/skills')
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    base_path = Path('.cursor/skills')
 
     if not base_path.exists():
         print(f"Error: {base_path} not found")
@@ -215,20 +236,42 @@ def main():
     for category, skills_list in sorted(categories.items()):
         print(f"\n{category_names.get(category, category.upper())}:")
         for skill in skills_list:
-            scripts = '📦' if skill['has_scripts'] else '  '
-            refs = '📚' if skill['has_references'] else '  '
-            print(f"  {scripts}{refs} {skill['name']:30} {skill['description'][:80]}")
+            scripts = "[S]" if skill["has_scripts"] else "[-]"
+            refs = "[R]" if skill["has_references"] else "[-]"
+            desc = _safe_console_text(str(skill.get("description", "")), 80)
+            print(f"  {scripts}{refs} {skill['name']:35} {desc}")
 
     # Output YAML to ck-help scripts directory
-    output_path = Path('.claude/skills/ck-help/scripts/skills_data.yaml')
+    output_path = Path('.cursor/skills/ck-help/scripts/skills_data.yaml')
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(yaml.dump(skills, allow_unicode=True, default_flow_style=False))
-    print(f"\n✓ Saved metadata to {output_path}")
+    output_path.write_text(
+        yaml.dump(skills, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+    print(f"\nSaved metadata to {output_path}")
+
+    guide_path = Path("guide/SKILLS.yaml")
+    guide_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "metadata": {
+            "title": "Skills Catalog (curated)",
+            "description": "Generated from .cursor/skills — run: python .claude/scripts/scan_skills.py",
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "total_skills": len(skills),
+            "source_dir": ".cursor/skills",
+        },
+        "skills": skills,
+    }
+    guide_path.write_text(
+        yaml.dump(payload, allow_unicode=True, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+    print(f"Saved guide catalog to {guide_path}")
 
     # Legacy location now points to canonical source to avoid data drift.
     legacy_path = Path('.claude/scripts/skills_data.yaml')
     legacy_path.write_text(
-        "# Skills catalog moved to .claude/skills/ck-help/scripts/skills_data.yaml\n"
+        "# Skills catalog: .cursor/skills/ck-help/scripts/skills_data.yaml\n"
         "# Regenerate via: python3 .claude/scripts/scan_skills.py\n",
         encoding='utf-8',
     )

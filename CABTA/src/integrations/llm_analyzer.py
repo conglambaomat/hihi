@@ -44,7 +44,7 @@ class LLMAnalyzer:
         
         # Determine LLM provider (local/cloud)
         llm_config = config.get('llm', {})
-        self.provider = llm_config.get('provider', 'ollama')  # Default: local
+        self.provider = llm_config.get('provider', 'openrouter')
         
         # Ollama settings
         self.ollama_endpoint = llm_config.get('ollama_endpoint', llm_config.get('base_url', 'http://localhost:11434'))
@@ -73,6 +73,17 @@ class LLMAnalyzer:
         ).rstrip('/')
         self.gemini_model = llm_config.get('gemini_model', llm_config.get('model', 'gemini-2.5-flash'))
 
+        # NVIDIA Build settings (OpenAI-compatible endpoint)
+        self.nvidia_key = (
+            get_valid_key(config.get('api_keys', {}), 'nvidia')
+            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
+        )
+        self.nvidia_endpoint = llm_config.get(
+            'nvidia_endpoint',
+            llm_config.get('base_url', 'https://integrate.api.nvidia.com/v1'),
+        ).rstrip('/')
+        self.nvidia_model = llm_config.get('nvidia_model', llm_config.get('model', 'deepseek-ai/deepseek-v3.2'))
+
         # OpenRouter settings (OpenAI-compatible endpoint)
         self.openrouter_key = (
             get_valid_key(config.get('api_keys', {}), 'openrouter')
@@ -84,16 +95,16 @@ class LLMAnalyzer:
         ).rstrip('/')
         self.openrouter_model = llm_config.get(
             'openrouter_model',
-            llm_config.get('model', 'nvidia/nemotron-3-super-120b-a12b:free'),
+            llm_config.get('model', 'arcee-ai/trinity-large-preview:free'),
         )
-        self.auto_failover = bool(llm_config.get('auto_failover', True))
+        self.auto_failover = bool(llm_config.get('auto_failover', False))
 
         configured_fallbacks = llm_config.get('fallback_providers', llm_config.get('fallback_order', []))
         if isinstance(configured_fallbacks, str):
             configured_fallbacks = [configured_fallbacks]
         self.fallback_providers = [
             str(provider).strip().lower()
-            for provider in (configured_fallbacks or ['groq', 'anthropic'])
+            for provider in (configured_fallbacks or [])
             if str(provider).strip()
         ]
 
@@ -530,7 +541,13 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
     
     def _normalize_provider(self, provider: Optional[str]) -> str:
         """Return a normalized provider name."""
-        return str(provider or self.provider or 'ollama').strip().lower() or 'ollama'
+        return str(provider or self.provider or 'openrouter').strip().lower() or 'openrouter'
+
+    def _provider_display_name(self, provider: Optional[str] = None) -> str:
+        provider_name = self._normalize_provider(provider)
+        if provider_name == 'nvidia':
+            return 'NVIDIA Build'
+        return provider_name.title()
 
     def _is_groq_summary_model_compatible(self, model_name: str) -> bool:
         """Reject moderation / guard models for analyst-summary chat use."""
@@ -551,6 +568,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return 'openai/gpt-oss-20b'
         if provider_name == 'gemini':
             return self.gemini_model
+        if provider_name == 'nvidia':
+            return self.nvidia_model
         if provider_name == 'openrouter':
             return self.openrouter_model
         return self.ollama_model
@@ -564,6 +583,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return bool(self.groq_key)
         if provider_name == 'gemini':
             return bool(self.gemini_key)
+        if provider_name == 'nvidia':
+            return bool(self.nvidia_key)
         if provider_name == 'openrouter':
             return bool(self.openrouter_key)
         if provider_name == 'ollama':
@@ -573,6 +594,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
     def _candidate_providers(self) -> List[str]:
         """Build the ordered provider list for a single summary attempt."""
         candidates = [self.provider]
+        if self._normalize_provider(self.provider) == 'nvidia':
+            return candidates
         if not self.auto_failover:
             return candidates
 
@@ -608,6 +631,54 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         if compact:
             return compact[:180]
         return f"{provider.title()} unavailable"
+
+    def _build_provider_error_result(
+        self,
+        *,
+        provider: str,
+        attempts: List[Dict],
+        error: Optional[str] = None,
+        http_status: Optional[int] = None,
+    ) -> Dict:
+        """Return a user-facing provider error without silently swapping models."""
+        provider_name = self._normalize_provider(provider)
+        model = self._resolved_provider_model(provider_name)
+        raw_error = str(error or f'{provider_name} request failed').strip()
+        lowered = raw_error.lower()
+        rate_limited = bool(
+            http_status == 429
+            or 'http 429' in lowered
+            or 'rate limit' in lowered
+            or 'quota exceeded' in lowered
+            or ('quota' in lowered and 'exceed' in lowered)
+        )
+        provider_label = self._provider_display_name(provider_name)
+        if rate_limited:
+            note = (
+                f"{provider_label} model {model} is rate-limited for the current API key. "
+                "CABTA did not fall back to another model."
+            )
+        elif http_status == 403 or 'authorization failed' in lowered or 'forbidden' in lowered:
+            note = (
+                f"{provider_label} model {model} rejected the current API key. "
+                "Verify the key, model entitlement, and any required third-party terms acceptance. "
+                "CABTA did not fall back to another model."
+            )
+        else:
+            note = (
+                f"{provider_label} model {model} is unavailable. "
+                "CABTA did not fall back to another model."
+            )
+        return {
+            'error': raw_error,
+            'note': note,
+            'warning': note,
+            'rate_limited': rate_limited,
+            'provider': provider_name,
+            'model': model,
+            'provider_attempts': attempts,
+            'fallback_blocked': not self.auto_failover,
+        }
 
     def _attach_provider_metadata(
         self,
@@ -665,11 +736,13 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                 last_error = str((self.provider_runtime_statuses.get(provider) or {}).get('error') or last_error or '')
 
         logger.error("[LLM] All configured providers failed. Attempts: %s", attempts)
-        return {
-            'error': last_error or f'Failed to get LLM response from {primary_provider}',
-            'provider': primary_provider,
-            'provider_attempts': attempts,
-        }
+        primary_status = self.provider_runtime_statuses.get(primary_provider) or {}
+        return self._build_provider_error_result(
+            provider=primary_provider,
+            attempts=attempts,
+            error=last_error or f'Failed to get LLM response from {primary_provider}',
+            http_status=primary_status.get('http_status'),
+        )
 
     async def _call_single_provider(self, provider: str, prompt: str) -> Optional[Dict]:
         """Call exactly one provider."""
@@ -682,6 +755,8 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             return await self._call_groq_api(prompt)
         if provider_name == 'gemini':
             return await self._call_gemini_api(prompt)
+        if provider_name == 'nvidia':
+            return await self._call_nvidia_api(prompt)
         if provider_name == 'openrouter':
             return await self._call_openrouter_api(prompt)
 
@@ -863,6 +938,87 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                 error=f'Groq request failed: {e}',
             )
             logger.error(f"[LLM] Groq API call failed: {e}")
+            return None
+
+    async def _call_nvidia_api(self, prompt: str) -> Optional[Dict]:
+        """
+        Call NVIDIA Build's OpenAI-compatible chat completions API.
+
+        Args:
+            prompt: Analysis prompt
+
+        Returns:
+            Parsed JSON response or None
+        """
+        if not self.nvidia_key:
+            self._record_runtime_status(
+                provider='nvidia',
+                model=self._resolved_provider_model('nvidia'),
+                available=False,
+                error='NVIDIA Build API key not configured',
+            )
+            logger.warning("[LLM] No NVIDIA Build API key configured")
+            return {'error': 'NVIDIA Build API key not configured'}
+
+        try:
+            model = self._resolved_provider_model('nvidia')
+            logger.info(f"[LLM] Calling NVIDIA Build ({model})...")
+
+            headers = {
+                'Authorization': f'Bearer {self.nvidia_key}',
+                'Content-Type': 'application/json',
+            }
+
+            payload = {
+                'model': model,
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ],
+                'temperature': 0.2,
+                'stream': False,
+            }
+
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.post(
+                    f'{self.nvidia_endpoint}/chat/completions',
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self._record_runtime_status(
+                            provider='nvidia',
+                            model=model,
+                            available=True,
+                            http_status=response.status,
+                        )
+                        choices = data.get('choices', [])
+                        message = choices[0].get('message', {}) if choices else {}
+                        response_text = message.get('content', '')
+                        if not response_text:
+                            logger.warning("[LLM] NVIDIA Build returned an empty response")
+                            return None
+                        return self._parse_json_response_text(response_text)
+
+                    body = await response.text()
+                    self._record_runtime_status(
+                        provider='nvidia',
+                        model=model,
+                        available=False,
+                        error=f'NVIDIA Build HTTP {response.status}: {body[:200]}',
+                        http_status=response.status,
+                    )
+                    logger.error(f"[LLM] NVIDIA Build API error {response.status}: {body[:200]}")
+                    return None
+
+        except Exception as e:
+            self._record_runtime_status(
+                provider='nvidia',
+                model=self._resolved_provider_model('nvidia'),
+                available=False,
+                error=f'NVIDIA Build request failed: {e}',
+            )
+            logger.error(f"[LLM] NVIDIA Build API call failed: {e}")
             return None
 
     async def _call_openrouter_api(self, prompt: str) -> Optional[Dict]:

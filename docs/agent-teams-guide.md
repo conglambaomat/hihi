@@ -490,8 +490,8 @@ All hooks follow fail-open design (exit 0 always) and are gated by `isHookEnable
 
 | File | Purpose |
 |------|---------|
-| `.claude/skills/team/SKILL.md` | Skill definition with imperative templates (v2.1.0) |
-| `.claude/skills/team/references/` | Official docs reference (hooks, memory, restrictions) |
+| `.cursor/skills/team/SKILL.md` | Skill definition with imperative templates (v2.1.0) |
+| `.cursor/skills/team/references/` | Official docs reference (hooks, memory, restrictions) |
 | `.claude/rules/team-coordination-rules.md` | Teammate behavior rules + CK conventions |
 | `.claude/rules/orchestration-protocol.md` | Decision matrix, file ownership rules |
 | `.claude/hooks/team-context-inject.cjs` | Team + CK context injection (SubagentStart) |

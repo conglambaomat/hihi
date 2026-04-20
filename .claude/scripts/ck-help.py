@@ -3,7 +3,7 @@
 Backward-compatible wrapper for ck-help.
 
 Canonical implementation lives at:
-  .claude/skills/ck-help/scripts/ck-help.py
+  .cursor/skills/ck-help/scripts/ck-help.py
 """
 
 import runpy
@@ -12,13 +12,8 @@ from pathlib import Path
 
 
 def main() -> int:
-    target = (
-        Path(__file__).resolve().parent.parent
-        / "skills"
-        / "ck-help"
-        / "scripts"
-        / "ck-help.py"
-    )
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    target = repo_root / ".cursor" / "skills" / "ck-help" / "scripts" / "ck-help.py"
 
     if not target.exists():
         print(f"Error: canonical ck-help script not found: {target}", file=sys.stderr)

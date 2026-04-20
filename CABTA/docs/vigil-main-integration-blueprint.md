@@ -1,13 +1,15 @@
-# Vigil Main Integration Blueprint for AISA
+# Vigil Main Integration Blueprint for CABTA
 
 ## Purpose
 
-This document explains what `vigil-main` contributes conceptually and technically to AISA, what should be integrated, and how to do it without breaking AISA's architecture.
+This document explains what `vigil-main` contributes conceptually and technically to CABTA, what should be integrated, and how to do it without breaking CABTA's architecture.
+
+Legacy naming note: some older strategic material may still refer to this product direction as `AISA` / `AI Security Assistant`. For implementation, architecture, UI, and new docs, treat `CABTA` as the canonical product name.
 
 It is the bridge between:
 
 - the `vigil-main/` repository
-- AISA's current system
+- CABTA's current system
 - implementation planning for future phases
 
 ## Scope of Review
@@ -50,9 +52,9 @@ The following Vigil areas were reviewed closely:
 ## Executive Conclusion
 
 `vigil-main` is not just "another SOC app."
-It contains a more mature investigation orchestration model than AISA currently has.
+It contains a more mature investigation orchestration model than CABTA currently has.
 
-The most valuable contribution to AISA is not its vendor list or branding.
+The most valuable contribution to CABTA is not its vendor list or branding.
 It is its structure:
 
 - specialist AI roles
@@ -61,15 +63,15 @@ It is its structure:
 - governance around actions and AI decisions
 - stronger integration control
 
-These ideas fit AISA well if integrated carefully.
+These ideas fit CABTA well if integrated carefully.
 
 ## Authoritative Integration Stance
 
 The integration should follow this exact split:
 
-### CABTA/AISA owns the analysis core
+### CABTA owns the analysis core
 
-CABTA/AISA remains the authoritative owner of:
+CABTA remains the authoritative owner of:
 
 - tool orchestration for IOC, file, and email analysis
 - analyzer execution
@@ -90,16 +92,16 @@ Vigil contributes patterns for:
 - headless SOC daemon concepts
 - richer case-linked investigation control
 
-These components should sit above and around the AISA core.
-They should not replace the AISA core.
+These components should sit above and around the CABTA core.
+They should not replace the CABTA core.
 
 ### Tool-first investigation rule
 
 If an agent or workflow needs evidence, it must obtain that evidence through:
 
-- AISA analysis tools
-- AISA integrations
-- AISA scoring-aware services
+- CABTA analysis tools
+- CABTA integrations
+- CABTA scoring-aware services
 - approved MCP tools
 
 The orchestration layer may:
@@ -112,7 +114,7 @@ The orchestration layer may:
 
 It may not fabricate investigative evidence or silently replace tool-backed analysis.
 
-## High-Value Capabilities to Bring Into AISA
+## High-Value Capabilities to Bring Into CABTA
 
 ### 1. Specialist Agent Library
 
@@ -643,7 +645,7 @@ Vigil's confidence-threshold model is useful for approvals, but AISA must not le
 - explicit policy guardrails
 
 Confidence helps govern actions.
-It must not replace the CABTA/AISA verdict path.
+It must not replace the CABTA verdict path.
 
 ## Recommended Integration Order
 
@@ -717,7 +719,7 @@ The best way to combine Vigil with AISA is:
 
 The two most important rules are:
 
-1. CABTA/AISA scoring always remains the verdict source of truth.
+1. CABTA scoring always remains the verdict source of truth.
 2. Workflows must call tools to gather evidence instead of letting the model "guess" investigations.
 
 That combination gives AISA a credible path toward becoming a stronger AI SOC assistant without losing the qualities that already make it useful.
