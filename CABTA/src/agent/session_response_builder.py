@@ -146,6 +146,7 @@ class SessionResponseBuilder:
         message: str,
         intent: str,
         requires_fresh_evidence: bool,
+        memory_scope: Optional[str] = None,
     ) -> str:
         blocks: List[str] = ["Continue the same analyst thread for the ongoing CABTA investigation."]
         clean_goal = str(previous_goal or "").strip()
@@ -153,6 +154,16 @@ class SessionResponseBuilder:
             blocks.append(f"Original investigation goal:\n{clean_goal}")
         if thread_summary:
             blocks.append(f"Thread summary:\n{thread_summary}")
+
+        scope = str(memory_scope or "").strip().lower()
+        if scope not in {"working", "candidate", "accepted", "published"}:
+            scope = "accepted"
+        snapshot_label = {
+            "working": "working snapshot",
+            "candidate": "candidate snapshot",
+            "accepted": "accepted snapshot",
+            "published": "published case snapshot",
+        }[scope]
 
         root_cause = snapshot.get("root_cause_assessment", {}) if isinstance(snapshot, dict) else {}
         if isinstance(root_cause, dict) and root_cause.get("summary"):
@@ -162,7 +173,7 @@ class SessionResponseBuilder:
         if isinstance(accepted_facts, list) and accepted_facts:
             fact_lines = [f"- {item.get('summary')}" for item in accepted_facts[-4:] if isinstance(item, dict) and item.get("summary")]
             if fact_lines:
-                blocks.append("Accepted facts:\n" + "\n".join(fact_lines))
+                blocks.append(f"{snapshot_label.capitalize()} facts:\n" + "\n".join(fact_lines))
 
         unresolved = snapshot.get("unresolved_questions", []) if isinstance(snapshot, dict) else []
         if isinstance(unresolved, list) and unresolved:
@@ -173,11 +184,11 @@ class SessionResponseBuilder:
         blocks.append(f"Follow-up analyst request ({intent}):\n{str(message or '').strip()}")
         if requires_fresh_evidence:
             blocks.append(
-                "Use the thread snapshot as working context, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
+                f"Use the {snapshot_label} as bounded context, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
             )
         else:
             blocks.append(
-                "Answer from the accepted snapshot and structured reasoning state unless the available evidence is clearly insufficient."
+                f"Answer from the {snapshot_label} and structured reasoning state unless the available evidence is clearly insufficient."
             )
         return "\n\n".join(blocks)
 
@@ -191,6 +202,27 @@ class SessionResponseBuilder:
         build_chat_specific_fallback: Callable[[Any], str],
         fallback_evidence_points: Callable[[Any], List[str]],
     ) -> str:
+        return " ".join(
+            self.build_evidence_backed_answer_sentences(
+                state=state,
+                authoritative_outcome=authoritative_outcome,
+                include_runtime_notice=include_runtime_notice,
+                llm_unavailable_notice=llm_unavailable_notice,
+                build_chat_specific_fallback=build_chat_specific_fallback,
+                fallback_evidence_points=fallback_evidence_points,
+            )
+        )[:2000]
+
+    def build_evidence_backed_answer_sentences(
+        self,
+        *,
+        state: Any,
+        authoritative_outcome: Optional[Dict[str, str]],
+        include_runtime_notice: bool,
+        llm_unavailable_notice: Callable[[], str],
+        build_chat_specific_fallback: Callable[[Any], str],
+        fallback_evidence_points: Callable[[Any], List[str]],
+    ) -> List[str]:
         sentences: List[str] = []
         if include_runtime_notice:
             sentences.append(llm_unavailable_notice())
@@ -235,7 +267,83 @@ class SessionResponseBuilder:
             sentences.append(
                 "I can keep pivoting from this evidence if you want a deeper investigation."
             )
-        return " ".join(sentences)[:2000]
+        return sentences
+
+    def build_chat_specific_fallback(
+        self,
+        *,
+        is_chat_session: bool,
+        focused_goal: str,
+        findings: List[Dict[str, Any]],
+        reasoning_state: Optional[Dict[str, Any]],
+    ) -> str:
+        if not is_chat_session:
+            return ""
+
+        normalized_goal = str(focused_goal or "").lower()
+        wants_org = any(
+            phrase in normalized_goal
+            for phrase in ("what organization", "which organization", "who owns this ip")
+        )
+        wants_host = any(
+            phrase in normalized_goal
+            for phrase in ("what hostname", "what host name", "hostname", "host name")
+        )
+        if not wants_org and not wants_host:
+            return ""
+
+        organization = ""
+        hostname = ""
+        for finding in reversed(findings or []):
+            if not isinstance(finding, dict) or finding.get("type") != "tool_result":
+                continue
+            result = finding.get("result")
+            payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
+            if not isinstance(payload, dict):
+                continue
+            if not organization:
+                organization = str(
+                    payload.get("organization")
+                    or payload.get("org_name")
+                    or payload.get("registrant_org")
+                    or ""
+                ).strip()
+                parsed_fields = payload.get("parsed_fields", {}) if isinstance(payload.get("parsed_fields"), dict) else {}
+                if not organization:
+                    registrant_org = parsed_fields.get("registrant_org")
+                    if isinstance(registrant_org, list) and registrant_org:
+                        organization = str(registrant_org[0]).strip()
+                    elif registrant_org:
+                        organization = str(registrant_org).strip()
+            if not hostname:
+                hostnames = payload.get("hostnames")
+                if isinstance(hostnames, list) and hostnames:
+                    hostname = str(hostnames[0]).strip()
+                elif payload.get("reverse_dns"):
+                    hostname = str(payload.get("reverse_dns")).strip()
+                elif payload.get("hostname"):
+                    hostname = str(payload.get("hostname")).strip()
+            if organization and hostname:
+                break
+
+        if not organization and not hostname:
+            return ""
+
+        subject = ""
+        if isinstance(reasoning_state, dict):
+            subject = str(reasoning_state.get("goal_focus") or "").strip()
+        subject = subject or "the investigation target"
+
+        details: List[str] = []
+        if wants_org and organization:
+            details.append(f"organization {organization}")
+        if wants_host and hostname:
+            details.append(f"hostname {hostname}")
+        if not details:
+            return ""
+        if len(details) == 1:
+            return f"For {subject}, the strongest current mapping is {details[0]}."
+        return f"For {subject}, the strongest current mapping is {details[0]} and {details[1]}."
 
     def provider_display_name(self, provider: Optional[str]) -> str:
         provider_name = str(provider or "").strip().lower()
@@ -290,6 +398,18 @@ class SessionResponseBuilder:
         return (
             f"{provider_display_name(effective_provider)} model {model_name} is currently unavailable. "
             "CABTA did not fall back to another model."
+        )
+
+    def build_provider_timeout_error(
+        self,
+        *,
+        provider: Optional[str],
+        timeout_seconds: float,
+        provider_display_name: Callable[[Optional[str]], str],
+    ) -> str:
+        return (
+            f"{provider_display_name(provider)} direct chat request timed out "
+            f"after {timeout_seconds:.0f}s"
         )
 
     def provider_failure_message(
@@ -376,6 +496,100 @@ class SessionResponseBuilder:
             "Review the tool results above or retry once the model is available again."
         )
 
+    def build_fallback_response_context(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+    ) -> Dict[str, Any]:
+        normalized_provider = normalize_provider(provider_name)
+        status = provider_runtime_status if isinstance(provider_runtime_status, dict) else {}
+        return {
+            "provider_name": normalized_provider,
+            "status": status,
+            "active_model_name": active_model_name(normalized_provider),
+        }
+
+    def llm_unavailable_notice_from_context(
+        self,
+        *,
+        fallback_context: Dict[str, Any],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        return self.llm_unavailable_notice(
+            status=fallback_context.get("status", {}),
+            provider_name=fallback_context.get("provider_name"),
+            active_model_name=lambda _provider: str(fallback_context.get("active_model_name") or ""),
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=lambda: provider_runtime_error_excerpt(
+                status=fallback_context.get("status", {}),
+                provider_display_name=provider_display_name,
+            ),
+        )
+
+    def build_chat_model_unavailable_answer_from_context(
+        self,
+        *,
+        state: Any,
+        fallback_context: Dict[str, Any],
+        build_direct_chat_fallback_answer: Callable[[str], str],
+        goal: str,
+        authoritative_outcome: Optional[Dict[str, str]],
+        fallback_evidence_points: Callable[[Any, int], List[str]],
+        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]]], str],
+        build_chat_specific_fallback: Callable[[Any], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        unavailable_notice = self.llm_unavailable_notice_from_context(
+            fallback_context=fallback_context,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+        )
+        return self.build_chat_model_unavailable_answer(
+            state=state,
+            build_direct_chat_fallback_answer=build_direct_chat_fallback_answer,
+            goal=goal,
+            authoritative_outcome=authoritative_outcome,
+            fallback_evidence_points=fallback_evidence_points,
+            build_fallback_answer=lambda current_state, current_outcome: self.build_fallback_answer(
+                state=current_state,
+                authoritative_outcome=current_outcome,
+                build_evidence_backed_answer=lambda **kwargs: self.build_evidence_backed_answer(
+                    **kwargs,
+                    llm_unavailable_notice=lambda: unavailable_notice,
+                    build_chat_specific_fallback=build_chat_specific_fallback,
+                    fallback_evidence_points=lambda answer_state: fallback_evidence_points(answer_state, 3),
+                ),
+            ),
+            llm_unavailable_notice=unavailable_notice,
+        )
+
+    def chat_evidence_allows_answer_without_tools(
+        self,
+        *,
+        reasoning_status: str,
+        root_cause: Dict[str, Any],
+        has_strong_evidence: bool,
+        require_supported_root_cause_refs: bool = True,
+    ) -> bool:
+        supported_root_cause = (
+            isinstance(root_cause, dict)
+            and root_cause.get("status") == "supported"
+            and (
+                not require_supported_root_cause_refs
+                or bool(root_cause.get("supporting_evidence_refs"))
+            )
+        )
+        return bool(
+            reasoning_status == "sufficient_evidence"
+            or supported_root_cause
+            or has_strong_evidence
+        )
+
     def build_planned_next_step_summary(
         self,
         *,
@@ -412,6 +626,175 @@ class SessionResponseBuilder:
                 parts.append(f"Open question: {first_question}")
 
         return " ".join(parts)
+
+    def build_think_request_metadata(
+        self,
+        *,
+        prompt_payload: Dict[str, Any],
+        planned_decision: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        return {
+            "prompt_mode": prompt_payload.get("prompt_mode"),
+            "provider_context_block": prompt_payload.get("provider_context_block"),
+            "prompt_envelope": prompt_payload.get("prompt_envelope"),
+            "model_only_chat": prompt_payload.get("model_only_chat"),
+            "uses_native_tools": prompt_payload.get("uses_native_tools"),
+            "planned_next_step_summary": self.build_planned_next_step_summary(
+                decision=planned_decision
+            ),
+        }
+
+    def build_approval_context(
+        self,
+        *,
+        session_id: str,
+        state: Any,
+        tool_name: str,
+        params: Dict[str, Any],
+        approval_id: Optional[str],
+        case_id: Optional[str],
+        execution_guidance: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        reasoning_state = getattr(state, "reasoning_state", {})
+        investigation_plan = getattr(state, "investigation_plan", {}) or {}
+        return {
+            "tool": tool_name,
+            "params": dict(params or {}),
+            "approval_id": approval_id,
+            "case_id": case_id,
+            "workflow_id": getattr(state, "workflow_id", None),
+            "specialist": getattr(state, "active_specialist", None),
+            "session_id": session_id,
+            "step": getattr(state, "step_count", 0),
+            "reasoning_status": (
+                str(reasoning_state.get("status") or "")
+                if isinstance(reasoning_state, dict)
+                else ""
+            ),
+            "stop_conditions": list(investigation_plan.get("stopping_conditions", []))[:4],
+            "escalation_conditions": list(investigation_plan.get("escalation_conditions", []))[:4],
+            "execution_guidance": dict(execution_guidance or {}),
+        }
+
+    def build_approval_required_event(
+        self,
+        *,
+        tool_name: str,
+        params: Dict[str, Any],
+        reason: str,
+        approval_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "type": "approval_required",
+            "tool": tool_name,
+            "params": dict(params or {}),
+            "reason": reason,
+            "context": dict(approval_context or {}),
+        }
+
+    def apply_approval_review(
+        self,
+        *,
+        state: Any,
+        approved: bool,
+        reviewed_at: str,
+    ) -> bool:
+        pending_approval = getattr(state, "pending_approval", None)
+        if not isinstance(pending_approval, dict):
+            return False
+        pending_approval["approved"] = bool(approved)
+        pending_approval["status"] = "approved" if approved else "rejected"
+        pending_approval["reviewed_at"] = reviewed_at
+        return True
+
+    def build_approval_pending_payload(
+        self,
+        *,
+        decision: Dict[str, Any],
+        approval_id: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            **dict(decision or {}),
+            "approval_id": approval_id,
+        }
+
+    def build_approval_rejection_finding(
+        self,
+        *,
+        tool_name: str,
+        approval_outcome: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        outcome = dict(approval_outcome or {})
+        rejection_context = dict(outcome.get("context", {}))
+        rejection_status = "timed_out" if outcome.get("status") == "timed_out" else "rejected"
+        return {
+            "type": "approval_rejected",
+            "tool": tool_name,
+            "status": rejection_status,
+            "approval_context": rejection_context,
+            "execution_guidance": rejection_context.get("execution_guidance", {}),
+        }
+
+    def build_approval_rejection_transition(
+        self,
+        *,
+        tool_name: str,
+        approval_outcome: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        rejection_finding = self.build_approval_rejection_finding(
+            tool_name=tool_name,
+            approval_outcome=approval_outcome,
+        )
+        return {
+            "finding": rejection_finding,
+            "blocker_status": rejection_finding["status"],
+            "approval_context": rejection_finding["approval_context"],
+        }
+
+    def build_chat_response_style_block(
+        self,
+        *,
+        is_chat_session: bool,
+        chat_context_restored: bool,
+    ) -> str:
+        if not is_chat_session:
+            return ""
+        block = (
+            "Response style for analyst chat:\n"
+            "- When you have enough evidence, answer the analyst's question directly in the first sentence.\n"
+            "- Use plain, practical SOC language instead of stiff report boilerplate.\n"
+            "- After the direct answer, briefly explain the evidence and why it matters.\n"
+            "- End with concrete next steps only if they add value."
+        )
+        if chat_context_restored:
+            block += "\n- Treat carried-over findings as live investigation context, not as a stale summary."
+        return block
+
+    def build_chat_decision_block(
+        self,
+        *,
+        is_chat_session: bool,
+        chat_context_restored: bool,
+        requires_fresh_evidence: bool,
+    ) -> str:
+        if not is_chat_session:
+            return ""
+        block = (
+            "Chat decision policy:\n"
+            "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
+            "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
+            "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
+        )
+        if chat_context_restored:
+            if requires_fresh_evidence:
+                block += (
+                    "\n- This is a follow-up chat turn with carried-over findings. Continue from that context and gather fresh evidence only for the new pivot the analyst requested."
+                )
+            else:
+                block += (
+                    "\n- This is a follow-up chat turn with carried-over findings. Prefer answering from that restored evidence before starting new tool calls."
+                )
+        return block
 
     def build_fallback_decision_without_llm(
         self,
@@ -492,6 +875,160 @@ class SessionResponseBuilder:
             include_runtime_notice=True,
         )
 
+    def build_fallback_evidence_points(
+        self,
+        *,
+        findings: List[Dict[str, Any]],
+        describe_fallback_evidence: Callable[[str, Any], str],
+        limit: int = 3,
+    ) -> List[str]:
+        evidence: List[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("type") != "tool_result":
+                continue
+            tool_name = str(finding.get("tool") or "tool_result")
+            point = describe_fallback_evidence(tool_name, finding.get("result"))
+            if point and point not in evidence:
+                evidence.append(point)
+            if len(evidence) >= limit:
+                break
+        return evidence[:limit]
+
+    def describe_fallback_evidence(self, *, tool_name: str, result: Any) -> str:
+        if not isinstance(result, dict):
+            return ""
+
+        payload = result.get("result") if isinstance(result.get("result"), dict) else result
+        if not isinstance(payload, dict):
+            return ""
+
+        error = payload.get("error")
+        if error:
+            return f"{tool_name} reported error={str(error)[:120]}."
+        if payload.get("timed_out"):
+            return f"{tool_name} timed out while gathering enrichment."
+
+        if tool_name == "investigate_ioc":
+            ioc = str(payload.get("ioc") or "IOC")
+            verdict = str(payload.get("verdict") or "UNKNOWN").upper()
+            threat_score = payload.get("threat_score")
+            domain_enrichment = payload.get("domain_enrichment", {})
+            domain_age = domain_enrichment.get("domain_age", {}) if isinstance(domain_enrichment, dict) else {}
+            if isinstance(domain_age, dict) and domain_age.get("is_newly_registered"):
+                age_days = domain_age.get("age_days")
+                return (
+                    f"{ioc} classified as {verdict} with threat_score={threat_score}; "
+                    f"domain age is {age_days} days."
+                )
+            return f"{ioc} classified as {verdict} with threat_score={threat_score}."
+
+        if tool_name.endswith("whois_lookup"):
+            target = str(payload.get("target") or "domain")
+            creation_date = str(payload.get("creation_date") or "").strip()
+            registrar = payload.get("registrar")
+            registrar_name = ""
+            if isinstance(registrar, list) and registrar:
+                registrar_name = str(registrar[0]).strip()
+            elif registrar:
+                registrar_name = str(registrar).strip()
+            details = ", ".join(
+                part
+                for part in [
+                    f"created={creation_date}" if creation_date else "",
+                    f"registrar={registrar_name}" if registrar_name else "",
+                ]
+                if part
+            )
+            if details:
+                return f"WHOIS for {target}: {details}."
+            return f"WHOIS data collected for {target}."
+
+        if tool_name.endswith("dns_resolve"):
+            domain = str(payload.get("domain") or "domain")
+            records = payload.get("records", {}) if isinstance(payload.get("records"), dict) else {}
+            a_records = records.get("A") if isinstance(records.get("A"), list) else []
+            if a_records:
+                return f"DNS for {domain} resolved to {', '.join(str(ip) for ip in a_records[:3])}."
+            return f"DNS data collected for {domain}."
+
+        if tool_name.endswith("ssl_certificate_info"):
+            host = str(payload.get("host") or "host")
+            issuer = payload.get("issuer", {}) if isinstance(payload.get("issuer"), dict) else {}
+            issuer_cn = str(issuer.get("commonName") or "").strip()
+            not_after = str(payload.get("not_after") or "").strip()
+            details = ", ".join(
+                part
+                for part in [
+                    f"issuer={issuer_cn}" if issuer_cn else "",
+                    f"expires={not_after}" if not_after else "",
+                ]
+                if part
+            )
+            if details:
+                return f"TLS certificate for {host}: {details}."
+            return f"TLS certificate metadata collected for {host}."
+
+        if tool_name == "correlate_findings":
+            severity = str(payload.get("severity") or "").upper()
+            stats = payload.get("statistics", {}) if isinstance(payload.get("statistics"), dict) else {}
+            unique_iocs = stats.get("unique_iocs")
+            if severity:
+                return f"Correlation rated the case severity={severity} across {unique_iocs or 0} unique IOCs."
+            return "Correlation completed across collected findings."
+
+        verdict = payload.get("verdict")
+        if verdict:
+            return f"{tool_name} reported verdict={str(verdict).upper()}."
+
+        severity = payload.get("severity")
+        if severity:
+            return f"{tool_name} reported severity={str(severity).upper()}."
+
+        return ""
+
+    def mark_approval_timeout(
+        self,
+        *,
+        state: Any,
+        reviewed_at: str,
+    ) -> None:
+        errors = getattr(state, "errors", None)
+        if isinstance(errors, list):
+            errors.append("Approval timed out (30 min)")
+        pending_approval = getattr(state, "pending_approval", None)
+        if isinstance(pending_approval, dict):
+            pending_approval["approved"] = False
+            pending_approval["status"] = "timed_out"
+            pending_approval["reviewed_at"] = reviewed_at
+
+    def consume_approval_outcome(self, *, state: Any) -> Optional[Dict[str, Any]]:
+        clear_approval = getattr(state, "clear_approval", None)
+        if not callable(clear_approval):
+            return None
+        approval = clear_approval()
+        if approval is None:
+            return None
+        setattr(state, "last_approval_outcome", approval)
+        return approval
+
+    def build_terminal_status_payload(
+        self,
+        *,
+        state: Any,
+        summary: str,
+    ) -> Dict[str, Any]:
+        findings = getattr(state, "findings", []) or []
+        has_final_answer = any(
+            isinstance(finding, dict) and finding.get("type") == "final_answer"
+            for finding in findings
+        )
+        return {
+            "status": "completed" if getattr(state, "phase", None) == "completed" else "failed",
+            "summary": summary,
+            "steps": int(getattr(state, "step_count", 0) or 0),
+            "record_thread_message": bool(summary) and not has_final_answer,
+        }
+
     async def generate_summary(
         self,
         *,
@@ -514,15 +1051,12 @@ class SessionResponseBuilder:
                 + " ".join(str(err) for err in errors[:2])
             )[:2000]
 
-        for finding in reversed(findings):
-            if finding.get("type") != "final_answer":
-                continue
-            answer = finding.get("answer", "")
-            if not answer:
-                continue
-            if authoritative_outcome and "did not fall back to another model" not in str(answer).lower():
-                return f"[{authoritative_outcome['label']}] {answer}"
-            return answer
+        existing_answer = self.summary_from_final_answer(
+            findings=findings,
+            authoritative_outcome=authoritative_outcome,
+        )
+        if existing_answer:
+            return existing_answer
 
         try:
             raw = await call_llm_text(prompt)
@@ -534,3 +1068,20 @@ class SessionResponseBuilder:
         if is_chat_session(state) and provider_is_currently_unavailable(provider_name):
             return build_chat_model_unavailable_answer(state)
         return build_fallback_answer(state, authoritative_outcome)
+
+    def summary_from_final_answer(
+        self,
+        *,
+        findings: List[Dict[str, Any]],
+        authoritative_outcome: Optional[Dict[str, str]],
+    ) -> str:
+        for finding in reversed(findings):
+            if not isinstance(finding, dict) or finding.get("type") != "final_answer":
+                continue
+            answer = finding.get("answer", "")
+            if not answer:
+                continue
+            if authoritative_outcome and "did not fall back to another model" not in str(answer).lower():
+                return f"[{authoritative_outcome['label']}] {answer}"
+            return str(answer)
+        return ""

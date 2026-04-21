@@ -100,6 +100,20 @@ class EntityResolver:
         "exposed_by",
         "co_observed",
     )
+    _RELATION_SEMANTIC_WEIGHT = {
+        "belongs_to": 0.94,
+        "occurred_on": 0.87,
+        "authenticated_from": 0.92,
+        "executed_on": 0.88,
+        "derived_from": 0.74,
+        "connects_to": 0.83,
+        "spawned_process": 0.8,
+        "received_from": 0.82,
+        "received_attachment": 0.76,
+        "originates_from": 0.7,
+        "exposed_by": 0.72,
+        "co_observed": 0.38,
+    }
     _ENTITY_TYPE_ALIASES = {
         "hostname": "host",
         "device": "host",
@@ -486,12 +500,20 @@ class EntityResolver:
                 adjusted_confidence = min(adjusted_confidence, 0.69 if explicit else 0.58)
                 relation_strength = "inferred"
                 explicit = False
+            relation_confidence = self._relation_confidence(
+                relation=relation,
+                base_confidence=adjusted_confidence,
+                relation_strength=relation_strength,
+                guarded=guarded != "allow",
+                source_paths=source_paths,
+                evidence_count=1,
+            )
             relations.append(
                 {
                     "source": source,
                     "target": target,
                     "relation": relation,
-                    "confidence": round(float(adjusted_confidence), 3),
+                    "confidence": round(float(relation_confidence), 3),
                     "basis": basis,
                     "relation_basis": basis,
                     "source_paths": source_paths,
@@ -512,6 +534,8 @@ class EntityResolver:
                     "guarded": guarded != "allow",
                     "guard_reason": guard_reason,
                     "count": 1,
+                    "relation_confidence": round(float(relation_confidence), 3),
+                    "confidence_band": self._confidence_band(relation_confidence),
                     "last_seen_at": evidence_ref.get("created_at") or _now_iso(),
                 }
             )
@@ -570,12 +594,21 @@ class EntityResolver:
             for target in entity_ids[index + 1:]:
                 if self._is_sensitive_pair(source, target):
                     continue
+                guarded = self._is_high_risk_pair(source, target)
+                relation_confidence = self._relation_confidence(
+                    relation="co_observed",
+                    base_confidence=0.28 if guarded else 0.4,
+                    relation_strength="co_observed",
+                    guarded=guarded,
+                    source_paths=source_paths,
+                    evidence_count=1,
+                )
                 relations.append(
                     {
                         "source": source,
                         "target": target,
                         "relation": "co_observed",
-                        "confidence": 0.28 if self._is_high_risk_pair(source, target) else 0.4,
+                        "confidence": round(float(relation_confidence), 3),
                         "basis": "shared_observation_context",
                         "relation_basis": "shared_observation_context",
                         "source_paths": list(source_paths),
@@ -593,9 +626,11 @@ class EntityResolver:
                         "relation_strength": "co_observed",
                         "canonical_source": source,
                         "canonical_target": target,
-                        "guarded": self._is_high_risk_pair(source, target),
-                        "guard_reason": "high_risk_pair_requires_stronger_evidence" if self._is_high_risk_pair(source, target) else None,
+                        "guarded": guarded,
+                        "guard_reason": "high_risk_pair_requires_stronger_evidence" if guarded else None,
                         "count": 1,
+                        "relation_confidence": round(float(relation_confidence), 3),
+                        "confidence_band": self._confidence_band(relation_confidence),
                         "last_seen_at": evidence_ref.get("created_at") or _now_iso(),
                     }
                 )
@@ -659,6 +694,19 @@ class EntityResolver:
         merged["evidence_count"] = len(deduped_refs)
         merged["source_path_count"] = len(merged.get("source_paths", []))
         merged["strength_breakdown"] = strength_breakdown
+        relation_confidence = self._relation_confidence(
+            relation=str(merged.get("relation") or ""),
+            base_confidence=max(
+                float(current.get("relation_confidence", current.get("confidence", 0.0)) or 0.0),
+                float(relationship.get("relation_confidence", relationship.get("confidence", 0.0)) or 0.0),
+            ),
+            relation_strength=str(merged.get("relation_strength") or ""),
+            guarded=bool(merged.get("guarded", False)),
+            source_paths=merged.get("source_paths", []),
+            evidence_count=len(deduped_refs),
+        )
+        merged["relation_confidence"] = round(float(relation_confidence), 3)
+        merged["confidence_band"] = self._confidence_band(relation_confidence)
         merged["relation_semantics"] = {
             "is_explicit": bool(merged.get("explicit", False)),
             "is_inferred": bool(merged.get("inferred", False)),
@@ -667,6 +715,8 @@ class EntityResolver:
             "supporting_observation_count": len(supporting_observations),
             "evidence_count": len(deduped_refs),
             "guarded": bool(merged.get("guarded", False)),
+            "confidence": round(float(relation_confidence), 3),
+            "confidence_band": self._confidence_band(relation_confidence),
         }
         relationships[key] = merged
         state["relationships"] = list(relationships.values())[-120:]
@@ -741,6 +791,42 @@ class EntityResolver:
         if not explicit and self._is_sensitive_pair(source, target):
             return ("degrade", f"sensitive_relation_inferred_only:{relation}:{basis}")
         return ("allow", None)
+
+    def _relation_confidence(
+        self,
+        *,
+        relation: str,
+        base_confidence: float,
+        relation_strength: str,
+        guarded: bool,
+        source_paths: List[str],
+        evidence_count: int,
+    ) -> float:
+        confidence = float(base_confidence or 0.0)
+        confidence = max(confidence, self._RELATION_SEMANTIC_WEIGHT.get(str(relation or "").strip().lower(), 0.32))
+        strength_bonus = {
+            "explicit": 0.06,
+            "inferred": 0.0,
+            "co_observed": -0.08,
+        }.get(str(relation_strength or "").strip().lower(), 0.0)
+        confidence += strength_bonus
+        if guarded:
+            confidence -= 0.08
+        if source_paths:
+            confidence += min(0.04, len([item for item in source_paths if str(item).strip()]) * 0.01)
+        confidence += min(0.06, max(0, int(evidence_count or 0) - 1) * 0.02)
+        return max(0.0, min(0.99, confidence))
+
+    @staticmethod
+    def _confidence_band(confidence: float) -> str:
+        value = float(confidence or 0.0)
+        if value >= 0.9:
+            return "very_high"
+        if value >= 0.75:
+            return "high"
+        if value >= 0.55:
+            return "medium"
+        return "low"
 
     @staticmethod
     def _relation_ref(

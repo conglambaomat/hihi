@@ -250,6 +250,7 @@ class WorkflowRegistry:
             return None
 
         detail = workflow.to_detail_dict()
+        sections = workflow.sections or {}
         validation = self.validate_workflow_definition(
             {
                 "id": workflow.workflow_id,
@@ -268,17 +269,49 @@ class WorkflowRegistry:
         )
 
         detail["validation"] = validation
+        evidence_contract = {
+            "required": True,
+            "require_typed_observations": False,
+            "require_triage_contract_evidence": False,
+            "minimum_required_fields": 0,
+        }
+        workflow_id = str(workflow.workflow_id or "").strip().lower()
+        if workflow_id in {"threat-hunt", "incident-response"}:
+            evidence_contract.update(
+                {
+                    "require_typed_observations": True,
+                    "require_triage_contract_evidence": True,
+                    "minimum_required_fields": 2,
+                }
+            )
+
         detail["execution_contract"] = {
             "multi_agent": len(workflow.agents) > 1,
             "headless_ready": workflow.headless_ready,
             "approval_mode": workflow.approval_mode,
             "requires_playbook": bool(workflow.execution_backend.lower() == "playbook"),
-            "supports_headless_execution": bool(workflow.headless_ready and workflow.approval_mode != "analyst"),
+            "supports_headless_execution": bool(workflow.headless_ready and workflow.approval_mode not in {"analyst", "analyst-gated"}),
             "dependency_count": validation.get("dependency_count", 0),
             "required_dependencies": {
                 "tools": list(workflow.required_tools),
                 "mcp_servers": list(workflow.required_mcp_servers),
                 "features": list(workflow.required_features),
+            },
+            "fallback_paths": self._extract_bullets(sections.get("fallback_paths", ""), limit=6),
+            "stop_conditions": self._extract_bullets(sections.get("stop_conditions", ""), limit=6),
+            "plan_contract": {
+                "required": True,
+                "planner": "InvestigationPlanner",
+                "pivot_signals_supported": True,
+                "resume_signals_supported": True,
+            },
+            "evidence_contract": evidence_contract,
+            "governance_contract": {
+                "contract_version": "governance-contract/v2",
+                "deterministic_verdict_owner": "CABTA deterministic core",
+                "decision_logging_supported": True,
+                "feedback_logging_supported": True,
+                "approvals_required": workflow.approval_mode in {"analyst", "analyst-gated"},
             },
         }
         return detail

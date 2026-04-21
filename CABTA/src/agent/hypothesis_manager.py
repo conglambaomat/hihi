@@ -55,6 +55,8 @@ class Hypothesis:
     updated_at: str = field(default_factory=_now_iso)
     last_updated_at: str = field(default_factory=_now_iso)
     priority: float = 0.0
+    ranking_score: float = 0.0
+    competition_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -62,6 +64,8 @@ class Hypothesis:
         payload["evidence_score"] = round(float(payload.get("evidence_score", 0.0)), 3)
         payload["contradiction_score"] = round(float(payload.get("contradiction_score", 0.0)), 3)
         payload["priority"] = round(float(payload.get("priority", 0.0)), 3)
+        payload["ranking_score"] = round(float(payload.get("ranking_score", 0.0)), 3)
+        payload["competition_score"] = round(float(payload.get("competition_score", 0.0)), 3)
         return payload
 
 
@@ -145,6 +149,7 @@ class HypothesisManager:
             "open_questions": session_questions,
             "missing_evidence": seeded_missing[:8],
             "recent_evidence_refs": [],
+            "competition": {},
             "created_at": _now_iso(),
             "last_updated_at": _now_iso(),
         }
@@ -215,7 +220,8 @@ class HypothesisManager:
                 recent_ref_payload["confidence"] = round(max(float(recent_ref_payload.get("confidence", 0.0) or 0.0), strongest_strength), 3)
             recent_refs.append(recent_ref_payload)
 
-        state["hypotheses"] = [item.to_dict() for item in self._rank_hypotheses(hypotheses)]
+        ranked_hypotheses = self._rank_hypotheses(hypotheses)
+        state["hypotheses"] = [item.to_dict() for item in ranked_hypotheses]
         state["recent_evidence_refs"] = recent_refs[-16:]
         state["open_questions"] = self._dedupe(question_accumulator)[:10]
         state["missing_evidence"] = self._derive_missing_evidence(
@@ -225,7 +231,8 @@ class HypothesisManager:
             lane=str(state.get("investigation_lane") or ""),
             plan=state.get("plan"),
         )
-        state["status"] = self._derive_state_status(hypotheses, state["missing_evidence"])
+        state["competition"] = self._competition_state(ranked_hypotheses)
+        state["status"] = self._derive_state_status(ranked_hypotheses, state["missing_evidence"])
         state["last_updated_at"] = _now_iso()
         return state
 
@@ -265,6 +272,7 @@ class HypothesisManager:
             "supporting_evidence_refs": list(assessment.get("supporting_evidence_refs", []) or []),
             "alternative_hypotheses": list(assessment.get("alternative_hypotheses", alternatives) or []),
             "missing_evidence": list(assessment.get("missing_evidence", missing) or []),
+            "competition": self._competition_state(hypotheses),
             "recommended_next_pivots": self._recommended_next_pivots(state, entity_state),
             "recommended_next_actions": self._recommended_next_actions(deterministic_decision or {}, assessment),
             "reasoning_status": state.get("status", "collecting_evidence"),
@@ -283,6 +291,7 @@ class HypothesisManager:
         state.setdefault("open_questions", [])
         state.setdefault("missing_evidence", [])
         state.setdefault("recent_evidence_refs", [])
+        state.setdefault("competition", {})
         state.setdefault("created_at", _now_iso())
         state.setdefault("last_updated_at", _now_iso())
         state["hypotheses"] = [self._normalize_hypothesis(item).to_dict() for item in state.get("hypotheses", [])]
@@ -308,6 +317,8 @@ class HypothesisManager:
             updated_at=updated_at,
             last_updated_at=str(payload.get("last_updated_at") or updated_at),
             priority=float(payload.get("priority") or 0.0),
+            ranking_score=float(payload.get("ranking_score") or payload.get("priority") or 0.0),
+            competition_score=float(payload.get("competition_score") or 0.0),
         )
 
     def _seed_hypotheses(self, goal: str, lane: str, investigation_plan: Optional[Dict[str, Any]]) -> List[Hypothesis]:
@@ -333,6 +344,7 @@ class HypothesisManager:
                     topics=topics,
                     open_questions=self._open_questions_for_topics(topics),
                     priority=confidence,
+                    ranking_score=confidence,
                 )
             )
         return hypotheses
@@ -719,15 +731,96 @@ class HypothesisManager:
         }
 
     def _rank_hypotheses(self, hypotheses: List[Hypothesis]) -> List[Hypothesis]:
-        return sorted(
-            hypotheses,
+        ranked = list(hypotheses)
+        for item in ranked:
+            item.ranking_score = self._ranking_score(item)
+        sorted_ranked = sorted(
+            ranked,
             key=lambda item: (
-                self._priority_score(item),
+                item.ranking_score,
                 item.confidence,
                 item.evidence_score - item.contradiction_score,
                 len(item.supporting_evidence_refs) - len(item.contradicting_evidence_refs),
             ),
             reverse=True,
+        )
+        lead_score = sorted_ranked[0].ranking_score if sorted_ranked else 0.0
+        for item in sorted_ranked:
+            item.priority = item.ranking_score
+            item.competition_score = round(max(0.0, lead_score - item.ranking_score), 3)
+        return sorted_ranked
+
+    def _competition_state(self, hypotheses: List[Hypothesis]) -> Dict[str, Any]:
+        ranked = list(hypotheses)
+        if not ranked:
+            return {
+                "lead_hypothesis_id": None,
+                "lead_margin": 0.0,
+                "competition_level": "none",
+                "top_hypotheses": [],
+            }
+        lead = ranked[0]
+        runner_up = ranked[1] if len(ranked) > 1 else None
+        lead_margin = max(0.0, float(lead.ranking_score) - float(runner_up.ranking_score if runner_up else 0.0))
+        if runner_up is None:
+            competition_level = "clear_lead"
+        elif lead_margin < 0.08:
+            competition_level = "tight"
+        elif lead_margin < 0.18:
+            competition_level = "contested"
+        else:
+            competition_level = "clear_lead"
+        return {
+            "lead_hypothesis_id": lead.id,
+            "runner_up_hypothesis_id": runner_up.id if runner_up else None,
+            "lead_margin": round(lead_margin, 3),
+            "competition_level": competition_level,
+            "top_hypotheses": [
+                {
+                    "id": item.id,
+                    "statement": item.statement,
+                    "status": item.status,
+                    "ranking_score": round(float(item.ranking_score), 3),
+                    "competition_score": round(float(item.competition_score), 3),
+                    "confidence": round(float(item.confidence), 3),
+                }
+                for item in ranked[:3]
+            ],
+        }
+
+    def _ranking_score(self, hypothesis: Hypothesis) -> float:
+        support_quality = sum(
+            float(item.get("weighted_support", item.get("confidence", 0.0)) or 0.0)
+            for item in hypothesis.supporting_evidence_refs
+            if isinstance(item, dict)
+        )
+        contradiction_quality = sum(
+            float(item.get("weighted_contradiction", item.get("confidence", 0.0)) or 0.0)
+            for item in hypothesis.contradicting_evidence_refs
+            if isinstance(item, dict)
+        )
+        support_count = len(hypothesis.supporting_evidence_refs)
+        contradiction_count = len(hypothesis.contradicting_evidence_refs)
+        typed_support_bonus = min(
+            0.14,
+            sum(
+                0.035
+                for item in hypothesis.supporting_evidence_refs
+                if isinstance(item, dict)
+                and float(item.get("evidence_quality", 0.0) or 0.0) >= 0.62
+                and float(item.get("causal_relevance", 0.0) or 0.0) >= 0.72
+            ),
+        )
+        contradiction_penalty = min(0.18, contradiction_quality * 0.45)
+        return (
+            float(hypothesis.confidence) * 0.55
+            + float(hypothesis.evidence_score) * 1.0
+            + support_quality * 0.35
+            + typed_support_bonus
+            - float(hypothesis.contradiction_score) * 0.95
+            - contradiction_penalty
+            + min(0.08, support_count * 0.015)
+            - min(0.1, contradiction_count * 0.02)
         )
 
     def _priority_score(self, hypothesis: Hypothesis) -> float:
@@ -823,21 +916,23 @@ class HypothesisManager:
                 return 0.84
             return 0.82
 
+        typed_signal_present = bool(obs_type or fact_family or typed_topics)
         if "benign" in raw_topics and "benign" in tags_lower:
-            return 0.9
+            return 0.72 if typed_signal_present else 0.9
         if "malicious" in raw_topics and "malicious" in tags_lower:
-            return 0.9
+            return 0.72 if typed_signal_present else 0.9
 
         semantic_overlap = self._statement_semantic_overlap(hypothesis.statement, typed_topics)
         if semantic_overlap:
-            return 0.64
+            # Typed observations should outrank narrative similarity when they point to a different lane.
+            return 0.46 if typed_signal_present else 0.64
 
         tag_overlap = raw_topics.intersection(tags_lower)
         if tag_overlap:
-            return 0.56
+            return 0.4 if typed_signal_present else 0.56
         expanded_tag_overlap = hypothesis_topics.intersection(tags_lower)
         if expanded_tag_overlap:
-            return 0.52
+            return 0.36 if typed_signal_present else 0.52
         return 0.28
 
     def _typed_topics_for_observation(self, obs_type: str, fact_family: str) -> set[str]:

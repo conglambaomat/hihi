@@ -16,6 +16,7 @@ from src.agent.session_context_service import SessionContextService
 def sample_state():
     return SimpleNamespace(
         session_id="sess-1",
+        case_id="case-1",
         thread_id="thread-1",
         step_count=2,
         investigation_plan={"lane": "ioc"},
@@ -26,6 +27,9 @@ def sample_state():
         accepted_facts=[],
         unresolved_questions=[],
         evidence_quality_summary={},
+        fact_family_schemas={},
+        restored_memory_scope=None,
+        chat_context_restored_memory_scope=None,
         session_snapshot_id=None,
         agentic_explanation={"root_cause_assessment": {"status": "supported"}},
     )
@@ -41,6 +45,7 @@ def test_restore_state_from_snapshot_populates_state(sample_state):
         "accepted_facts": [{"summary": "fact"}],
         "unresolved_questions": ["What host was involved?"],
         "evidence_quality_summary": {"average_quality": 0.9},
+        "fact_family_schemas": {"log": {"version": "fact-family/log/v1"}},
     }
 
     memory_scope = SessionContextService.restore_state_from_snapshot(sample_state, snapshot)
@@ -54,6 +59,9 @@ def test_restore_state_from_snapshot_populates_state(sample_state):
     assert sample_state.accepted_facts[0]["summary"] == "fact"
     assert sample_state.unresolved_questions == ["What host was involved?"]
     assert sample_state.evidence_quality_summary["average_quality"] == 0.9
+    assert sample_state.fact_family_schemas["log"]["version"] == "fact-family/log/v1"
+    assert sample_state.restored_memory_scope is None
+    assert sample_state.chat_context_restored_memory_scope is None
 
 
 def test_restore_state_from_snapshot_prefers_published_memory_scope(sample_state):
@@ -94,6 +102,49 @@ def test_restore_state_from_snapshot_falls_back_to_published_memory_scope(sample
     assert sample_state.accepted_facts[0]["summary"] == "published fact"
 
 
+def test_restore_state_from_snapshot_rejects_cross_thread_memory_boundary(sample_state):
+    snapshot = {
+        "memory": {
+            "published": {
+                "memory_boundary": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-other",
+                    "session_id": "sess-foreign",
+                    "publication_scope": "published",
+                },
+                "reasoning_state": {"status": "foreign-thread"},
+            }
+        }
+    }
+
+    memory_scope = SessionContextService.restore_state_from_snapshot(
+        sample_state,
+        snapshot,
+        expected_case_id="case-1",
+        expected_thread_id="thread-1",
+    )
+
+    assert memory_scope is None
+    assert sample_state.reasoning_state == {}
+
+
+def test_restore_state_from_snapshot_rejects_cross_case_payload(sample_state):
+    snapshot = {
+        "case_id": "case-other",
+        "reasoning_state": {"status": "wrong-case"},
+    }
+
+    memory_scope = SessionContextService.restore_state_from_snapshot(
+        sample_state,
+        snapshot,
+        expected_case_id="case-1",
+        expected_thread_id="thread-1",
+    )
+
+    assert memory_scope is None
+    assert sample_state.reasoning_state == {}
+
+
 def test_resolve_thread_id_prefers_requested_thread():
     store = MagicMock()
     thread_store = MagicMock()
@@ -131,7 +182,7 @@ def test_restore_follow_up_context_uses_thread_snapshot(sample_state):
     restored = service.restore_follow_up_context(
         session_id="sess-2",
         state=sample_state,
-        metadata={"chat_parent_session_id": "parent-1", "thread_id": "thread-1"},
+        metadata={"chat_parent_session_id": "parent-1", "thread_id": "thread-1", "case_id": "case-1"},
     )
 
     assert restored is True
@@ -158,6 +209,8 @@ def test_restore_follow_up_context_prefers_lifecycle_accepted_thread_truth(sampl
         "snapshot_id": "snap-accepted",
         "snapshot": {
             "snapshot_lifecycle": "published",
+            "case_id": "case-1",
+            "thread_id": "thread-1",
             "accepted_memory": {
                 "reasoning_state": {"status": "published-thread-memory"},
                 "accepted_facts": [{"summary": "published thread fact"}],
@@ -179,7 +232,7 @@ def test_restore_follow_up_context_prefers_lifecycle_accepted_thread_truth(sampl
     restored = service.restore_follow_up_context(
         session_id="sess-2",
         state=sample_state,
-        metadata={"chat_parent_session_id": "parent-1", "thread_id": "thread-1"},
+        metadata={"chat_parent_session_id": "parent-1", "thread_id": "thread-1", "case_id": "case-1"},
     )
 
     assert restored is True
@@ -206,9 +259,12 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
         state=sample_state,
         metadata={
             "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "memory_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
                     "memory": {
                         "published": {
                             "reasoning_state": {"status": "published-memory"},
@@ -229,6 +285,49 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
     assert args[1]["chat_context_restored_source"] == "case_memory"
     assert args[1]["chat_context_restored_counts"]["accepted_fact_count"] == 1
     assert args[1]["chat_context_restored_reasoning_status"] == "published-memory"
+    assert sample_state.restored_memory_scope == "published"
+    assert sample_state.chat_context_restored_memory_scope == "published"
+
+
+def test_restore_follow_up_context_uses_memory_boundary_session_id_when_case_memory_session_missing(sample_state):
+    store = MagicMock()
+    thread_store = MagicMock()
+    store.get_session.return_value = {"metadata": {}}
+    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_snapshot.return_value = {}
+    service = SessionContextService(store=store, thread_store=thread_store)
+
+    restored = service.restore_follow_up_context(
+        session_id="sess-2",
+        state=sample_state,
+        metadata={
+            "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
+            "case_memory_context": {
+                "memory_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
+                    "memory": {
+                        "published": {
+                            "memory_boundary": {
+                                "case_id": "case-1",
+                                "thread_id": "thread-1",
+                                "session_id": "sess-boundary",
+                                "publication_scope": "published",
+                            },
+                            "reasoning_state": {"status": "published-memory"},
+                            "accepted_facts": [{"summary": "published memory fact"}],
+                        }
+                    },
+                },
+            },
+        },
+    )
+
+    assert restored is True
+    assert sample_state.session_snapshot_id == "sess-boundary"
+    args = store.update_session_metadata.call_args.args
+    assert args[1]["chat_context_restored_snapshot_id"] == "sess-boundary"
 
 
 def test_restore_follow_up_context_falls_back_to_case_memory(sample_state):
@@ -244,9 +343,12 @@ def test_restore_follow_up_context_falls_back_to_case_memory(sample_state):
         state=sample_state,
         metadata={
             "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "accepted_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
                     "reasoning_state": {"status": "case_memory"},
                     "accepted_facts": [{"summary": "accepted"}],
                 },
@@ -275,9 +377,12 @@ def test_restore_follow_up_context_counts_accepted_facts_only_as_restored_contex
         state=sample_state,
         metadata={
             "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "accepted_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
                     "accepted_facts": [{"summary": "accepted-only fact"}],
                 },
             },
@@ -290,6 +395,39 @@ def test_restore_follow_up_context_counts_accepted_facts_only_as_restored_contex
     assert args[1]["chat_context_restored"] is True
     assert args[1]["chat_context_restored_counts"]["accepted_fact_count"] == 1
     assert args[1]["chat_context_restored_source"] == "case_memory"
+    assert args[1]["chat_context_restored_fact_family_schemas"] == {}
+
+
+def test_restore_follow_up_context_rejects_thread_snapshot_from_other_case(sample_state):
+    store = MagicMock()
+    thread_store = MagicMock()
+    store.get_session.return_value = {
+        "case_id": "case-1",
+        "metadata": {
+            "thread_id": "thread-1",
+        }
+    }
+    thread_store.get_latest_accepted_snapshot.return_value = {
+        "snapshot_id": "snap-foreign",
+        "snapshot": {
+            "case_id": "case-other",
+            "thread_id": "thread-1",
+            "reasoning_state": {"status": "foreign"},
+        },
+    }
+    thread_store.get_latest_snapshot.return_value = {}
+    service = SessionContextService(store=store, thread_store=thread_store)
+
+    restored = service.restore_follow_up_context(
+        session_id="sess-2",
+        state=sample_state,
+        metadata={"chat_parent_session_id": "parent-1", "thread_id": "thread-1", "case_id": "case-1"},
+    )
+
+    assert restored is False
+    assert sample_state.reasoning_state == {}
+    args = store.update_session_metadata.call_args.args
+    assert args[1]["chat_context_restored_source"] == "none"
 
 
 def test_maybe_record_thread_user_message_records_chat_messages(sample_state):

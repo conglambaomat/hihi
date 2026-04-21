@@ -180,6 +180,13 @@ class GovernanceStore:
     ) -> str:
         decision_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
+        decision_metadata = dict(metadata or {})
+        decision_metadata.setdefault("governance_contract_version", "governance-contract/v2")
+        decision_metadata.setdefault("deterministic_verdict_owner", "CABTA deterministic core")
+        decision_metadata.setdefault("workflow_runtime_governed", True)
+        decision_metadata.setdefault("plan_driven_investigation", True)
+        decision_metadata.setdefault("typed_evidence_required", True)
+        decision_metadata.setdefault("evidence_ref_count", len(evidence_refs or []))
         with self._lock:
             conn = self._connect()
             conn.execute(
@@ -198,7 +205,7 @@ class GovernanceStore:
                     rationale,
                     json.dumps(evidence_refs or [], default=str),
                     float(confidence or 0.0),
-                    json.dumps(metadata or {}, default=str),
+                    json.dumps(decision_metadata, default=str),
                     now,
                 ),
             )
@@ -380,6 +387,27 @@ class GovernanceStore:
         decision_type_counts = Counter(str(item.get("decision_type") or "unknown") for item in decision_items)
         feedback_type_counts = Counter(str(item.get("feedback_type") or "unknown") for item in feedback_items)
         feedback_verdict_counts = Counter(str(item.get("verdict") or "unspecified") for item in feedback_items)
+        governance_contract_counts = Counter(
+            str((item.get("metadata") or {}).get("governance_contract_version") or "legacy")
+            for item in decision_items
+            if isinstance(item, dict)
+        )
+        deterministic_owner_counts = Counter(
+            str((item.get("metadata") or {}).get("deterministic_verdict_owner") or "unknown")
+            for item in decision_items
+            if isinstance(item, dict)
+        )
+
+        plan_driven_counts = Counter(
+            bool((item.get("metadata") or {}).get("plan_driven_investigation"))
+            for item in decision_items
+            if isinstance(item, dict)
+        )
+        typed_evidence_counts = Counter(
+            bool((item.get("metadata") or {}).get("typed_evidence_required"))
+            for item in decision_items
+            if isinstance(item, dict)
+        )
 
         return {
             "scope": {
@@ -394,11 +422,29 @@ class GovernanceStore:
             "ai_decisions": {
                 "total": len(decision_items),
                 "by_type": dict(decision_type_counts),
+                "by_contract_version": dict(governance_contract_counts),
+                "deterministic_verdict_owners": dict(deterministic_owner_counts),
+                "plan_driven_investigation": {
+                    "true": plan_driven_counts.get(True, 0),
+                    "false": plan_driven_counts.get(False, 0),
+                },
+                "typed_evidence_required": {
+                    "true": typed_evidence_counts.get(True, 0),
+                    "false": typed_evidence_counts.get(False, 0),
+                },
             },
             "decision_feedback": {
                 "total": len(feedback_items),
                 "by_type": dict(feedback_type_counts),
                 "by_verdict": dict(feedback_verdict_counts),
+            },
+            "governance_hooks": {
+                "contract_version": "governance-contract/v2",
+                "decision_logging": True,
+                "feedback_logging": True,
+                "deterministic_verdict_owner": "CABTA deterministic core",
+                "plan_driven_investigation": True,
+                "typed_evidence_required": True,
             },
         }
 

@@ -308,6 +308,40 @@ def test_assess_specialist_routing_uses_fact_family_email_signal():
     assert "email_lane_or_entities" in assessment["scores"]["phish_analyst"]["reasons"]
 
 
+def test_assess_specialist_routing_prefers_email_specialist_from_workflow_contract_evidence_gap_signals():
+    router = SpecialistRouter()
+    state = _build_state(
+        specialist_team=["triage", "phish_analyst", "network_forensics"],
+        investigation_plan={
+            "lane": "ioc",
+            "next_action_signals": [
+                {
+                    "tool": "analyze_email",
+                    "priority": 100,
+                    "reason": "Validate suspicious delivery evidence first.",
+                    "signal_type": "plan_pivot",
+                }
+            ],
+            "triage_contracts": [
+                {
+                    "contract_id": "phishing_email_triage",
+                    "required_evidence": ["sender", "recipient", "delivery", "mailbox"],
+                }
+            ],
+        },
+        agentic_explanation={"missing_evidence": [], "root_cause_assessment": {"status": "collecting"}},
+    )
+
+    assessment = router.assess_specialist_routing(state)
+
+    assert assessment["selected_index"] == 1
+    assert assessment["selected_profile"] == "phish_analyst"
+    assert assessment["signals"]["next_action_tools"] == ["analyze_email"]
+    assert assessment["signals"]["triage_contract_ids"] == ["phishing_email_triage"]
+    assert "workflow_contract_email" in assessment["scores"]["phish_analyst"]["reasons"]
+    assert "required_evidence_email" in assessment["scores"]["phish_analyst"]["reasons"]
+
+
 def test_assess_specialist_routing_uses_fact_family_ioc_signal():
     router = SpecialistRouter()
     state = _build_state(
@@ -331,6 +365,42 @@ def test_assess_specialist_routing_uses_fact_family_ioc_signal():
     assert assessment["signals"]["fact_families"] == ["ioc"]
     assert assessment["scores"]["network_forensics"]["score"] >= 4
     assert "network_signals" in assessment["scores"]["network_forensics"]["reasons"]
+
+
+def test_assess_specialist_routing_uses_workflow_contracts_for_network_specialist_bias():
+    router = SpecialistRouter()
+    state = _build_state(
+        specialist_team=["triage", "identity_investigator", "network_forensics"],
+        investigation_plan={
+            "next_action_signals": [
+                {
+                    "tool": "investigate_ioc",
+                    "priority": 95,
+                    "reason": "Close the top IOC evidence gap directly.",
+                    "signal_type": "evidence_gap",
+                }
+            ],
+            "triage_contracts": [
+                {
+                    "contract_id": "ioc_triage",
+                    "required_evidence": ["ip", "domain", "destination", "dns"],
+                }
+            ],
+        },
+        entity_state={"entities": {}, "relationships": []},
+        accepted_facts=[],
+        unresolved_questions=[],
+        agentic_explanation={"missing_evidence": [], "root_cause_assessment": {"status": "collecting"}},
+    )
+
+    assessment = router.assess_specialist_routing(state)
+
+    assert assessment["selected_index"] == 2
+    assert assessment["selected_profile"] == "network_forensics"
+    assert assessment["signals"]["next_action_signal_types"] == ["evidence_gap"]
+    assert assessment["signals"]["triage_required_evidence"] == ["destination", "dns", "domain", "ip"]
+    assert "workflow_contract_network" in assessment["scores"]["network_forensics"]["reasons"]
+    assert "required_evidence_network" in assessment["scores"]["network_forensics"]["reasons"]
 
 
 def test_assess_specialist_routing_uses_fact_family_vulnerability_signal():
@@ -387,6 +457,30 @@ def test_assess_specialist_routing_uses_active_hypothesis_text_for_malware_bias(
     assert assessment["signals"]["active_hypothesis_status"] == "supported"
     assert assessment["scores"]["malware_endpoint"]["score"] >= 5
     assert "malware_execution_signals" in assessment["scores"]["malware_endpoint"]["reasons"]
+
+
+def test_assess_specialist_routing_uses_required_execution_evidence_for_malware_bias():
+    router = SpecialistRouter()
+    state = _build_state(
+        specialist_team=["triage", "identity_investigator", "malware_endpoint"],
+        investigation_plan={
+            "next_action_signals": [],
+            "triage_contracts": [
+                {
+                    "contract_id": "forensic_execution_triage",
+                    "required_evidence": ["process", "binary", "sandbox", "execution"],
+                }
+            ],
+        },
+        agentic_explanation={"missing_evidence": [], "root_cause_assessment": {"status": "collecting"}},
+    )
+
+    assessment = router.assess_specialist_routing(state)
+
+    assert assessment["selected_index"] == 2
+    assert assessment["selected_profile"] == "malware_endpoint"
+    assert assessment["signals"]["triage_contract_ids"] == ["forensic_execution_triage"]
+    assert "required_evidence_malware" in assessment["scores"]["malware_endpoint"]["reasons"]
 
 
 def test_assess_specialist_routing_returns_stay_with_current_specialist_when_state_is_empty_and_owner_is_valid():

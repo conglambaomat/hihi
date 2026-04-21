@@ -373,6 +373,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
             workflow_registry=app.state.workflow_registry,
             agent_store=app.state.agent_store,
             case_store=app.state.case_store,
+            governance_store=app.state.governance_store,
         )
         logger.info("[WEB] WorkflowService initialized")
     except Exception as exc:

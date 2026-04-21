@@ -16,6 +16,7 @@ from src.agent.thread_sync_service import ThreadSyncService
 def sample_state():
     return SimpleNamespace(
         session_id="sess-1",
+        case_id="case-1",
         thread_id="thread-1",
         step_count=3,
         investigation_plan={"lane": "ioc"},
@@ -54,6 +55,9 @@ def test_build_thread_snapshot_returns_expected_shape(sample_state):
     assert snapshot["thread_context"]["thread_id"] == "thread-1"
     assert snapshot["thread_context"]["step_count"] == 3
     assert snapshot["thread_context"]["memory_scope"] == "working"
+    assert snapshot["memory_boundary"]["case_id"] == "case-1"
+    assert snapshot["memory_boundary"]["thread_id"] == "thread-1"
+    assert snapshot["case_scope"]["case_id"] == "case-1"
 
 
 def test_sync_thread_snapshot_updates_store(sample_state):
@@ -147,6 +151,8 @@ def test_build_thread_snapshot_promotes_published_lifecycle_when_terminal_and_pu
     assert snapshot["snapshot_contract"]["is_terminal"] is True
     assert snapshot["snapshot_contract"]["publication_ready"] is True
     assert snapshot["accepted_memory"]["deterministic_decision"]["verdict"] == "MALICIOUS"
+    assert snapshot["thread_context"]["memory_scope"] == "published"
+    assert snapshot["memory_boundary"]["thread_id"] == "thread-published"
 
 
 def test_thread_memory_helpers_support_new_and_legacy_snapshot_shapes():

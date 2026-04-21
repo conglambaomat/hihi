@@ -21,6 +21,11 @@ class ThreadSyncService:
         return "working"
 
     @staticmethod
+    def _normalized_scope_value(value: Any) -> Optional[str]:
+        clean = str(value or "").strip()
+        return clean or None
+
+    @staticmethod
     def _snapshot_lifecycle_for(state: Any) -> str:
         explicit = str(getattr(state, "snapshot_lifecycle", "") or "").strip().lower()
         if explicit in {"working", "candidate", "accepted", "published"}:
@@ -81,8 +86,11 @@ class ThreadSyncService:
             "session_id": getattr(state, "session_id", None),
             "thread_id": getattr(state, "thread_id", None),
             "step_count": int(getattr(state, "step_count", 0) or 0),
-            "memory_scope": snapshot_state,
+            "memory_scope": snapshot_lifecycle,
         }
+        fact_family_schemas = getattr(state, "fact_family_schemas", {}) or {}
+        case_id = self._normalized_scope_value(getattr(state, "case_id", None))
+        thread_id = self._normalized_scope_value(getattr(state, "thread_id", None))
         return {
             "snapshot_state": snapshot_state,
             "snapshot_lifecycle": snapshot_lifecycle,
@@ -97,6 +105,7 @@ class ThreadSyncService:
             "accepted_facts": accepted_facts,
             "unresolved_questions": unresolved_questions,
             "evidence_quality_summary": evidence_quality_summary,
+            "fact_family_schemas": fact_family_schemas,
             "snapshot_metrics": {
                 "active_observation_count": len(active_observations),
                 "accepted_fact_count": len(accepted_facts),
@@ -121,6 +130,16 @@ class ThreadSyncService:
                 "publication_ready": snapshot_lifecycle in {"accepted", "published"},
             },
             "thread_context": thread_context,
+            "memory_boundary": {
+                "case_id": case_id,
+                "thread_id": thread_id,
+                "session_id": self._normalized_scope_value(getattr(state, "session_id", None)),
+                "snapshot_state": snapshot_state,
+                "snapshot_lifecycle": snapshot_lifecycle,
+            },
+            "case_scope": {
+                "case_id": case_id,
+            },
             "working_memory": {
                 "active_observations": active_observations,
                 "unresolved_questions": unresolved_questions,
@@ -134,6 +153,7 @@ class ThreadSyncService:
                 "agentic_explanation": agentic_explanation,
                 "root_cause_assessment": root_cause_assessment,
                 "evidence_quality_summary": evidence_quality_summary,
+                "fact_family_schemas": fact_family_schemas,
             },
         }
 
@@ -187,6 +207,7 @@ class ThreadSyncService:
             "chat_follow_up_requires_fresh_evidence": requires_fresh_evidence,
             "pending_thread_command_id": command.get("id"),
             "pending_thread_command_created_at": command.get("created_at"),
+            "pending_thread_command_payload": payload,
         }
         if self.store is not None:
             self.store.update_session_metadata(session_id, metadata_update, merge=True)
@@ -200,6 +221,25 @@ class ThreadSyncService:
                     if str(item).strip()
                 ]
                 state.reasoning_state["open_questions"] = dedupe_text([content, *existing_questions])[:12]
+            plan = getattr(state, "investigation_plan", {})
+            if isinstance(plan, dict):
+                resume_signals = plan.get("resume_signals", [])
+                if not isinstance(resume_signals, list):
+                    resume_signals = []
+                resume_signals.append(
+                    {
+                        "command_id": command.get("id"),
+                        "intent": intent or None,
+                        "content": content,
+                        "requires_fresh_evidence": requires_fresh_evidence,
+                        "created_at": command.get("created_at"),
+                    }
+                )
+                plan["resume_signals"] = resume_signals[-8:]
+                if requires_fresh_evidence:
+                    plan["resume_strategy"] = "fresh_evidence"
+                elif content:
+                    plan["resume_strategy"] = "answer_from_context"
 
         if self.store is not None:
             self.store.add_step(

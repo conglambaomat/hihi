@@ -406,10 +406,19 @@ class ObservationNormalizer:
         entities = list(enriched.get("entities", []) or [])
         quality = round(float(enriched.get("quality", 0.0) or 0.0), 3)
 
+        observation_lane = str(
+            enriched.get("observation_lane")
+            or self._observation_lane(observation_type, fact_family)
+        )
+        canonical_facts = self._canonical_fact_projection(enriched)
+
         enriched.setdefault("schema_version", "typed-observation/v1")
         enriched.setdefault("fact_family", fact_family)
         enriched.setdefault("produced_at", _now_iso())
         enriched.setdefault("extraction_method", "normalizer")
+        enriched.setdefault("observation_lane", observation_lane)
+        enriched.setdefault("contract_version", "observation-contract/v2")
+        enriched.setdefault("canonical_facts", canonical_facts)
         enriched.setdefault(
             "typed_fact",
             {
@@ -450,6 +459,7 @@ class ObservationNormalizer:
                 "is_strong": quality >= 0.72,
                 "is_actionable": quality >= 0.68,
                 "family": fact_family,
+                "lane": observation_lane,
                 "normalization_version": "quality-semantics/v1",
             },
         )
@@ -570,14 +580,21 @@ class ObservationNormalizer:
                 for entity in observation.get("entities", [])
                 if isinstance(entity, dict) and entity.get("type") and entity.get("value")
             ][:8]
+            fact_family = observation.get("fact_family") or self._fact_family_for_observation_type(
+                str(observation.get("observation_type") or "")
+            )
             facts.append(
                 {
                     "observation_id": observation.get("observation_id"),
                     "summary": observation.get("summary"),
                     "observation_type": observation.get("observation_type"),
-                    "fact_family": observation.get("fact_family") or self._fact_family_for_observation_type(
-                        str(observation.get("observation_type") or "")
+                    "fact_family": fact_family,
+                    "observation_lane": observation.get("observation_lane") or self._observation_lane(
+                        str(observation.get("observation_type") or ""),
+                        str(fact_family),
                     ),
+                    "contract_version": observation.get("contract_version") or "observation-contract/v2",
+                    "canonical_facts": self._canonical_fact_projection(observation),
                     "quality": observation.get("quality"),
                     "timestamp": observation.get("timestamp"),
                     "produced_at": observation.get("produced_at"),
@@ -586,18 +603,11 @@ class ObservationNormalizer:
                     "extraction_method": observation.get("extraction_method") or "normalizer",
                     "entity_ids": entity_ids,
                     "typed_fact": {
-                        "family": observation.get("fact_family") or self._fact_family_for_observation_type(
-                            str(observation.get("observation_type") or "")
-                        ),
+                        "family": fact_family,
                         "type": observation.get("observation_type"),
                         "summary": observation.get("summary"),
                         "quality": observation.get("quality"),
-                        "schema": self._fact_family_schema(
-                            str(
-                                observation.get("fact_family")
-                                or self._fact_family_for_observation_type(str(observation.get("observation_type") or ""))
-                            )
-                        ),
+                        "schema": self._fact_family_schema(str(fact_family)),
                     },
                     "provenance_ref": {
                         "observation_id": observation.get("observation_id"),
@@ -662,17 +672,33 @@ class ObservationNormalizer:
             total = float(bucket.pop("_quality_total", 0.0) or 0.0)
             bucket["average_quality"] = round(total / max(count, 1), 3)
 
+        lane_counts: Dict[str, int] = {}
+        canonical_projection_coverage = 0
+        for observation in observations:
+            lane = str(
+                observation.get("observation_lane")
+                or self._observation_lane(
+                    str(observation.get("observation_type") or ""),
+                    str(observation.get("fact_family") or "generic"),
+                )
+            )
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+            if observation.get("canonical_facts"):
+                canonical_projection_coverage += 1
+
         return {
             "observation_count": len(observations),
             "average_quality": round(sum(qualities) / max(len(qualities), 1), 3),
             "strong_observation_count": sum(1 for quality in qualities if quality >= 0.72),
             "typed_observations": typed,
             "fact_families": fact_families,
+            "observation_lanes": lane_counts,
             "typed_quality_breakdown": typed_quality_breakdown,
             "quality_bands": quality_bands,
             "provenance_coverage": {
                 "with_source_paths": with_source_paths,
                 "with_entity_ids": with_entity_ids,
+                "with_canonical_facts": canonical_projection_coverage,
             },
         }
 
@@ -710,6 +736,63 @@ class ObservationNormalizer:
         if normalized in {"correlation_observation"}:
             return "correlation"
         return "generic"
+
+    def _observation_lane(self, observation_type: str, fact_family: str) -> str:
+        normalized_type = str(observation_type or "").strip().lower()
+        normalized_family = str(fact_family or "").strip().lower()
+        if normalized_type == "auth_event":
+            return "identity"
+        if normalized_type in {"process_event", "host_timeline_event", "file_execution", "sandbox_behavior"}:
+            return "endpoint"
+        if normalized_type == "network_event":
+            return "network"
+        if normalized_type == "email_delivery":
+            return "email"
+        if normalized_type == "vulnerability_exposure":
+            return "vulnerability"
+        if normalized_family in {"ioc", "correlation"}:
+            return "triage"
+        if normalized_family in {"network", "email", "file", "vulnerability", "log"}:
+            return normalized_family
+        return "generic"
+
+    def _canonical_fact_projection(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        facts = observation.get("facts", {}) if isinstance(observation.get("facts"), dict) else {}
+        if isinstance(facts.get("canonical_facts"), dict):
+            return copy.deepcopy(facts.get("canonical_facts") or {})
+        return self._strip_none(
+            {
+                "timestamp": observation.get("timestamp") or facts.get("timestamp"),
+                "lane": observation.get("observation_lane") or self._observation_lane(
+                    str(observation.get("observation_type") or ""),
+                    str(observation.get("fact_family") or "generic"),
+                ),
+                "principal": facts.get("user") or facts.get("sender") or facts.get("recipient"),
+                "asset": facts.get("host") or facts.get("path") or facts.get("file_name"),
+                "session": facts.get("session_id"),
+                "source_ip": facts.get("source_ip") or facts.get("ip") or facts.get("ioc"),
+                "destination_ip": facts.get("dest_ip"),
+                "domain": facts.get("domain"),
+                "url": facts.get("url"),
+                "hash": facts.get("hash"),
+                "action": facts.get("action") or facts.get("verdict"),
+                "typed_fields": sorted(
+                    key
+                    for key, value in {
+                        "principal": facts.get("user") or facts.get("sender") or facts.get("recipient"),
+                        "asset": facts.get("host") or facts.get("path") or facts.get("file_name"),
+                        "session": facts.get("session_id"),
+                        "source_ip": facts.get("source_ip") or facts.get("ip"),
+                        "destination_ip": facts.get("dest_ip"),
+                        "domain": facts.get("domain"),
+                        "url": facts.get("url"),
+                        "hash": facts.get("hash"),
+                        "action": facts.get("action") or facts.get("verdict"),
+                    }.items()
+                    if value not in (None, "", [], {})
+                ),
+            }
+        )
 
     @staticmethod
     def _quality_band(quality: float) -> str:

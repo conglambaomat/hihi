@@ -19,6 +19,7 @@ def test_record_decision_feedback_persists_structured_event(tmp_path):
         decision_type="root_cause",
         summary="Suspected credential theft chain",
         rationale="Evidence supports suspicious login then mailbox access.",
+        metadata={"lane": "identity"},
     )
 
     feedback_id = store.record_decision_feedback(
@@ -48,6 +49,14 @@ def test_record_decision_feedback_persists_structured_event(tmp_path):
     assert event["useful"] == 0
     assert event["metadata"] == {"false_positive_chain": True}
     assert event["reviewer"] == "analyst-a"
+
+    decision = store.get_ai_decision(decision_id)
+    assert decision is not None
+    assert decision["metadata"]["governance_contract_version"] == "governance-contract/v2"
+    assert decision["metadata"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert decision["metadata"]["plan_driven_investigation"] is True
+    assert decision["metadata"]["typed_evidence_required"] is True
+    assert decision["metadata"]["evidence_ref_count"] == 0
 
 
 def test_add_decision_feedback_bridges_legacy_columns_and_structured_event(tmp_path):
@@ -185,6 +194,14 @@ def test_governance_summary_aggregates_approvals_decisions_and_feedback_by_scope
     assert summary["approvals"]["by_status"]["approved"] == 1
     assert summary["ai_decisions"]["total"] == 1
     assert summary["ai_decisions"]["by_type"]["root_cause"] == 1
+    assert summary["ai_decisions"]["by_contract_version"]["governance-contract/v2"] == 1
+    assert summary["ai_decisions"]["deterministic_verdict_owners"]["CABTA deterministic core"] == 1
+    assert summary["ai_decisions"]["plan_driven_investigation"]["true"] == 1
+    assert summary["ai_decisions"]["typed_evidence_required"]["true"] == 1
     assert summary["decision_feedback"]["total"] == 1
     assert summary["decision_feedback"]["by_type"]["root_cause_correctness"] == 1
     assert summary["decision_feedback"]["by_verdict"]["correct"] == 1
+    assert summary["governance_hooks"]["contract_version"] == "governance-contract/v2"
+    assert summary["governance_hooks"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert summary["governance_hooks"]["plan_driven_investigation"] is True
+    assert summary["governance_hooks"]["typed_evidence_required"] is True

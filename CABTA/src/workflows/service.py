@@ -8,10 +8,279 @@ from typing import Any, Dict, List, Optional
 class WorkflowService:
     """Bridge workflow definitions to existing CABTA sessions and playbooks."""
 
-    def __init__(self, workflow_registry, agent_store, case_store=None):
+    def __init__(self, workflow_registry, agent_store, case_store=None, governance_store=None):
         self.workflow_registry = workflow_registry
         self.agent_store = agent_store
         self.case_store = case_store
+        self.governance_store = governance_store
+
+    @staticmethod
+    def _default_plan_contract() -> Dict[str, Any]:
+        return {
+            "required": True,
+            "planner": "InvestigationPlanner",
+            "pivot_signals_supported": True,
+            "resume_signals_supported": True,
+        }
+
+    @staticmethod
+    def _default_evidence_contract() -> Dict[str, Any]:
+        return {
+            "required": True,
+            "require_typed_observations": False,
+            "require_triage_contract_evidence": False,
+            "minimum_required_fields": 0,
+        }
+
+    @staticmethod
+    def _normalize_contracts(value: Any) -> List[Dict[str, Any]]:
+        return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    def _triage_contract_runtime(self, plan_payload: Dict[str, Any], typed_observations: List[Any]) -> Dict[str, Any]:
+        contracts = self._normalize_contracts(plan_payload.get("triage_contracts"))
+        observation_text = " ".join(str(item).lower() for item in typed_observations)
+        contract_statuses: List[Dict[str, Any]] = []
+        satisfied_count = 0
+        blocked_contract_ids: List[str] = []
+        for contract in contracts:
+            contract_id = str(contract.get("contract_id") or "").strip()
+            required_fields = self._normalized_list(contract.get("required_fields"))
+            observed_fields = [field for field in required_fields if field.lower() in observation_text]
+            ready = len(observed_fields) == len(required_fields) if required_fields else bool(typed_observations)
+            if ready:
+                satisfied_count += 1
+            elif contract_id:
+                blocked_contract_ids.append(contract_id)
+            contract_statuses.append(
+                {
+                    "contract_id": contract_id,
+                    "title": str(contract.get("title") or contract_id).strip(),
+                    "required_fields": required_fields,
+                    "observed_fields": observed_fields,
+                    "ready": ready,
+                    "deterministic_verdict_owner": str(
+                        contract.get("deterministic_verdict_owner") or "CABTA deterministic core"
+                    ).strip()
+                    or "CABTA deterministic core",
+                }
+            )
+        return {
+            "declared": bool(contracts),
+            "contract_count": len(contracts),
+            "satisfied_count": satisfied_count,
+            "blocked_contract_ids": blocked_contract_ids,
+            "contracts": contract_statuses,
+            "ready": bool(contracts) and satisfied_count == len(contracts) if contracts else True,
+        }
+
+    @staticmethod
+    def _goal_present(goal: Any) -> bool:
+        return bool(str(goal or "").strip())
+
+    @staticmethod
+    def _normalized_list(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def _execution_contracts(self, workflow: Dict[str, Any], workflow_contract: Optional[Dict[str, Any]] = None) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        contract_source = workflow_contract if isinstance(workflow_contract, dict) else workflow
+        execution_contract = contract_source.get("execution_contract", {}) if isinstance(contract_source, dict) else {}
+        plan_contract = execution_contract.get("plan_contract", self._default_plan_contract())
+        governance_contract = execution_contract.get("governance_contract", {}) if isinstance(execution_contract, dict) else {}
+        return execution_contract, plan_contract, governance_contract
+
+    @staticmethod
+    def _count_list(value: Any) -> int:
+        return len(value) if isinstance(value, list) else 0
+
+    @staticmethod
+    def _supports_headless_execution(workflow: Dict[str, Any], execution_contract: Dict[str, Any]) -> bool:
+        return bool(
+            execution_contract.get(
+                "supports_headless_execution",
+                workflow.get("headless_ready") and workflow.get("approval_mode", "inherited") != "analyst",
+            )
+        )
+
+    @staticmethod
+    def _execution_surface_contract(
+        workflow: Dict[str, Any],
+        execution_contract: Dict[str, Any],
+        dependency_status: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        supports_headless_execution = WorkflowService._supports_headless_execution(workflow, execution_contract)
+        headless_declared = bool(workflow.get("headless_ready"))
+        dependency_state = str(dependency_status.get("status") or "unknown")
+        optional_runtime = dict(dependency_status.get("optional_runtime") or {})
+        degraded_optional = list(optional_runtime.get("degraded_dependencies") or [])
+
+        headless_blockers: List[str] = []
+        if not headless_declared:
+            headless_blockers.append("workflow_not_declared_headless_ready")
+        if not supports_headless_execution:
+            headless_blockers.append("approval_checkpoints_require_interactive_runtime")
+
+        return {
+            "headless_declared": headless_declared,
+            "headless_ready": headless_declared and dependency_state != "blocked",
+            "supports_headless_execution": supports_headless_execution,
+            "interactive_runtime_required": not supports_headless_execution,
+            "headless_blockers": headless_blockers,
+            "runtime_mode": "interactive_only" if not supports_headless_execution else "headless_or_interactive",
+            "optional_runtime_degraded": bool(optional_runtime.get("degraded")),
+            "optional_runtime_blockers": degraded_optional,
+            "dependency_status": dependency_state,
+            "capability_scope": "workflow_runtime_contract",
+        }
+
+    def evaluate_runtime_readiness(
+        self,
+        app: Any,
+        workflow_id: str,
+        *,
+        goal: str = "",
+        params: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        include_dependency_status: bool = True,
+        dependency_status_override: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        workflow = self.workflow_registry.get_workflow(workflow_id)
+        if workflow is None:
+            raise ValueError(f"Workflow '{workflow_id}' not found")
+
+        registry_describe = getattr(self.workflow_registry, "describe_workflow", None)
+        workflow_contract = (
+            registry_describe(workflow_id)
+            if callable(registry_describe)
+            else dict(workflow)
+        )
+        execution_contract, plan_contract, governance_contract = self._execution_contracts(workflow, workflow_contract)
+        dependency_status = (
+            dict(dependency_status_override)
+            if isinstance(dependency_status_override, dict)
+            else (self.validate_dependencies(app, workflow_id) if include_dependency_status else {"status": "unknown"})
+        )
+        dependency_status_for_surface = dependency_status
+        params = dict(params or {})
+        metadata = dict(metadata or {})
+
+        plan_payload = params.get("investigation_plan") or metadata.get("investigation_plan") or {}
+        if not isinstance(plan_payload, dict):
+            plan_payload = {}
+        goal_present = self._goal_present(goal) or self._goal_present(params.get("workflow_goal"))
+        plan_signal_count = self._count_list(plan_payload.get("next_action_signals")) + self._count_list(plan_payload.get("resume_signals"))
+        plan_signals_ready = plan_signal_count > 0
+        plan_ready = bool(plan_payload) or goal_present or bool(params)
+
+        evidence_contract = execution_contract.get("evidence_contract", self._default_evidence_contract()) if isinstance(execution_contract, dict) else self._default_evidence_contract()
+        evidence_refs = params.get("evidence_refs") or metadata.get("evidence_refs") or []
+        typed_observations = params.get("typed_observations") or metadata.get("typed_observations") or []
+        triage_contract_runtime = self._triage_contract_runtime(plan_payload, typed_observations if isinstance(typed_observations, list) else [])
+        requires_triage_contract_evidence = bool(
+            isinstance(evidence_contract, dict) and evidence_contract.get("require_triage_contract_evidence")
+        )
+        if requires_triage_contract_evidence and not triage_contract_runtime["declared"]:
+            triage_contract_runtime = {
+                **triage_contract_runtime,
+                "ready": False,
+                "blocked_contract_ids": [*triage_contract_runtime["blocked_contract_ids"], "missing_triage_contract"],
+            }
+        evidence_ready = bool(evidence_refs or typed_observations or params.get("observable_summary") or goal_present or params)
+        if isinstance(evidence_contract, dict) and evidence_contract.get("require_typed_observations"):
+            evidence_ready = bool(typed_observations)
+        if requires_triage_contract_evidence:
+            evidence_ready = evidence_ready and triage_contract_runtime["ready"]
+        minimum_required_fields = int(evidence_contract.get("minimum_required_fields", 0) or 0) if isinstance(evidence_contract, dict) else 0
+        if minimum_required_fields > 0:
+            evidence_ready = evidence_ready and sum(
+                len(item.get("observed_fields", [])) for item in triage_contract_runtime["contracts"]
+            ) >= minimum_required_fields
+
+        fallback_paths = self._normalized_list(execution_contract.get("fallback_paths"))
+        stop_conditions = self._normalized_list(execution_contract.get("stop_conditions"))
+        fallback_contract = {
+            "declared": bool(fallback_paths),
+            "paths": fallback_paths,
+            "available": dependency_status.get("status") in {"ready", "degraded"},
+            "active": bool(fallback_paths) and dependency_status.get("status") == "degraded",
+        }
+        stop_condition_contract = {
+            "declared": bool(stop_conditions),
+            "conditions": stop_conditions,
+            "triggered": [],
+        }
+        if dependency_status.get("status") == "blocked":
+            stop_condition_contract["triggered"].append("dependencies_blocked")
+        if plan_contract.get("required", True) and not plan_ready:
+            stop_condition_contract["triggered"].append("missing_plan")
+        if plan_contract.get("required", True) and not plan_signals_ready and not goal_present:
+            stop_condition_contract["triggered"].append("missing_plan_signals")
+        if evidence_contract.get("required", True) and not evidence_ready:
+            stop_condition_contract["triggered"].append("missing_evidence")
+        if not triage_contract_runtime["ready"] and (
+            requires_triage_contract_evidence or triage_contract_runtime["declared"]
+        ):
+            stop_condition_contract["triggered"].append("missing_triage_contract_evidence")
+
+        governance_store = self.governance_store or getattr(app.state, "governance_store", None)
+        governance_ready = governance_store is not None
+        approval_mode = str(workflow.get("approval_mode") or "inherited").strip().lower()
+        if governance_contract.get("approvals_required") and not governance_contract.get("decision_logging_supported", True):
+            governance_ready = False
+
+        blocking_reasons: List[str] = list(stop_condition_contract["triggered"])
+        if governance_contract.get("decision_logging_supported", True) and not governance_ready:
+            blocking_reasons.append("missing_governance_store")
+            stop_condition_contract["triggered"].append("missing_governance_store")
+
+        execution_surface = self._execution_surface_contract(
+            workflow,
+            execution_contract,
+            dependency_status_for_surface,
+        )
+
+        status = "blocked" if blocking_reasons else dependency_status.get("status", "ready")
+        if status == "unknown":
+            status = "ready"
+        return {
+            "workflow_id": workflow_id,
+            "status": status,
+            "ready": not blocking_reasons and dependency_status.get("status") != "blocked",
+            "blocking_reasons": blocking_reasons,
+            "plan_contract": {
+                **plan_contract,
+                "ready": plan_ready,
+                "signal_count": plan_signal_count,
+                "goal_present": goal_present,
+            },
+            "evidence_contract": {
+                "required": evidence_contract.get("required", True),
+                "require_typed_observations": bool(evidence_contract.get("require_typed_observations", False)),
+                "require_triage_contract_evidence": bool(evidence_contract.get("require_triage_contract_evidence", False)),
+                "minimum_required_fields": minimum_required_fields,
+                "evidence_refs_count": len(evidence_refs) if isinstance(evidence_refs, list) else 0,
+                "typed_observation_count": len(typed_observations) if isinstance(typed_observations, list) else 0,
+                "triage_contract_runtime": triage_contract_runtime,
+                "ready": evidence_ready,
+            },
+            "fallback_contract": fallback_contract,
+            "stop_condition_contract": stop_condition_contract,
+            "governance_contract": {
+                "contract_version": governance_contract.get("contract_version", "governance-contract/v2"),
+                "deterministic_verdict_owner": governance_contract.get("deterministic_verdict_owner", "CABTA deterministic core"),
+                "decision_logging_supported": bool(governance_contract.get("decision_logging_supported", True)),
+                "feedback_logging_supported": bool(governance_contract.get("feedback_logging_supported", True)),
+                "approvals_required": bool(
+                    governance_contract.get("approvals_required", False)
+                    or approval_mode in {"analyst", "analyst-gated"}
+                ),
+                "approval_mode": approval_mode or "inherited",
+                "governance_store_ready": governance_ready,
+            },
+            "execution_surface": execution_surface,
+            "dependency_status": dependency_status,
+        }
 
     def describe_workflow_runtime(self, app: Any, workflow_id: str) -> Dict[str, Any]:
         workflow = self.workflow_registry.get_workflow(workflow_id)
@@ -31,19 +300,33 @@ class WorkflowService:
         active_runs = sum(1 for status in recent_statuses if status in {"active", "running", "waiting_approval"})
         completed_runs = sum(1 for status in recent_statuses if status == "completed")
 
-        execution_contract = workflow_contract.get("execution_contract", {}) if isinstance(workflow_contract, dict) else {}
+        execution_contract, plan_contract, governance_contract = self._execution_contracts(workflow, workflow_contract)
+        runtime_enforcement = self.evaluate_runtime_readiness(app, workflow_id)
+        governance_hooks = {
+            "approvals_supported": True,
+            "decision_logging_supported": True,
+            "feedback_logging_supported": True,
+            "deterministic_verdict_owner": "CABTA deterministic core",
+            "contract_version": "governance-contract/v2",
+        }
+        fact_contract = {
+            "contract_version": "workflow-runtime-contract/v2",
+            "deterministic_verdict_owner": "CABTA deterministic core",
+            "typed_observation_contract": "observation-contract/v2",
+            "fact_family_schema_count": len(workflow_contract.get("fact_family_schemas", {}) or {}),
+            "required_soc_lanes": list(workflow.get("required_soc_lanes", []) or []),
+            "plan_driven_investigation": True,
+            "plan_contract": plan_contract,
+            "governance_hooks": governance_hooks,
+        }
 
         return {
             "workflow": workflow_contract,
             "dependency_status": dependency_status,
+            "runtime_enforcement": runtime_enforcement,
             "run_contract": {
                 "supports_headless": bool(workflow.get("headless_ready")),
-                "supports_headless_execution": bool(
-                    execution_contract.get(
-                        "supports_headless_execution",
-                        workflow.get("headless_ready") and workflow.get("approval_mode", "inherited") != "analyst",
-                    )
-                ),
+                "supports_headless_execution": self._supports_headless_execution(workflow, execution_contract),
                 "approval_mode": workflow.get("approval_mode", "inherited"),
                 "execution_backend": workflow.get("execution_backend", "agent"),
                 "requires_playbook": bool(workflow.get("playbook_id")),
@@ -62,6 +345,12 @@ class WorkflowService:
                 "active_run_count": active_runs,
                 "completed_run_count": completed_runs,
                 "recent_statuses": recent_statuses[:10],
+                "fact_contract": fact_contract,
+                "governance_hooks": governance_hooks,
+                "runtime_enforcement": runtime_enforcement,
+                "fallback_paths": list(execution_contract.get("fallback_paths", []) or []),
+                "stop_conditions": list(execution_contract.get("stop_conditions", []) or []),
+                "is_runtime_blocked": runtime_enforcement.get("status") == "blocked",
             },
         }
 
@@ -106,9 +395,11 @@ class WorkflowService:
             {
                 "name": server_name,
                 "connected": bool(mcp_status.get(server_name, {}).get("connected")),
+                "capability_scope": "optional_enrichment",
             }
             for server_name in workflow.get("optional_mcp_servers", [])
         ]
+        degraded_optional_servers = [item["name"] for item in optional_servers if not item["connected"]]
 
         playbook_dependency = None
         if str(workflow.get("execution_backend") or "agent").lower() == "playbook":
@@ -155,6 +446,16 @@ class WorkflowService:
                 "missing": missing_features,
             },
             "optional_mcp_servers": optional_servers,
+            "optional_runtime": {
+                "degraded": bool(degraded_optional_servers),
+                "degraded_dependencies": degraded_optional_servers,
+                "capability_scope": "optional_infrastructure",
+                "message": (
+                    "Optional MCP infrastructure is degraded; workflow execution can continue with governed fallback paths."
+                    if degraded_optional_servers
+                    else "Optional MCP infrastructure is ready."
+                ),
+            },
             "required_playbook": playbook_dependency,
         }
 
@@ -198,6 +499,9 @@ class WorkflowService:
         current_step = int(metadata.get("current_step") or 0)
         phase_index = min(int((current_step / max(max_steps, 1)) * len(phases)), max(len(phases) - 1, 0)) if phases else 0
         current_phase = metadata.get("active_specialist") or (phases[phase_index] if phases else "workflow")
+        evidence_quality_summary = metadata.get("evidence_quality_summary", {}) if isinstance(metadata.get("evidence_quality_summary"), dict) else {}
+        fact_family_schemas = metadata.get("fact_family_schemas", {}) if isinstance(metadata.get("fact_family_schemas"), dict) else {}
+        investigation_plan = metadata.get("investigation_plan", {}) if isinstance(metadata.get("investigation_plan"), dict) else {}
         return {
             "session_id": session["id"],
             "workflow_id": workflow_id,
@@ -225,4 +529,28 @@ class WorkflowService:
             "completed_at": session.get("completed_at"),
             "summary": session.get("summary"),
             "pending_approval": metadata.get("pending_approval"),
+            "runtime_contract": {
+                "plan_ready": bool(investigation_plan) or bool(metadata.get("goal")),
+                "plan_signal_count": len(list(investigation_plan.get("next_action_signals") or []))
+                + len(list(investigation_plan.get("resume_signals") or [])),
+                "triage_contract_count": len(list(investigation_plan.get("triage_contracts") or [])),
+                "evidence_ready": int(evidence_quality_summary.get("observation_count", 0) or 0) > 0,
+                "governed": True,
+                "deterministic_verdict_owner": str(
+                    investigation_plan.get("deterministic_verdict_owner") or "CABTA deterministic core"
+                ),
+            },
+            "typed_fact_contract": {
+                "contract_version": "workflow-runtime-contract/v2",
+                "observation_contract_version": "observation-contract/v2",
+                "deterministic_verdict_owner": "CABTA deterministic core",
+                "observation_count": int(evidence_quality_summary.get("observation_count", 0) or 0),
+                "observation_lanes": dict(evidence_quality_summary.get("observation_lanes", {}) or {}),
+                "fact_family_schemas": sorted(fact_family_schemas.keys()),
+                "plan_driven_investigation": True,
+                "plan_has_next_action_signals": bool(investigation_plan.get("next_action_signals")),
+                "plan_has_resume_signals": bool(investigation_plan.get("resume_signals")),
+                "required_soc_lanes": list(workflow.get("required_soc_lanes", []) or []),
+                "governance_contract_version": "governance-contract/v2",
+            },
         }

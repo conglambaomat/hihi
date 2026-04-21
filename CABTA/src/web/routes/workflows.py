@@ -100,8 +100,10 @@ async def run_workflow(request: Request, workflow_id: str, body: WorkflowRunRequ
         raise HTTPException(404, "Workflow not found")
 
     dependency_state = service.validate_dependencies(request.app, workflow_id)
-    if dependency_state["status"] == "blocked":
-        raise HTTPException(400, f"Workflow dependencies are not ready: {dependency_state}")
+
+    params = dict(body.params or {})
+    if body.goal and "workflow_goal" not in params:
+        params["workflow_goal"] = body.goal
 
     metadata = {
         "workflow_id": workflow_id,
@@ -113,10 +115,25 @@ async def run_workflow(request: Request, workflow_id: str, body: WorkflowRunRequ
         "collaboration_mode": "multi_agent" if len(workflow.get("agents") or []) > 1 else "single_agent",
         "execution_mode": "workflow",
     }
+    runtime_state = service.evaluate_runtime_readiness(
+        request.app,
+        workflow_id,
+        goal=body.goal,
+        params=params,
+        metadata=metadata,
+        include_dependency_status=False,
+        dependency_status_override=dependency_state,
+    )
+    if dependency_state["status"] == "blocked" or runtime_state["status"] == "blocked":
+        raise HTTPException(
+            400,
+            {
+                "message": "Workflow runtime contract is not ready",
+                "dependency_status": dependency_state,
+                "runtime_enforcement": runtime_state,
+            },
+        )
 
-    params = dict(body.params or {})
-    if body.goal and "workflow_goal" not in params:
-        params["workflow_goal"] = body.goal
 
     backend = str(workflow.get("execution_backend") or "agent").lower()
     playbook_id = workflow.get("playbook_id")
@@ -143,6 +160,7 @@ async def run_workflow(request: Request, workflow_id: str, body: WorkflowRunRequ
             "backend": "playbook",
             "playbook_id": playbook_id,
             "dependency_status": dependency_state["status"],
+            "runtime_enforcement": runtime_state,
         }
 
     agent_loop = getattr(request.app.state, "agent_loop", None)
@@ -166,4 +184,5 @@ async def run_workflow(request: Request, workflow_id: str, body: WorkflowRunRequ
         "backend": "agent",
         "playbook_id": playbook_id,
         "dependency_status": dependency_state["status"],
+        "runtime_enforcement": runtime_state,
     }

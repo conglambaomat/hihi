@@ -993,7 +993,7 @@ class TestHeadlessSOCDaemon:
         assert result[0]["queue_job_id"]
         assert daemon.build_status(app)["queue"]["completed"] == 1
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_dispatch_schedule_uses_agent_backend(self, workflow_registry, agent_store):
         service = WorkflowService(workflow_registry=workflow_registry, agent_store=agent_store)
         daemon = HeadlessSOCDaemon(
@@ -1026,6 +1026,7 @@ class TestHeadlessSOCDaemon:
                         "workflow_engine": {"status": "available"},
                     }
                 ),
+                governance_store=object(),
                 agent_loop=mock_agent_loop,
                 playbook_engine=None,
                 case_store=None,
@@ -1040,7 +1041,57 @@ class TestHeadlessSOCDaemon:
         assert result["status"] == "running"
         assert result["backend"] == "agent"
         assert result["session_id"] == "wf-agent-session"
+        assert result["runtime_enforcement"]["status"] in {"ready", "degraded"}
         mock_agent_loop.investigate.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_dispatch_schedule_blocks_when_runtime_contract_missing(self):
+        workflow_registry = WorkflowRegistry()
+        service = WorkflowService(workflow_registry, AgentStore(':memory:'))
+        daemon = HeadlessSOCDaemon(
+            config={"daemon": {"enabled": True}},
+            workflow_registry=workflow_registry,
+            workflow_service=service,
+        )
+
+        registry = ToolRegistry()
+
+        async def noop(**kw):
+            return {}
+
+        for tool_name in (
+            "extract_iocs",
+            "correlate_findings",
+            "analyze_detection_coverage",
+            "create_case",
+        ):
+            registry.register_local_tool(tool_name, tool_name, {}, "analysis", noop)
+
+        app = SimpleNamespace(
+            state=SimpleNamespace(
+                tool_registry=registry,
+                mcp_client=SimpleNamespace(get_connection_status=lambda: {}),
+                web_provider=SimpleNamespace(
+                    feature_status=lambda _app: {
+                        "agent": {"status": "available"},
+                        "workflow_engine": {"status": "available"},
+                    }
+                ),
+                governance_store=None,
+                agent_loop=SimpleNamespace(investigate=AsyncMock(return_value="wf-agent-session")),
+                playbook_engine=None,
+                case_store=None,
+            )
+        )
+
+        result = await daemon.dispatch_schedule(
+            app,
+            {"workflow_id": "full-investigation", "goal": ""},
+        )
+
+        assert result["status"] == "blocked"
+        assert result["runtime_enforcement"]["status"] == "blocked"
+        assert "missing_governance_store" in result["runtime_enforcement"]["blocking_reasons"]
 
 
 class TestCaseIntelligence:
@@ -3822,6 +3873,9 @@ class TestAgentLoop:
     @pytest.mark.asyncio
     async def test_approve_action_sets_event(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
+        loop.session_response_builder.apply_approval_review = MagicMock(
+            wraps=loop.session_response_builder.apply_approval_review
+        )
         state = AgentState(session_id="s1", goal="test")
         state.request_approval({"tool": "x"}, "reason")
         loop._active_sessions["s1"] = state
@@ -3829,13 +3883,19 @@ class TestAgentLoop:
 
         result = await loop.approve_action("s1")
         assert result is True
+        loop.session_response_builder.apply_approval_review.assert_called_once()
         assert state.pending_approval["approved"] is True
+        assert state.pending_approval["status"] == "approved"
+        assert state.pending_approval["reviewed_at"]
         assert loop._approval_events["s1"].is_set()
 
     # ---- reject_action sets the event -------------------------------- #
     @pytest.mark.asyncio
     async def test_reject_action_sets_event(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
+        loop.session_response_builder.apply_approval_review = MagicMock(
+            wraps=loop.session_response_builder.apply_approval_review
+        )
         state = AgentState(session_id="s1", goal="test")
         state.request_approval({"tool": "x"}, "reason")
         loop._active_sessions["s1"] = state
@@ -3843,7 +3903,10 @@ class TestAgentLoop:
 
         result = await loop.reject_action("s1")
         assert result is True
+        loop.session_response_builder.apply_approval_review.assert_called_once()
         assert state.pending_approval["approved"] is False
+        assert state.pending_approval["status"] == "rejected"
+        assert state.pending_approval["reviewed_at"]
 
     # ---- approve returns False when no pending approval -------------- #
     @pytest.mark.asyncio
@@ -4097,6 +4160,41 @@ class TestAgentLoop:
         assert decision is None
         assert loop._chat_should_force_model_answer_without_tools(state) is True
 
+    def test_response_style_block_uses_response_builder_for_restored_chat_context(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Explain the prior IOC conclusion.",
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_context_restored": True,
+            },
+        )
+        state = AgentState(session_id=session_id, goal="Explain the prior IOC conclusion.")
+
+        block = loop._build_response_style_block(state)
+
+        assert "Response style for analyst chat:" in block
+        assert "Treat carried-over findings as live investigation context" in block
+
+    def test_chat_decision_block_uses_response_builder_for_fresh_evidence_follow_up(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Pivot on the registrar tied to the domain.",
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_context_restored": True,
+                "chat_follow_up_requires_fresh_evidence": True,
+            },
+        )
+        state = AgentState(session_id=session_id, goal="Pivot on the registrar tied to the domain.")
+
+        block = loop._build_chat_decision_block(state)
+
+        assert "Chat decision policy:" in block
+        assert "gather fresh evidence only for the new pivot" in block
+
     def test_reasoning_guided_next_action_prefers_search_logs_for_entity_gap(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         async def search_logs(**kwargs):
@@ -4123,21 +4221,298 @@ class TestAgentLoop:
             "open_questions": ["Which user is associated with the suspicious IP activity?"],
         }
         state.agentic_explanation = {"missing_evidence": ["Need host and user telemetry."]}
+        state.investigation_plan = {
+            "lane": "log_identity",
+            "next_action_signals": [
+                {
+                    "tool": "search_logs",
+                    "priority": 100,
+                    "reason": "Reduce the highest-priority identity evidence gap first.",
+                    "signal_type": "evidence_gap",
+                }
+            ],
+        }
 
         decision = loop._reasoning_guided_next_action(state)
 
         assert decision is not None
         assert decision["action"] == "use_tool"
         assert decision["tool"] == "search_logs"
-        assert decision["decision_source"] == "telemetry_gap_log_pivot"
-        assert decision["plan_lane"] == ""
+        assert decision["decision_source"] == "plan_signal_evidence_gap"
+        assert decision["plan_lane"] == "log_identity"
         assert decision["focus"] == "185.220.101.45"
         assert "Which user is associated with the suspicious IP activity?" in decision["question_bundle"]
         assert "Need host and user telemetry." in decision["question_bundle"]
-        assert "telemetry" in decision["reasoning"].lower()
+        assert "highest-priority identity evidence gap" in decision["reasoning"].lower()
         assert "185.220.101.45" in decision["params"]["query"]
         assert state.reasoning_state["last_log_query_plan"]["focus"] == "185.220.101.45"
         assert state.reasoning_state["last_log_query_plan"]["pivot_sequence"]
+
+    def test_reasoning_guided_next_action_records_fortigate_outbound_query_plan(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def search_logs(**kwargs):
+            return {"status": "manual_lookup_required"}
+
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "string"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        session_id = loop.store.create_session(
+            goal="Investigate FortiGate outbound beaconing from WS-12 to 185.220.101.45",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(session_id=session_id, goal="Investigate FortiGate outbound beaconing from WS-12 to 185.220.101.45")
+        state.findings = [
+            {"type": "tool_result", "tool": "investigate_ioc", "result": {"ioc": "185.220.101.45", "verdict": "SUSPICIOUS"}}
+        ]
+        state.reasoning_state = {
+            "goal_focus": "185.220.101.45",
+            "status": "collecting_evidence",
+            "hypotheses": [],
+            "open_questions": ["Which source host and service generated the outbound connection?"],
+        }
+        state.agentic_explanation = {"missing_evidence": ["Need FortiGate egress attribution covering source host, destination, service, action, and policy context."]}
+        state.investigation_plan = {
+            "lane": "log_identity",
+            "triage_contracts": [
+                {
+                    "contract_id": "fortigate_outbound_monitoring",
+                    "analyst_questions": [
+                        "Which source host initiated the outbound connection?",
+                        "What destination, service, and action were recorded by FortiGate?",
+                    ],
+                    "deterministic_verdict_owner": "CABTA deterministic core",
+                }
+            ],
+            "next_action_signals": [
+                {
+                    "tool": "search_logs",
+                    "priority": 100,
+                    "reason": "FortiGate outbound triage should confirm source, destination, service, action, and recurrence before conclusion.",
+                    "signal_type": "fortigate_outbound",
+                }
+            ],
+        }
+
+        decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["tool"] == "search_logs"
+        assert decision["decision_source"] == "contract_gate_fortigate_outbound_monitoring"
+        assert decision["contract_gate"]["contract_id"] == "fortigate_outbound_monitoring"
+        assert "FortiGate outbound triage" in decision["reasoning"]
+        assert "Which source host initiated the outbound connection?" in decision["question_bundle"]
+        assert any("network" == item for item in state.reasoning_state["last_log_query_plan"]["pivot_sequence"])
+
+    def test_reasoning_guided_next_action_records_windows_logon_query_plan(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def search_logs(**kwargs):
+            return {"status": "manual_lookup_required"}
+
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "string"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        session_id = loop.store.create_session(
+            goal="Investigate Windows logon failures followed by success for alice on WS-12",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(session_id=session_id, goal="Investigate Windows logon failures followed by success for alice on WS-12")
+        state.findings = [
+            {"type": "tool_result", "tool": "investigate_ioc", "result": {"ioc": "10.0.0.5", "verdict": "UNKNOWN"}}
+        ]
+        state.reasoning_state = {
+            "goal_focus": "alice",
+            "status": "collecting_evidence",
+            "hypotheses": [],
+            "open_questions": ["Was there a 4625 to 4624 sequence for alice with the same source address?"],
+        }
+        state.agentic_explanation = {"missing_evidence": ["Need Windows logon attribution covering account, host, source network, logon type, and success-versus-failure sequence."]}
+        state.investigation_plan = {
+            "lane": "log_identity",
+            "triage_contracts": [
+                {
+                    "contract_id": "windows_logon_monitoring",
+                    "analyst_questions": [
+                        "Which account and host are tied to the logon events?",
+                        "Did the same source address produce both 4625 and 4624 activity?",
+                    ],
+                    "deterministic_verdict_owner": "CABTA deterministic core",
+                }
+            ],
+            "next_action_signals": [
+                {
+                    "tool": "search_logs",
+                    "priority": 100,
+                    "reason": "Windows logon triage should confirm account, host, source network, logon type, and success-failure sequence before conclusion.",
+                    "signal_type": "windows_logon",
+                }
+            ],
+        }
+
+        decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["tool"] == "search_logs"
+        assert decision["decision_source"] == "contract_gate_windows_logon_monitoring"
+        assert decision["contract_gate"]["contract_id"] == "windows_logon_monitoring"
+        assert "Windows logon triage" in decision["reasoning"]
+        assert "Did the same source address produce both 4625 and 4624 activity?" in decision["question_bundle"]
+        assert state.reasoning_state["last_log_query_plan"]["pivot_sequence"][0] == "user"
+
+    def test_reasoning_guided_next_action_gates_phishing_email_before_other_pivots(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def analyze_email(**kwargs):
+            return {"status": "manual_lookup_required"}
+
+        async def investigate_ioc(**kwargs):
+            return {"verdict": "SUSPICIOUS"}
+
+        loop.tools.register_local_tool(
+            name="analyze_email",
+            description="Analyze email",
+            parameters={"properties": {"file_path": {"type": "string"}}},
+            category="email",
+            executor=analyze_email,
+        )
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="osint",
+            executor=investigate_ioc,
+        )
+        session_id = loop.store.create_session(
+            goal="Investigate suspicious finance email /tmp/phish.eml",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(session_id=session_id, goal="Investigate suspicious finance email /tmp/phish.eml")
+        state.findings = [
+            {"type": "tool_result", "tool": "extract_iocs", "result": {"iocs": ["secure-payroll-check.com"]}}
+        ]
+        state.reasoning_state = {
+            "goal_focus": "secure-payroll-check.com",
+            "status": "collecting_evidence",
+            "hypotheses": [],
+            "open_questions": ["Did the sender authentication fail for the suspicious email?"],
+        }
+        state.agentic_explanation = {"missing_evidence": ["Need delivery evidence linking sender, recipient, and any attachment or URL."]}
+        state.investigation_plan = {
+            "lane": "email",
+            "triage_contracts": [
+                {
+                    "contract_id": "phishing_email_triage",
+                    "analyst_questions": [
+                        "Which sender and recipient are tied to the suspicious message?",
+                        "Do SPF, DKIM, and DMARC results support or contradict the claimed sender identity?",
+                    ],
+                }
+            ],
+            "next_action_signals": [
+                {
+                    "tool": "investigate_ioc",
+                    "priority": 100,
+                    "reason": "Anchor the investigation on the strongest observable first: secure-payroll-check.com.",
+                    "signal_type": "plan_pivot",
+                },
+                {
+                    "tool": "analyze_email",
+                    "priority": 95,
+                    "reason": "Close the top email-delivery gap directly: Need delivery evidence linking sender, recipient, and any attachment or URL.",
+                    "signal_type": "evidence_gap",
+                },
+            ],
+        }
+
+        with patch.object(loop, "_guess_tool_params", return_value={"file_path": "/tmp/phish.eml"}):
+            decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["tool"] == "analyze_email"
+        assert decision["decision_source"] == "contract_gate_phishing_email_triage"
+        assert decision["contract_gate"]["contract_id"] == "phishing_email_triage"
+        assert "DMARC" in " ".join(decision["question_bundle"])
+
+    def test_reasoning_guided_next_action_gates_ioc_triage_before_follow_on_pivots(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def investigate_ioc(**kwargs):
+            return {"verdict": "SUSPICIOUS"}
+
+        async def search_logs(**kwargs):
+            return {"status": "manual_lookup_required"}
+
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"properties": {"ioc": {"type": "string"}}},
+            category="osint",
+            executor=investigate_ioc,
+        )
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "string"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        session_id = loop.store.create_session(
+            goal="Investigate whether 185.220.101.45 is malicious infrastructure",
+            metadata={"chat_mode": True, "response_style": "conversational"},
+        )
+        state = AgentState(session_id=session_id, goal="Investigate whether 185.220.101.45 is malicious infrastructure")
+        state.findings = [
+            {"type": "tool_result", "tool": "extract_iocs", "result": {"iocs": ["185.220.101.45"]}}
+        ]
+        state.reasoning_state = {
+            "goal_focus": "185.220.101.45",
+            "status": "collecting_evidence",
+            "hypotheses": [],
+            "open_questions": ["What deterministic reputation evidence supports this IOC assessment?"],
+        }
+        state.agentic_explanation = {"missing_evidence": ["Need deterministic evidence tied to the submitted observable."]}
+        state.investigation_plan = {
+            "lane": "ioc",
+            "triage_contracts": [
+                {
+                    "contract_id": "ioc_triage",
+                    "analyst_questions": [
+                        "What exact observable is under review and what type is it?",
+                        "What deterministic reputation or ownership evidence supports this IOC assessment?",
+                    ],
+                }
+            ],
+            "next_action_signals": [
+                {
+                    "tool": "search_logs",
+                    "priority": 100,
+                    "reason": "Named entities are present; prefer pivots that prove explicit host, user, session, or process linkage.",
+                    "signal_type": "entity_linkage",
+                },
+                {
+                    "tool": "investigate_ioc",
+                    "priority": 95,
+                    "reason": "Close the top IOC evidence gap directly: Need deterministic evidence tied to the submitted observable.",
+                    "signal_type": "evidence_gap",
+                },
+            ],
+        }
+
+        decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["tool"] == "investigate_ioc"
+        assert decision["decision_source"] == "contract_gate_ioc_triage"
+        assert decision["focus"] == "185.220.101.45"
 
     def test_consume_pending_thread_command_updates_chat_context(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -4175,6 +4550,9 @@ class TestAgentLoop:
         assert metadata["chat_intent"] == "new_pivot"
         assert metadata["chat_follow_up_requires_fresh_evidence"] is True
         assert state.unresolved_questions[0] == "Pivot on the registrar tied to the domain."
+        assert state.investigation_plan["resume_strategy"] == "fresh_evidence"
+        assert state.investigation_plan["resume_signals"][-1]["command_id"] == command_id
+        assert state.investigation_plan["resume_signals"][-1]["requires_fresh_evidence"] is True
         completed = loop.thread_store.list_commands(thread_id, statuses=("completed",))
         assert any(item["id"] == command_id and item["status"] == "completed" for item in completed)
 
@@ -4358,13 +4736,14 @@ class TestAgentLoop:
             "_chat_with_tools",
             new_callable=AsyncMock,
             return_value='{"action":"use_tool","tool":"create_case","params":{"title":"Unexpected case"}}',
-        ):
+        ) as chat_with_tools:
             decision = await loop._think(state)
 
         assert decision["action"] == "use_tool"
         assert decision["tool"] == "investigate_ioc"
         assert decision["params"] == {"ioc": "8.8.8.8"}
-        assert "Sanitized an out-of-policy LLM tool selection" in decision["reasoning"]
+        assert "Chat bootstrap" in decision["reasoning"]
+        chat_with_tools.assert_not_awaited()
 
     def test_filter_tools_for_lightweight_chat_excludes_case_management_tools(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -4557,6 +4936,24 @@ class TestAgentLoop:
 
         assert not summary.startswith("[CLEAN]")
         assert "Evidence-backed outcome: CLEAN" in summary
+
+    def test_build_chat_specific_fallback_delegates_to_response_builder(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="What organization owns this IP?",
+            metadata={"chat_mode": True},
+        )
+        state = AgentState(session_id=session_id, goal="What organization owns this IP?")
+        state.add_finding({
+            "type": "tool_result",
+            "tool": "investigate_ioc",
+            "result": {"organization": "Example Telecom"},
+        })
+        state.reasoning_state = {"goal_focus": "8.8.8.8"}
+
+        result = loop._build_chat_specific_fallback(state)
+
+        assert result == "For 8.8.8.8, the strongest current mapping is organization Example Telecom."
 
     # ---- _generate_summary fallback when LLM fails ------------------- #
     @pytest.mark.asyncio

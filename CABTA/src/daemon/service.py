@@ -123,13 +123,6 @@ class HeadlessSOCDaemon:
             return {"status": "invalid", "workflow_id": workflow_id, "reason": "Workflow not found"}
 
         dependency_status = self.workflow_service.validate_dependencies(app, workflow_id)
-        if dependency_status.get("status") == "blocked":
-            return {
-                "status": "blocked",
-                "workflow_id": workflow_id,
-                "backend": workflow.get("execution_backend"),
-                "dependency_status": dependency_status,
-            }
 
         params = dict(schedule.get("params") or {})
         goal = str(schedule.get("goal") or "").strip()
@@ -141,6 +134,33 @@ class HeadlessSOCDaemon:
             "schedule_name": schedule.get("name"),
             "schedule_id": schedule.get("id") or schedule.get("name") or workflow_id,
         }
+        runtime_state = self.workflow_service.evaluate_runtime_readiness(
+            app,
+            workflow_id,
+            goal=goal,
+            params=params,
+            metadata=metadata,
+            include_dependency_status=False,
+        )
+        execution_surface = dict(runtime_state.get("execution_surface") or {})
+        interactive_runtime_required = bool(execution_surface.get("interactive_runtime_required"))
+        if dependency_status.get("status") == "blocked" or runtime_state.get("status") == "blocked":
+            return {
+                "status": "blocked",
+                "workflow_id": workflow_id,
+                "backend": workflow.get("execution_backend"),
+                "dependency_status": dependency_status,
+                "runtime_enforcement": runtime_state,
+            }
+        if interactive_runtime_required:
+            return {
+                "status": "blocked",
+                "workflow_id": workflow_id,
+                "backend": workflow.get("execution_backend"),
+                "dependency_status": dependency_status,
+                "runtime_enforcement": runtime_state,
+                "reason": "Workflow requires interactive analyst runtime and cannot run headless.",
+            }
 
         backend = str(workflow.get("execution_backend") or "agent").lower()
         playbook_id = workflow.get("playbook_id")
@@ -190,6 +210,8 @@ class HeadlessSOCDaemon:
             "backend": backend,
             "case_id": case_id,
             "dependency_status": dependency_status,
+            "runtime_enforcement": runtime_state,
+            "execution_surface": execution_surface,
         }
 
     def worker_states(self) -> List[Dict[str, Any]]:

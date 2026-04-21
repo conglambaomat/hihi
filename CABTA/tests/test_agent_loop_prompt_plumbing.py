@@ -149,6 +149,7 @@ def test_think_passes_prompt_metadata_into_chat_with_tools():
             "reasoning": "test",
         }
 
+    loop._chat_short_circuit_decision = MagicMock(return_value=None)
     loop._chat_with_tools = chat_with_tools
 
     result = asyncio.run(loop._think(state))
@@ -168,4 +169,117 @@ def test_think_passes_prompt_metadata_into_chat_with_tools():
         "model_only_chat": False,
         "uses_native_tools": True,
         "planned_next_step_summary": "",
+    }
+
+
+def test_response_builder_metadata_helper_includes_planned_step_summary():
+    loop = _build_agent_loop()
+
+    result = loop.session_response_builder.build_think_request_metadata(
+        prompt_payload={
+            "prompt_mode": "native_tooling",
+            "provider_context_block": "Active specialist: triage",
+            "prompt_envelope": {
+                "user_intent": {"mode": "native_tooling"},
+                "investigation_context": {"prompt_mode": "native_tooling"},
+            },
+            "model_only_chat": False,
+            "uses_native_tools": True,
+        },
+        planned_decision={
+            "action": "use_tool",
+            "tool": "search_logs",
+            "decision_source": "telemetry_gap_log_pivot",
+        },
+    )
+
+    assert result == {
+        "prompt_mode": "native_tooling",
+        "provider_context_block": "Active specialist: triage",
+        "prompt_envelope": {
+            "user_intent": {"mode": "native_tooling"},
+            "investigation_context": {"prompt_mode": "native_tooling"},
+        },
+        "model_only_chat": False,
+        "uses_native_tools": True,
+        "planned_next_step_summary": "Next planned step: search_logs. Source: telemetry_gap_log_pivot.",
+    }
+
+
+def test_think_short_circuits_planned_chat_tool_without_prompt_round_trip():
+    import asyncio
+
+    loop = _build_agent_loop()
+    state = _build_state()
+    planned_decision = {
+        "action": "use_tool",
+        "tool": "investigate_ioc",
+        "params": {"ioc": "8.8.8.8"},
+        "reasoning": "Short-circuit planned pivot.",
+    }
+
+    loop._build_tools_block = MagicMock(return_value="- investigate_ioc(ioc: string)")
+    loop._build_findings_block = MagicMock(return_value="(none yet)")
+    loop._build_response_style_block = MagicMock(return_value="")
+    loop._build_chat_decision_block = MagicMock(return_value="")
+    loop._build_reasoning_block = MagicMock(return_value="Reasoning status: collecting_evidence")
+    loop._build_profile_block = MagicMock(return_value="")
+    loop._build_workflow_block = MagicMock(return_value="")
+    loop._build_playbooks_block = MagicMock(return_value="")
+    loop._filter_tools_for_goal = MagicMock(
+        return_value=[{"function": {"name": "investigate_ioc", "description": "Investigate IOC", "parameters": {}}}]
+    )
+    loop._chat_short_circuit_decision = MagicMock(return_value=planned_decision)
+    loop.prompt_composer.build_think_payload = MagicMock()
+    loop._chat_with_tools = AsyncMock()
+
+    result = asyncio.run(loop._think(state))
+
+    assert result == planned_decision
+    loop.prompt_composer.build_think_payload.assert_not_called()
+    loop._chat_with_tools.assert_not_awaited()
+
+
+def test_response_builder_approval_helpers_shape_loop_payloads():
+    loop = _build_agent_loop()
+    state = _build_state()
+    state.workflow_id = "wf-1"
+    state.active_specialist = "triage"
+    state.step_count = 2
+    state.reasoning_state = {"status": "collecting_evidence"}
+    state.investigation_plan = {
+        "stopping_conditions": ["Enough deterministic evidence"],
+        "escalation_conditions": ["Need analyst approval"],
+    }
+
+    approval_context = loop.session_response_builder.build_approval_context(
+        session_id="sess-1",
+        state=state,
+        tool_name="block_ip",
+        params={"ip": "185.220.101.45"},
+        approval_id="appr-1",
+        case_id="case-1",
+        execution_guidance={"lane": "log_identity"},
+    )
+    event = loop.session_response_builder.build_approval_required_event(
+        tool_name="block_ip",
+        params={"ip": "185.220.101.45"},
+        reason="Tool 'block_ip' requires analyst approval before execution.",
+        approval_context=approval_context,
+    )
+    finding = loop.session_response_builder.build_approval_rejection_finding(
+        tool_name="block_ip",
+        approval_outcome={"status": "timed_out", "context": approval_context},
+    )
+
+    assert approval_context["session_id"] == "sess-1"
+    assert approval_context["workflow_id"] == "wf-1"
+    assert event["type"] == "approval_required"
+    assert event["context"]["execution_guidance"] == {"lane": "log_identity"}
+    assert finding == {
+        "type": "approval_rejected",
+        "tool": "block_ip",
+        "status": "timed_out",
+        "approval_context": approval_context,
+        "execution_guidance": {"lane": "log_identity"},
     }

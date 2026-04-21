@@ -49,7 +49,10 @@ class RootCauseEngine:
         ]
         ranked = sorted(
             hypotheses,
-            key=lambda item: self._root_cause_rank_score(item),
+            key=lambda item: (
+                float(item.get("ranking_score", item.get("priority", self._root_cause_rank_score(item))) or 0.0),
+                self._root_cause_rank_score(item),
+            ),
             reverse=True,
         )
         missing = self._dedupe(
@@ -76,16 +79,33 @@ class RootCauseEngine:
         second = ranked[1] if len(ranked) > 1 else None
         top_conf = float(top.get("confidence", 0.0) or 0.0)
         second_conf = float(second.get("confidence", 0.0) or 0.0) if second else 0.0
-        top_rank_score = self._root_cause_rank_score(top)
-        second_rank_score = self._root_cause_rank_score(second) if second else 0.0
+        top_rank_score = float(top.get("ranking_score", top.get("priority", self._root_cause_rank_score(top))) or 0.0)
+        second_rank_score = (
+            float(second.get("ranking_score", second.get("priority", self._root_cause_rank_score(second))) or 0.0)
+            if second else 0.0
+        )
         score_margin = top_rank_score - second_rank_score
+        competition = (
+            reasoning_state.get("competition", {})
+            if isinstance(reasoning_state, dict) and isinstance(reasoning_state.get("competition"), dict)
+            else {}
+        )
+        competition_level = str(competition.get("competition_level") or "")
+        lead_margin = float(competition.get("lead_margin", score_margin) or score_margin)
         support_refs = list(top.get("supporting_evidence_refs", []) or [])
         contradiction_refs = list(top.get("contradicting_evidence_refs", []) or [])
         evidence_score = float(top.get("evidence_score", 0.0) or 0.0)
         contradiction_score = float(top.get("contradiction_score", 0.0) or 0.0)
+        lane = self._investigation_lane(goal=goal, reasoning_state=reasoning_state)
         quality = self._observation_quality(active_observations, support_refs)
-        relation_quality = self._relation_quality(entity_state)
+        typed_profile = self._typed_evidence_profile(active_observations, support_refs)
+        typed_evidence_ratio = typed_profile["ratio"]
+        typed_support_count = typed_profile["typed_count"]
+        relation_profile = self._relation_profile(entity_state)
+        relation_quality = relation_profile["quality"]
+        explicit_relation_ratio = relation_profile["explicit_ratio"]
         timeline_quality = self._timeline_quality(evidence_state)
+        graph_support = self._graph_support_quality(evidence_state)
         gap_pressure = self._gap_pressure(missing)
         chain_quality = self._chain_quality(
             top=top,
@@ -93,23 +113,102 @@ class RootCauseEngine:
             entity_state=entity_state,
             active_observations=active_observations or [],
         )
+        support_balance = self._support_balance(
+            top_conf=top_conf,
+            second_conf=second_conf,
+            score_margin=score_margin,
+            evidence_score=evidence_score,
+            contradiction_score=contradiction_score,
+            quality=quality,
+            typed_evidence_ratio=typed_evidence_ratio,
+            relation_quality=relation_quality,
+            timeline_quality=timeline_quality,
+            graph_support=graph_support,
+            chain_quality=chain_quality,
+        )
+        contradiction_pressure = self._contradiction_pressure(
+            lane=lane,
+            evidence_score=evidence_score,
+            contradiction_score=contradiction_score,
+            contradiction_refs=contradiction_refs,
+            second_conf=second_conf,
+            score_margin=score_margin,
+            support_balance=support_balance,
+        )
         best_explanation = str(top.get("statement") or "Likely root cause candidate.").strip() or "Likely root cause candidate."
 
         if (
             str(top.get("status") or "") in {"unsupported", "contradicted"}
-            or contradiction_score > evidence_score + 0.16
+            or self._is_materially_contradicted(
+                lane=lane,
+                evidence_score=evidence_score,
+                contradiction_score=contradiction_score,
+                contradiction_refs=contradiction_refs,
+                support_balance=support_balance,
+                score_margin=score_margin,
+            )
         ):
             status = "unsupported_hypothesis"
         elif not support_refs or ((quality < 0.45 and relation_quality < 0.5) and evidence_score < 0.25):
             status = "insufficient_evidence"
+        elif self._typed_evidence_required(lane=lane, relation_quality=relation_quality) and typed_evidence_ratio < 0.5:
+            missing = self._dedupe([
+                *missing,
+                self._typed_evidence_gap_message(lane),
+            ])[:8]
+            status = "insufficient_evidence"
+        elif self._lane_requires_explicit_relations(lane=lane, gap_pressure=gap_pressure) and (
+            relation_quality < 0.9 or explicit_relation_ratio < self._required_explicit_ratio(lane)
+        ):
+            missing = self._dedupe([
+                *missing,
+                self._explicit_relation_gap_message(lane),
+            ])[:8]
+            status = "insufficient_evidence"
+        elif self._has_structural_conflict(
+            lane=lane,
+            typed_support_count=typed_support_count,
+            support_refs=support_refs,
+            contradiction_refs=contradiction_refs,
+            relation_quality=relation_quality,
+            explicit_relation_ratio=explicit_relation_ratio,
+            graph_support=graph_support,
+            chain_quality=chain_quality,
+        ):
+            missing = self._dedupe([
+                *missing,
+                self._structural_conflict_gap_message(lane),
+            ])[:8]
+            status = "inconclusive"
         elif gap_pressure >= 0.85 and relation_quality < 0.9 and chain_quality < 0.78:
             status = "insufficient_evidence"
-        elif (
-            top_conf >= 0.62
-            and top_rank_score >= 0.82
-            and score_margin >= 0.08
-            and evidence_score > contradiction_score
-            and (relation_quality >= 0.76 or timeline_quality >= 0.72 or chain_quality >= 0.78)
+        elif contradiction_pressure >= 0.72:
+            missing = self._dedupe([
+                *missing,
+                self._contradiction_gap_message(lane),
+            ])[:8]
+            status = "inconclusive"
+        elif competition_level == "tight" and lead_margin < 0.08:
+            missing = self._dedupe([
+                *missing,
+                "Separate the two strongest competing hypotheses with one more decisive observation before closing the case.",
+            ])[:8]
+            status = "inconclusive"
+        elif self._is_supported(
+            lane=lane,
+            top_conf=top_conf,
+            top_rank_score=top_rank_score,
+            score_margin=score_margin,
+            evidence_score=evidence_score,
+            contradiction_score=contradiction_score,
+            typed_evidence_ratio=typed_evidence_ratio,
+            relation_quality=relation_quality,
+            explicit_relation_ratio=explicit_relation_ratio,
+            timeline_quality=timeline_quality,
+            graph_support=graph_support,
+            chain_quality=chain_quality,
+            support_balance=support_balance,
+            contradiction_pressure=contradiction_pressure,
         ):
             status = "supported"
         else:
@@ -137,11 +236,15 @@ class RootCauseEngine:
         if status == "supported":
             primary_root_cause = derived_root_cause or best_explanation
             summary = f"Best explanation so far is now a confident root cause: {primary_root_cause}"
+            if typed_evidence_ratio >= 0.75:
+                summary += " Most supporting evidence is typed and attributable rather than narrative-only."
             if relation_quality >= 0.9:
                 summary += " Explicit entity relationships materially strengthen this assessment."
+            if graph_support >= 0.75:
+                summary += " Evidence-graph support paths show consistent hypothesis-to-root-cause alignment."
             if chain_quality >= 0.8:
                 summary += " The causal chain is materially complete across evidence, relation, and timeline signals."
-            confidence = max(0.0, min(0.99, max(top_conf, (top_conf + relation_quality + chain_quality) / 3)))
+            confidence = max(0.0, min(0.99, max(top_conf, (top_conf + typed_evidence_ratio + relation_quality + chain_quality + graph_support) / 5)))
         elif status == "unsupported_hypothesis":
             primary_root_cause = derived_root_cause or best_explanation
             summary = "The current leading explanation is the best available candidate, but it is materially undercut by contradictory evidence and should not be treated as a confident root cause."
@@ -151,17 +254,24 @@ class RootCauseEngine:
         elif status == "inconclusive":
             primary_root_cause = derived_root_cause or best_explanation
             summary = "The investigation has a best explanation so far, but competing explanations or unresolved gaps remain too strong to declare a confident root cause."
+            if competition_level == "tight":
+                summary += " The two strongest hypotheses remain tightly ranked, so the evidence does not yet separate them cleanly."
+            elif competition_level == "contested":
+                summary += " The leading explanation is still contested by a nearby alternative hypothesis."
             if missing:
                 summary += f" Highest-priority gap: {missing[0]}"
-            confidence = min(max(top_conf, relation_quality * 0.7, chain_quality * 0.72), 0.74)
+            confidence = min(max(top_conf, relation_quality * 0.7, chain_quality * 0.72, graph_support * 0.68), 0.74)
         else:
             primary_root_cause = "Insufficient evidence to determine root cause confidently."
             summary = "The investigation still lacks enough high-quality, well-attributed evidence to name a reliable root cause."
             if missing:
                 summary += f" Highest-priority gap: {missing[0]}"
-            confidence = min(max(top_conf, relation_quality * 0.45), 0.44)
+            confidence = min(max(top_conf, relation_quality * 0.45, graph_support * 0.42), 0.44)
         if contradiction_refs and status != "supported":
-            missing = self._dedupe([*missing, "Collect stronger contradictory or corroborating evidence before closing the investigation."])[:8]
+            contradiction_guidance = ["Collect stronger contradictory or corroborating evidence before closing the investigation."]
+            if status == "inconclusive":
+                contradiction_guidance.insert(0, self._contradiction_gap_message(lane))
+            missing = self._dedupe([*missing, *contradiction_guidance])[:8]
         if status == "unsupported_hypothesis":
             missing = self._dedupe([*missing, "Re-test the leading explanation against the strongest alternative hypothesis before closing the case."])[:8]
         return RootCauseAssessmentResult(
@@ -220,17 +330,54 @@ class RootCauseEngine:
                     chain.append(provenance_summary)
 
         relationships = entity_state.get("relationships", []) if isinstance(entity_state, dict) and isinstance(entity_state.get("relationships"), list) else []
-        for relationship in relationships[:4]:
-            if not isinstance(relationship, dict):
-                continue
+        ranked_relationships = sorted(
+            [item for item in relationships if isinstance(item, dict)],
+            key=lambda item: float(item.get("relation_confidence", item.get("confidence", 0.0)) or 0.0),
+            reverse=True,
+        )
+        for relationship in ranked_relationships[:4]:
             relation = str(relationship.get("relation") or "").strip()
             strength = str(relationship.get("relation_strength") or "").strip()
             source = str(relationship.get("source") or "").strip()
             target = str(relationship.get("target") or "").strip()
+            confidence_band = str(relationship.get("confidence_band") or "").strip()
             if relation and source and target and strength in {"explicit", "inferred"}:
                 relation_summary = f"Relationship {relation} links {source} to {target} ({strength})."
+                if confidence_band:
+                    relation_summary = relation_summary[:-1] + f", confidence {confidence_band})."
                 if relation_summary not in chain:
                     chain.append(relation_summary)
+
+        causal_support = (
+            evidence_state.get("causal_support", {})
+            if isinstance(evidence_state, dict) and isinstance(evidence_state.get("causal_support"), dict)
+            else {}
+        )
+        preferred_paths = (
+            causal_support.get("root_path_summaries", [])
+            if isinstance(causal_support.get("root_path_summaries", []), list)
+            else []
+        )
+        if preferred_paths:
+            for path in preferred_paths[:2]:
+                if not isinstance(path, dict):
+                    continue
+                summary = str(path.get("path_summary") or "").strip()
+                if summary:
+                    sentence = f"Evidence graph path: {summary}."
+                    if sentence not in chain:
+                        chain.append(sentence)
+        else:
+            for path in causal_support.get("strongest_support_paths", [])[:2] if isinstance(causal_support.get("strongest_support_paths", []), list) else []:
+                if not isinstance(path, dict):
+                    continue
+                source = str(path.get("source") or "").strip()
+                target = str(path.get("target") or "").strip()
+                relation = str(path.get("relation") or "").strip()
+                if source and target and relation:
+                    summary = f"Evidence graph shows {source} {relation} {target}."
+                    if summary not in chain:
+                        chain.append(summary)
 
         timeline = evidence_state.get("timeline", []) if isinstance(evidence_state, dict) and isinstance(evidence_state.get("timeline"), list) else []
         for event in timeline[-4:]:
@@ -275,6 +422,109 @@ class RootCauseEngine:
         return statement
 
     @staticmethod
+    def _investigation_lane(*, goal: str, reasoning_state: Optional[Dict[str, Any]]) -> str:
+        lane = ""
+        if isinstance(reasoning_state, dict):
+            lane = str(reasoning_state.get("investigation_lane") or "").strip().lower()
+        if lane:
+            return lane
+        lowered = str(goal or "").lower()
+        if any(token in lowered for token in ("email", "phish", "mailbox", "sender", "attachment")):
+            return "email"
+        if any(token in lowered for token in ("login", "logon", "credential", "session", "auth")):
+            return "log_identity"
+        if any(token in lowered for token in ("malware", "payload", "process", "file", "sandbox")):
+            return "file"
+        if any(token in lowered for token in ("cve", "vulnerability", "exposure", "exploit")):
+            return "vulnerability"
+        return "ioc"
+
+    @staticmethod
+    def _lane_requires_explicit_relations(*, lane: str, gap_pressure: float) -> bool:
+        return lane in {"log_identity", "email", "file", "vulnerability"} and gap_pressure >= 0.62
+
+    @staticmethod
+    def _support_balance(
+        *,
+        top_conf: float,
+        second_conf: float,
+        score_margin: float,
+        evidence_score: float,
+        contradiction_score: float,
+        quality: float,
+        typed_evidence_ratio: float,
+        relation_quality: float,
+        timeline_quality: float,
+        graph_support: float,
+        chain_quality: float,
+    ) -> float:
+        advantage = max(0.0, top_conf - second_conf)
+        evidence_advantage = max(0.0, evidence_score - contradiction_score)
+        structure_strength = max(relation_quality, timeline_quality, graph_support, chain_quality)
+        return min(
+            1.0,
+            (advantage * 0.2)
+            + (max(0.0, score_margin) * 0.24)
+            + (evidence_advantage * 0.2)
+            + (quality * 0.1)
+            + (typed_evidence_ratio * 0.12)
+            + (structure_strength * 0.14),
+        )
+
+    @staticmethod
+    def _is_supported(
+        *,
+        lane: str,
+        top_conf: float,
+        top_rank_score: float,
+        score_margin: float,
+        evidence_score: float,
+        contradiction_score: float,
+        typed_evidence_ratio: float,
+        relation_quality: float,
+        explicit_relation_ratio: float,
+        timeline_quality: float,
+        graph_support: float,
+        chain_quality: float,
+        support_balance: float,
+        contradiction_pressure: float,
+    ) -> bool:
+        if evidence_score <= contradiction_score or contradiction_pressure >= 0.5:
+            return False
+        if lane == "ioc":
+            return (
+                top_conf >= 0.62
+                and top_rank_score >= 0.82
+                and score_margin >= 0.08
+                and support_balance >= 0.5
+                and typed_evidence_ratio >= 0.55
+                and contradiction_pressure <= 0.34
+                and max(relation_quality, timeline_quality, graph_support, chain_quality) >= 0.72
+            )
+        required_typed_ratio = 0.5
+        required_support_balance = 0.55
+        required_score_margin = 0.12
+        required_explicit_ratio = RootCauseEngine._required_explicit_ratio(lane)
+        if lane == "log_identity" and relation_quality >= 0.9:
+            required_typed_ratio = 0.0
+            required_support_balance = 0.48
+        elif lane in {"email", "file", "vulnerability"}:
+            required_support_balance = 0.58
+            required_score_margin = 0.16
+        return (
+            top_conf >= 0.66
+            and top_rank_score >= 0.88
+            and score_margin >= required_score_margin
+            and support_balance >= required_support_balance
+            and typed_evidence_ratio >= required_typed_ratio
+            and relation_quality >= 0.76
+            and explicit_relation_ratio >= required_explicit_ratio
+            and chain_quality >= 0.62
+            and contradiction_pressure <= 0.28
+            and max(timeline_quality, graph_support, relation_quality) >= 0.72
+        )
+
+    @staticmethod
     def _root_cause_rank_score(hypothesis: Optional[Dict[str, Any]]) -> float:
         if not isinstance(hypothesis, dict):
             return 0.0
@@ -312,13 +562,15 @@ class RootCauseEngine:
         observation_quality = RootCauseEngine._observation_quality(active_observations, support_refs)
         relation_quality = RootCauseEngine._relation_quality(entity_state)
         timeline_quality = RootCauseEngine._timeline_quality(evidence_state)
+        graph_support = RootCauseEngine._graph_support_quality(evidence_state)
         support_density = min(1.0, len(support_refs) / 3.0)
         return min(
             1.0,
-            (observation_quality * 0.38)
-            + (relation_quality * 0.27)
-            + (timeline_quality * 0.2)
-            + (support_density * 0.15),
+            (observation_quality * 0.32)
+            + (relation_quality * 0.24)
+            + (timeline_quality * 0.16)
+            + (graph_support * 0.16)
+            + (support_density * 0.12),
         )
 
     @staticmethod
@@ -352,22 +604,103 @@ class RootCauseEngine:
         return sum(qualities) / len(qualities)
 
     @staticmethod
-    def _relation_quality(entity_state: Optional[Dict[str, Any]]) -> float:
+    def _typed_evidence_profile(active_observations: Optional[List[Dict[str, Any]]], refs: List[Dict[str, Any]]) -> Dict[str, float]:
+        if not refs:
+            return {"ratio": 0.0, "typed_count": 0.0, "total_count": 0.0}
+        lookup = {
+            str(item.get("observation_id") or ""): item
+            for item in (active_observations or [])
+            if isinstance(item, dict) and item.get("observation_id")
+        }
+        typed = 0
+        total = 0
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            total += 1
+            observation_id = str(ref.get("observation_id") or "").strip()
+            observation = lookup.get(observation_id, {}) if observation_id else {}
+            typed_fact = observation.get("typed_fact", {}) if isinstance(observation, dict) and isinstance(observation.get("typed_fact"), dict) else {}
+            if typed_fact.get("family") or typed_fact.get("type"):
+                typed += 1
+        if not total:
+            return {"ratio": 0.0, "typed_count": 0.0, "total_count": 0.0}
+        return {
+            "ratio": typed / total,
+            "typed_count": float(typed),
+            "total_count": float(total),
+        }
+
+    @staticmethod
+    def _typed_evidence_ratio(active_observations: Optional[List[Dict[str, Any]]], refs: List[Dict[str, Any]]) -> float:
+        return RootCauseEngine._typed_evidence_profile(active_observations, refs)["ratio"]
+
+    @staticmethod
+    def _typed_evidence_required(*, lane: str, relation_quality: float) -> bool:
+        return lane in {"email", "file", "vulnerability"} or (lane == "ioc" and relation_quality >= 0.72)
+
+    @staticmethod
+    def _required_explicit_ratio(lane: str) -> float:
+        if lane in {"email", "file", "vulnerability"}:
+            return 0.67
+        if lane == "log_identity":
+            # One explicit anchor plus corroborating inferred links should still clear the lane.
+            return 0.33
+        return 0.0
+
+    @staticmethod
+    def _relation_profile(entity_state: Optional[Dict[str, Any]]) -> Dict[str, float]:
         if not isinstance(entity_state, dict):
-            return 0.0
+            return {"quality": 0.0, "explicit_ratio": 0.0}
         relationships = entity_state.get("relationships", []) if isinstance(entity_state.get("relationships"), list) else []
-        best = 0.0
+        scores: List[float] = []
+        explicit_count = 0
+        qualifying_count = 0
         for relationship in relationships:
             if not isinstance(relationship, dict):
                 continue
+            confidence = float(relationship.get("relation_confidence", relationship.get("confidence", 0.0)) or 0.0)
             strength = str(relationship.get("relation_strength") or "")
             if strength == "explicit":
-                best = max(best, 0.95)
+                confidence = max(confidence, 0.95)
+                explicit_count += 1
+                qualifying_count += 1
             elif strength == "inferred":
-                best = max(best, 0.72)
+                confidence = max(confidence, 0.72)
+                qualifying_count += 1
             elif strength == "co_observed":
-                best = max(best, 0.4)
-        return best
+                confidence = max(confidence, 0.4)
+            if relationship.get("guarded"):
+                confidence -= 0.08
+            scores.append(max(0.0, min(1.0, confidence)))
+        if not scores:
+            return {"quality": 0.0, "explicit_ratio": 0.0}
+        scores.sort(reverse=True)
+        return {
+            "quality": sum(scores[:3]) / min(3, len(scores)),
+            "explicit_ratio": (explicit_count / qualifying_count) if qualifying_count else 0.0,
+        }
+
+    @staticmethod
+    def _relation_quality(entity_state: Optional[Dict[str, Any]]) -> float:
+        return RootCauseEngine._relation_profile(entity_state)["quality"]
+
+    @staticmethod
+    def _graph_support_quality(evidence_state: Optional[Dict[str, Any]]) -> float:
+        if not isinstance(evidence_state, dict):
+            return 0.0
+        causal_support = evidence_state.get("causal_support", {}) if isinstance(evidence_state.get("causal_support"), dict) else {}
+        support_paths = causal_support.get("strongest_support_paths", []) if isinstance(causal_support.get("strongest_support_paths"), list) else []
+        if not support_paths:
+            return 0.0
+        confidences = [
+            float(item.get("confidence", 0.0) or 0.0)
+            for item in support_paths
+            if isinstance(item, dict)
+        ]
+        if not confidences:
+            return 0.0
+        return min(1.0, sum(confidences[:3]) / min(3, len(confidences)))
 
     @staticmethod
     def _timeline_quality(evidence_state: Optional[Dict[str, Any]]) -> float:
@@ -394,6 +727,110 @@ class RootCauseEngine:
         if len(missing) >= 2:
             return 0.62
         return 0.4
+
+    @staticmethod
+    def _typed_evidence_gap_message(lane: str) -> str:
+        if lane == "email":
+            return "Need typed delivery or attachment observations before elevating email root-cause confidence."
+        if lane == "file":
+            return "Need typed execution, file, or sandbox observations before elevating file root-cause confidence."
+        if lane == "vulnerability":
+            return "Need typed exploitation or exposure observations before elevating vulnerability root-cause confidence."
+        return "Need typed supporting observations before elevating root-cause confidence."
+
+    @staticmethod
+    def _explicit_relation_gap_message(lane: str) -> str:
+        if lane == "email":
+            return "Need explicit sender, recipient, attachment, or follow-on activity links before closing the email hypothesis."
+        if lane == "file":
+            return "Need explicit file, process, host, or user linkage before closing the file hypothesis."
+        if lane == "vulnerability":
+            return "Need explicit asset, exposure, and exploitation linkage before closing the vulnerability hypothesis."
+        return "Need explicit entity linkage before closing the leading hypothesis."
+
+    @staticmethod
+    def _structural_conflict_gap_message(lane: str) -> str:
+        if lane == "email":
+            return "Need one more typed and explicitly linked delivery or follow-on observation before treating the email hypothesis as closed."
+        if lane == "file":
+            return "Need one more typed and explicitly linked execution or behavior observation before treating the file hypothesis as closed."
+        return "Need one more typed and explicitly linked supporting observation before treating the leading hypothesis as closed."
+
+    @staticmethod
+    def _contradiction_gap_message(lane: str) -> str:
+        if lane == "email":
+            return "Resolve contradictory delivery, attachment, or mailbox evidence before closing the email hypothesis."
+        if lane == "log_identity":
+            return "Resolve contradictory authentication, session, or host linkage before closing the identity hypothesis."
+        if lane == "file":
+            return "Resolve contradictory execution or behavior evidence before closing the file hypothesis."
+        return "Resolve the strongest contradictory evidence before closing the leading hypothesis."
+
+    @staticmethod
+    def _is_materially_contradicted(
+        *,
+        lane: str,
+        evidence_score: float,
+        contradiction_score: float,
+        contradiction_refs: List[Dict[str, Any]],
+        support_balance: float,
+        score_margin: float,
+    ) -> bool:
+        if contradiction_score > evidence_score + 0.16:
+            return True
+        if not contradiction_refs:
+            return False
+        if contradiction_score >= evidence_score * 0.92:
+            return True
+        if lane in {"email", "file", "vulnerability"} and contradiction_score >= evidence_score * 0.82 and score_margin < 0.12:
+            return True
+        return support_balance < 0.34 and contradiction_score >= 0.2
+
+    @staticmethod
+    def _contradiction_pressure(
+        *,
+        lane: str,
+        evidence_score: float,
+        contradiction_score: float,
+        contradiction_refs: List[Dict[str, Any]],
+        second_conf: float,
+        score_margin: float,
+        support_balance: float,
+    ) -> float:
+        if contradiction_score <= 0.0 and not contradiction_refs:
+            return 0.0
+        contradiction_ratio = contradiction_score / max(evidence_score, 0.01)
+        pressure = min(1.0, contradiction_ratio * 0.45)
+        pressure += min(0.25, len(contradiction_refs) * 0.08)
+        pressure += max(0.0, 0.12 - score_margin) * 1.2
+        pressure += max(0.0, second_conf - 0.35) * 0.2
+        pressure += max(0.0, 0.52 - support_balance) * 0.35
+        if lane in {"email", "file", "vulnerability"}:
+            pressure += 0.06
+        return min(1.0, pressure)
+
+    @staticmethod
+    def _has_structural_conflict(
+        *,
+        lane: str,
+        typed_support_count: float,
+        support_refs: List[Dict[str, Any]],
+        contradiction_refs: List[Dict[str, Any]],
+        relation_quality: float,
+        explicit_relation_ratio: float,
+        graph_support: float,
+        chain_quality: float,
+    ) -> bool:
+        if lane not in {"email", "file", "vulnerability"}:
+            return False
+        if contradiction_refs:
+            return False
+        if len(support_refs) < 2:
+            return False
+        if typed_support_count >= 2 and explicit_relation_ratio >= 0.67:
+            return False
+        strong_structure = max(relation_quality, graph_support, chain_quality) >= 0.8
+        return strong_structure and typed_support_count < 2
 
     @staticmethod
     def _dedupe(values: List[str]) -> List[str]:

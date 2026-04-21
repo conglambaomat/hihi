@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -6,7 +7,7 @@ from src.agent.agent_loop import AgentLoop
 from src.agent.entity_resolver import EntityResolver
 from src.agent.evidence_graph import EvidenceGraph
 from src.agent.investigation_planner import InvestigationPlanner
-from src.agent.agent_state import AgentState
+from src.agent.agent_state import AgentPhase, AgentState
 from src.agent.agent_store import AgentStore
 from src.agent.hypothesis_manager import HypothesisManager
 from src.agent.observation_normalizer import ObservationNormalizer
@@ -203,6 +204,9 @@ class TestHypothesisManager:
         assert state["status"] == "insufficient_evidence"
         assert state["missing_evidence"]
         assert state["hypotheses"][0]["confidence"] - state["hypotheses"][1]["confidence"] < 0.25
+        assert state["competition"]["competition_level"] in {"tight", "contested"}
+        assert state["competition"]["lead_margin"] < 0.18
+        assert state["hypotheses"][0]["ranking_score"] >= state["hypotheses"][1]["ranking_score"]
 
     def test_bootstrap_seeds_missing_evidence_from_investigation_plan(self):
         manager = HypothesisManager()
@@ -381,7 +385,67 @@ class TestHypothesisManager:
 
         primary = updated["hypotheses"][0]
         assert primary["supporting_evidence_refs"]
-        assert primary["supporting_evidence_refs"][0]["confidence"] < 0.5
+        assert primary["supporting_evidence_refs"][0]["confidence"] < 0.3
+        assert primary["confidence"] < 0.38
+
+    def test_revise_keeps_typed_ioc_evidence_from_outranking_a_benign_hypothesis_on_keyword_overlap_alone(self):
+        manager = HypothesisManager()
+        state = manager.bootstrap(
+            "Investigate whether this domain is suspicious",
+            "sess-benign-keyword-guard",
+            investigation_plan={
+                "lane": "ioc",
+                "initial_hypotheses": [
+                    "The observed activity is likely tied to phishing delivery infrastructure.",
+                    "The observed activity is benign, noisy, or lacks enough context to confirm maliciousness.",
+                ],
+                "evidence_gaps": ["Need deterministic enrichment or corroboration that ties the IOC to malicious or benign activity."],
+            },
+        )
+
+        updated = manager.revise(
+            state,
+            goal="Investigate whether this domain is suspicious",
+            session_id="sess-benign-keyword-guard",
+            tool_name="investigate_ioc",
+            params={"ioc": "example-benign-domain.test"},
+            result={},
+            finding_index=0,
+            step_number=0,
+            observations=[
+                {
+                    "observation_id": "obs:sess-benign-keyword-guard:0:0",
+                    "tool_name": "investigate_ioc",
+                    "observation_type": "ioc_enrichment",
+                    "summary": "Generic IOC enrichment mentions phishing feeds in the provider description but the result is clean.",
+                    "quality": 0.58,
+                    "source_kind": "ioc_result",
+                    "source_paths": ["result"],
+                    "typed_fact": {
+                        "type": "ioc_enrichment",
+                        "family": "network",
+                        "quality": 0.58,
+                    },
+                    "facts": {
+                        "verdict": "CLEAN",
+                        "severity": "low",
+                        "found": False,
+                    },
+                    "entities": [
+                        {"type": "domain", "value": "example-benign-domain.test"},
+                    ],
+                }
+            ],
+        )
+
+        malicious = next(item for item in updated["hypotheses"] if "phishing delivery infrastructure" in item["statement"])
+        benign = next(item for item in updated["hypotheses"] if "benign, noisy" in item["statement"])
+
+        assert malicious["supporting_evidence_refs"] == []
+        assert malicious["contradicting_evidence_refs"]
+        assert malicious["confidence"] < 0.3
+        assert benign["supporting_evidence_refs"]
+        assert benign["confidence"] > malicious["confidence"]
 
 
     def test_revise_uses_explicit_relationships_and_plan_gaps_for_evidence_aware_state(self):
@@ -570,9 +634,15 @@ class TestObservationPlannerAndRootCause:
         assert typed
         assert payload["evidence_quality_summary"]["observation_count"] >= 1
         assert payload["evidence_quality_summary"]["fact_families"]["log"] >= 1
+        assert payload["evidence_quality_summary"]["observation_lanes"]["identity"] >= 1
+        assert payload["evidence_quality_summary"]["provenance_coverage"]["with_canonical_facts"] >= 1
         assert any(entity["type"] == "session" for entity in typed[0]["entities"])
         assert typed[0]["schema_version"] == "typed-observation/v1"
         assert typed[0]["fact_family"] == "log"
+        assert typed[0]["observation_lane"] == "identity"
+        assert typed[0]["contract_version"] == "observation-contract/v2"
+        assert typed[0]["canonical_facts"]["principal"] == "alice"
+        assert typed[0]["canonical_facts"]["asset"] == "WS-12"
         assert typed[0]["extraction_method"] == "normalizer"
         assert typed[0]["produced_at"]
 
@@ -634,6 +704,79 @@ class TestObservationPlannerAndRootCause:
         aggregate = payload["observations"][-1]
         assert aggregate["observation_type"] == "file_execution"
         assert aggregate["fact_family"] == "file"
+
+
+    def test_observation_normalizer_preserves_fortigate_outbound_fields_in_network_event(self):
+        normalizer = ObservationNormalizer()
+
+        payload = normalizer.normalize(
+            session_id="sess-fgt",
+            tool_name="search_logs",
+            params={"query": "fortigate outbound 185.220.101.45"},
+            result={
+                "status": "executed",
+                "results_count": 1,
+                "results": [
+                    {
+                        "device_vendor": "Fortinet",
+                        "host": "WS-12",
+                        "src_ip": "10.0.0.5",
+                        "dstip": "185.220.101.45",
+                        "dstname": "c2.example",
+                        "service": "HTTPS",
+                        "action": "accept",
+                        "policyid": "42",
+                    }
+                ],
+            },
+            step_number=4,
+        )
+
+        network_obs = [item for item in payload["observations"] if item["observation_type"] == "network_event"]
+        assert network_obs
+        facts = network_obs[0]["facts"]
+        assert facts["vendor"] == "Fortinet"
+        assert facts["dest_ip"] == "185.220.101.45"
+        assert facts["domain"] == "c2.example"
+        assert facts["service"] == "HTTPS"
+        assert facts["policy_id"] == "42"
+        assert network_obs[0]["summary"].startswith("Network telemetry:")
+
+
+    def test_observation_normalizer_preserves_windows_logon_fields_in_auth_event(self):
+        normalizer = ObservationNormalizer()
+
+        payload = normalizer.normalize(
+            session_id="sess-winlogon",
+            tool_name="search_logs",
+            params={"query": "EventCode=4625 user=alice"},
+            result={
+                "status": "executed",
+                "results_count": 1,
+                "results": [
+                    {
+                        "event_id": 4625,
+                        "target_user_name": "alice",
+                        "computer_name": "WS-12",
+                        "target_logon_id": "0x12345",
+                        "ip_address": "10.0.0.5",
+                        "Logon_Type": "3",
+                        "action": "failed-logon",
+                    }
+                ],
+            },
+            step_number=5,
+        )
+
+        auth_obs = [item for item in payload["observations"] if item["observation_type"] == "auth_event"]
+        assert auth_obs
+        facts = auth_obs[0]["facts"]
+        assert facts["user"] == "alice"
+        assert facts["host"] == "WS-12"
+        assert facts["session_id"] == "0x12345"
+        assert facts["source_ip"] == "10.0.0.5"
+        assert facts["event_code"] == 4625
+        assert facts["logon_type"] == "3"
 
 
     def test_observation_normalizer_exposes_fact_family_schema_summary(self):
@@ -760,11 +903,15 @@ class TestObservationPlannerAndRootCause:
         fact = accepted[0]
         assert fact["observation_type"] == "ioc_enrichment"
         assert fact["fact_family"] == "ioc"
+        assert fact["observation_lane"] == "triage"
+        assert fact["contract_version"] == "observation-contract/v2"
+        assert fact["canonical_facts"]["source_ip"] == "185.220.101.45"
         assert fact["source_kind"] == "tool_result"
         assert fact["source_paths"] == ["result"]
         assert fact["extraction_method"] == "normalizer"
         assert fact["timestamp"]
         assert fact["produced_at"]
+        assert payload["fact_family_schemas"]["ioc"]["version"] == "fact-family/ioc/v1"
 
     def test_root_cause_engine_marks_weak_evidence_as_insufficient(self):
         engine = RootCauseEngine()
@@ -867,7 +1014,10 @@ class TestObservationPlannerAndRootCause:
 
         assert assessment["status"] == "supported"
         assert assessment["confidence"] >= 0.78
-        assert any("Relationship belongs_to links session:logon-22 to user:alice (explicit)." == item for item in assessment["causal_chain"])
+        assert any(
+            item.startswith("Relationship belongs_to links session:logon-22 to user:alice (explicit")
+            for item in assessment["causal_chain"]
+        )
         assert any("Deterministic verdict remains SUSPICIOUS." == item for item in assessment["causal_chain"])
 
     def test_root_cause_engine_keeps_high_gap_pressure_as_insufficient_without_explicit_relations(self):
@@ -910,6 +1060,995 @@ class TestObservationPlannerAndRootCause:
 
         assert assessment["status"] == "insufficient_evidence"
         assert "Highest-priority gap" in assessment["summary"]
+
+    def test_root_cause_engine_keeps_email_lane_inconclusive_without_explicit_delivery_relations(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-1",
+                        "statement": "Initial access likely occurred through phishing or malicious email delivery.",
+                        "confidence": 0.74,
+                        "priority": 0.88,
+                        "evidence_score": 0.39,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-1",
+                                "summary": "Mailbox telemetry shows a suspicious message with a spoofed finance sender.",
+                                "quality": 0.81,
+                            }
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-2",
+                        "statement": "The message was benign internal finance noise.",
+                        "confidence": 0.46,
+                        "priority": 0.42,
+                        "evidence_score": 0.12,
+                        "contradiction_score": 0.14,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": ["Need explicit email delivery or attachment evidence linking sender, recipient, and follow-on activity."],
+                "open_questions": ["Was the suspicious message explicitly tied to the recipient mailbox and delivered artifact?"],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Suspicious finance-themed message reached the gateway."},
+                    {"summary": "Recipient mailbox was targeted shortly before credential prompts were observed."},
+                ]
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "co_observed",
+                        "relation_strength": "co_observed",
+                    }
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-1",
+                    "summary": "Mailbox telemetry shows a suspicious message with a spoofed finance sender.",
+                    "quality": 0.81,
+                    "typed_fact": {"family": "email", "quality": 0.81},
+                }
+            ],
+        )
+
+        assert assessment["status"] == "insufficient_evidence"
+        assert "Need explicit email delivery or attachment evidence" in assessment["missing_evidence"][0]
+
+    def test_root_cause_engine_allows_ioc_support_without_explicit_relations_when_evidence_is_ranked_cleanly(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate 185.220.101.45",
+            reasoning_state={
+                "investigation_lane": "ioc",
+                "hypotheses": [
+                    {
+                        "id": "hyp-ioc-1",
+                        "statement": "The IP is malicious infrastructure used for follow-on activity.",
+                        "confidence": 0.72,
+                        "priority": 0.88,
+                        "evidence_score": 0.41,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-ioc-1",
+                                "summary": "Deterministic enrichment marks 185.220.101.45 as malicious infrastructure.",
+                                "quality": 0.84,
+                            }
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-ioc-2",
+                        "statement": "The IP is benign or misclassified.",
+                        "confidence": 0.34,
+                        "priority": 0.3,
+                        "evidence_score": 0.08,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "MALICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "IOC enrichment completed for 185.220.101.45."},
+                    {"summary": "Threat intel corroborated prior malicious tagging."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-ioc-1", "target": "root-cause:sess-1", "relation": "derived_from", "confidence": 0.83}
+                    ]
+                },
+            },
+            entity_state={"relationships": []},
+            active_observations=[
+                {
+                    "observation_id": "obs-ioc-1",
+                    "summary": "Deterministic enrichment marks 185.220.101.45 as malicious infrastructure.",
+                    "quality": 0.84,
+                    "typed_fact": {"family": "ioc", "quality": 0.84},
+                }
+            ],
+        )
+
+        assert assessment["status"] == "supported"
+        assert assessment["confidence"] >= 0.72
+        assert "typed and attributable" in assessment["summary"]
+
+    def test_root_cause_engine_rejects_narrative_only_support_for_email_lane(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-narrative-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.79,
+                        "priority": 0.9,
+                        "evidence_score": 0.47,
+                        "contradiction_score": 0.04,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-narrative-1",
+                                "summary": "Analyst note says the story looks like phishing delivery.",
+                                "quality": 0.87,
+                            },
+                            {
+                                "observation_id": "obs-email-narrative-2",
+                                "summary": "Narrative summary suggests the mailbox was probably targeted.",
+                                "quality": 0.83,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-narrative-2",
+                        "statement": "The activity is benign finance-related noise.",
+                        "confidence": 0.43,
+                        "priority": 0.36,
+                        "evidence_score": 0.12,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Analyst summarized the probable delivery path."},
+                    {"summary": "Mailbox review was discussed but not tied to artifacts."},
+                    {"summary": "The user later reported a suspicious prompt."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-narrative-1", "target": "root-cause:sess-2", "relation": "derived_from", "confidence": 0.84}
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    }
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-narrative-1",
+                    "summary": "Analyst note says the story looks like phishing delivery.",
+                    "quality": 0.87,
+                },
+                {
+                    "observation_id": "obs-email-narrative-2",
+                    "summary": "Narrative summary suggests the mailbox was probably targeted.",
+                    "quality": 0.83,
+                },
+            ],
+        )
+
+        assert assessment["status"] == "insufficient_evidence"
+        assert assessment["primary_root_cause"] == "Insufficient evidence to determine root cause confidently."
+
+    def test_root_cause_engine_accepts_typed_email_support_with_explicit_relations(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-typed-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.79,
+                        "priority": 0.9,
+                        "evidence_score": 0.47,
+                        "contradiction_score": 0.04,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-typed-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.87,
+                            },
+                            {
+                                "observation_id": "obs-email-typed-2",
+                                "summary": "Attachment detonation linked the delivered document to credential-harvest behavior.",
+                                "quality": 0.85,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-typed-2",
+                        "statement": "The activity is benign finance-related noise.",
+                        "confidence": 0.43,
+                        "priority": 0.36,
+                        "evidence_score": 0.12,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "Attachment execution followed delivery."},
+                    {"summary": "Credential prompts appeared after the delivered document opened."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-typed-1", "target": "root-cause:sess-3", "relation": "derived_from", "confidence": 0.84},
+                        {"source": "obs-email-typed-2", "target": "root-cause:sess-3", "relation": "derived_from", "confidence": 0.82}
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "file:invoice.xlsm",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "opened_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-typed-1",
+                    "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                    "quality": 0.87,
+                    "typed_fact": {"family": "email", "type": "email_delivery", "quality": 0.87},
+                },
+                {
+                    "observation_id": "obs-email-typed-2",
+                    "summary": "Attachment detonation linked the delivered document to credential-harvest behavior.",
+                    "quality": 0.85,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.85},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "supported"
+        assert assessment["confidence"] >= 0.79
+        assert "typed and attributable" in assessment["summary"]
+
+    def test_root_cause_engine_keeps_structurally_strong_but_single_typed_email_support_inconclusive(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-structural-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.81,
+                        "priority": 0.93,
+                        "evidence_score": 0.49,
+                        "contradiction_score": 0.03,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-structural-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.88,
+                            },
+                            {
+                                "observation_id": "obs-email-structural-2",
+                                "summary": "Attachment review described suspicious follow-on behavior but remained analyst narrative.",
+                                "quality": 0.84,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-structural-2",
+                        "statement": "The activity is benign finance-related noise.",
+                        "confidence": 0.4,
+                        "priority": 0.35,
+                        "evidence_score": 0.1,
+                        "contradiction_score": 0.16,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "The attachment was opened after delivery."},
+                    {"summary": "Credential prompts appeared after the document launched."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-structural-1", "target": "root-cause:sess-typed-gap", "relation": "derived_from", "confidence": 0.88},
+                        {"source": "obs-email-structural-2", "target": "root-cause:sess-typed-gap", "relation": "derived_from", "confidence": 0.84},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "file:invoice.xlsm",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "opened_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-structural-1",
+                    "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                    "quality": 0.88,
+                    "typed_fact": {"family": "email", "type": "email_delivery", "quality": 0.88},
+                },
+                {
+                    "observation_id": "obs-email-structural-2",
+                    "summary": "Attachment review described suspicious follow-on behavior but remained analyst narrative.",
+                    "quality": 0.84,
+                },
+            ],
+        )
+
+        assert assessment["status"] == "inconclusive"
+        assert any(
+            "Need one more typed and explicitly linked delivery or follow-on observation" in item
+            for item in assessment["missing_evidence"]
+        )
+
+    def test_root_cause_engine_keeps_mixed_explicit_and_inferred_email_relations_inconclusive(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-mixed-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.8,
+                        "priority": 0.92,
+                        "evidence_score": 0.5,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-mixed-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.88,
+                            },
+                            {
+                                "observation_id": "obs-email-mixed-2",
+                                "summary": "Attachment analysis linked the delivered file to credential-harvest behavior.",
+                                "quality": 0.84,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-mixed-2",
+                        "statement": "The activity is benign finance-related noise.",
+                        "confidence": 0.42,
+                        "priority": 0.35,
+                        "evidence_score": 0.11,
+                        "contradiction_score": 0.17,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "Attachment execution followed delivery."},
+                    {"summary": "Credential prompts appeared after the delivered document opened."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-mixed-1", "target": "root-cause:sess-4", "relation": "derived_from", "confidence": 0.86},
+                        {"source": "obs-email-mixed-2", "target": "root-cause:sess-4", "relation": "derived_from", "confidence": 0.83},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "file:invoice.xlsm",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "opened_by",
+                        "relation_strength": "inferred",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-mixed-1",
+                    "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                    "quality": 0.88,
+                    "typed_fact": {"family": "email", "type": "email_delivery", "quality": 0.88},
+                },
+                {
+                    "observation_id": "obs-email-mixed-2",
+                    "summary": "Attachment analysis linked the delivered file to credential-harvest behavior.",
+                    "quality": 0.84,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.84},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "inconclusive"
+        assert assessment["primary_root_cause"].startswith("Mailbox telemetry tied the spoofed sender")
+
+    def test_root_cause_engine_adds_explicit_relation_gap_message_when_email_links_are_missing(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-gap-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.77,
+                        "priority": 0.9,
+                        "evidence_score": 0.44,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-gap-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.86,
+                            },
+                            {
+                                "observation_id": "obs-email-gap-2",
+                                "summary": "Attachment detonation linked the delivered document to credential harvesting.",
+                                "quality": 0.83,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    }
+                ],
+                "missing_evidence": [
+                    "Need explicit email delivery or attachment evidence linking sender, recipient, and follow-on activity.",
+                ],
+                "open_questions": [
+                    "Was the suspicious message explicitly tied to the recipient mailbox and delivered artifact?",
+                ],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "Attachment execution followed delivery."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-gap-1", "target": "root-cause:sess-gap", "relation": "derived_from", "confidence": 0.84},
+                        {"source": "obs-email-gap-2", "target": "root-cause:sess-gap", "relation": "derived_from", "confidence": 0.82},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "co_observed",
+                        "relation_strength": "co_observed",
+                    }
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-gap-1",
+                    "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                    "quality": 0.86,
+                    "typed_fact": {"family": "email", "type": "email_delivery", "quality": 0.86},
+                },
+                {
+                    "observation_id": "obs-email-gap-2",
+                    "summary": "Attachment detonation linked the delivered document to credential harvesting.",
+                    "quality": 0.83,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.83},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "insufficient_evidence"
+        assert any(
+            "Need explicit sender, recipient, attachment, or follow-on activity links" in item
+            for item in assessment["missing_evidence"]
+        )
+
+    def test_root_cause_engine_keeps_log_identity_supported_with_one_explicit_anchor_and_inferred_links(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious login sequence",
+            reasoning_state={
+                "investigation_lane": "log_identity",
+                "hypotheses": [
+                    {
+                        "id": "hyp-auth-mixed-1",
+                        "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                        "confidence": 0.79,
+                        "priority": 0.91,
+                        "evidence_score": 0.45,
+                        "contradiction_score": 0.06,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-auth-mixed-1",
+                                "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                                "quality": 0.82,
+                            },
+                            {
+                                "observation_id": "obs-auth-mixed-2",
+                                "summary": "Process telemetry linked LOGON-22 to powershell.exe on WS-12.",
+                                "quality": 0.8,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-auth-mixed-2",
+                        "statement": "The activity is benign administrative noise.",
+                        "confidence": 0.4,
+                        "priority": 0.38,
+                        "evidence_score": 0.1,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "User alice authenticated to WS-12."},
+                    {"summary": "Session LOGON-22 initiated powershell.exe."},
+                    {"summary": "powershell.exe connected to 185.220.101.45."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-auth-mixed-1", "target": "root-cause:sess-5", "relation": "derived_from", "confidence": 0.85},
+                        {"source": "obs-auth-mixed-2", "target": "root-cause:sess-5", "relation": "derived_from", "confidence": 0.81},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:logon-22",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "session:logon-22",
+                        "target": "host:ws-12",
+                        "relation": "executed_on",
+                        "relation_strength": "inferred",
+                    },
+                    {
+                        "source": "session:logon-22",
+                        "target": "ip:185.220.101.45",
+                        "relation": "authenticated_from",
+                        "relation_strength": "inferred",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-auth-mixed-1",
+                    "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                    "quality": 0.82,
+                    "typed_fact": {"family": "identity", "type": "auth_event", "quality": 0.82},
+                },
+                {
+                    "observation_id": "obs-auth-mixed-2",
+                    "summary": "Process telemetry linked LOGON-22 to powershell.exe on WS-12.",
+                    "quality": 0.8,
+                    "typed_fact": {"family": "log", "type": "process_event", "quality": 0.8},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "supported"
+        assert assessment["confidence"] >= 0.79
+
+    def test_root_cause_engine_downgrades_email_lane_to_inconclusive_when_contradictions_are_material_but_not_decisive(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-contradiction-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.81,
+                        "priority": 0.94,
+                        "evidence_score": 0.5,
+                        "contradiction_score": 0.28,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-contradiction-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.87,
+                            },
+                            {
+                                "observation_id": "obs-email-contradiction-2",
+                                "summary": "Attachment detonation linked the delivered document to credential harvesting.",
+                                "quality": 0.84,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-contradiction-3",
+                                "summary": "Gateway re-scan reported the attachment as previously seen benign internal tooling.",
+                                "quality": 0.78,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "hyp-email-contradiction-2",
+                        "statement": "The message was a benign internal finance workflow.",
+                        "confidence": 0.57,
+                        "priority": 0.62,
+                        "evidence_score": 0.22,
+                        "contradiction_score": 0.19,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "Attachment execution followed delivery."},
+                    {"summary": "A later gateway re-scan partially disagreed with the detonation result."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-email-contradiction-1", "target": "root-cause:sess-6", "relation": "derived_from", "confidence": 0.86},
+                        {"source": "obs-email-contradiction-2", "target": "root-cause:sess-6", "relation": "derived_from", "confidence": 0.83},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "file:invoice.xlsm",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "opened_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-email-contradiction-1",
+                    "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                    "quality": 0.87,
+                    "typed_fact": {"family": "email", "type": "email_delivery", "quality": 0.87},
+                },
+                {
+                    "observation_id": "obs-email-contradiction-2",
+                    "summary": "Attachment detonation linked the delivered document to credential harvesting.",
+                    "quality": 0.84,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.84},
+                },
+                {
+                    "observation_id": "obs-email-contradiction-3",
+                    "summary": "Gateway re-scan reported the attachment as previously seen benign internal tooling.",
+                    "quality": 0.78,
+                    "typed_fact": {"family": "email", "type": "gateway_rescan", "quality": 0.78},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "inconclusive"
+        assert any(
+            "Resolve contradictory delivery, attachment, or mailbox evidence" in item
+            for item in assessment["missing_evidence"]
+        )
+        assert "competing explanations or unresolved gaps" in assessment["summary"]
+
+    def test_root_cause_engine_marks_identity_lane_unsupported_when_contradictions_nearly_offset_support(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious login sequence",
+            reasoning_state={
+                "investigation_lane": "log_identity",
+                "hypotheses": [
+                    {
+                        "id": "hyp-auth-contradiction-1",
+                        "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                        "status": "open",
+                        "confidence": 0.73,
+                        "priority": 0.88,
+                        "evidence_score": 0.34,
+                        "contradiction_score": 0.32,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-auth-contradiction-1",
+                                "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                                "quality": 0.81,
+                            }
+                        ],
+                        "contradicting_evidence_refs": [
+                            {
+                                "observation_id": "obs-auth-contradiction-2",
+                                "summary": "VPN logs later tied the same session to a known administrator maintenance window.",
+                                "quality": 0.79,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "hyp-auth-contradiction-2",
+                        "statement": "The activity is benign administrative noise.",
+                        "confidence": 0.55,
+                        "priority": 0.61,
+                        "evidence_score": 0.24,
+                        "contradiction_score": 0.12,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "User alice authenticated to WS-12."},
+                    {"summary": "Session LOGON-22 later aligned with an administrator maintenance window."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-auth-contradiction-1", "target": "root-cause:sess-7", "relation": "derived_from", "confidence": 0.83},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:logon-22",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    }
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-auth-contradiction-1",
+                    "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                    "quality": 0.81,
+                    "typed_fact": {"family": "identity", "type": "auth_event", "quality": 0.81},
+                },
+                {
+                    "observation_id": "obs-auth-contradiction-2",
+                    "summary": "VPN logs later tied the same session to a known administrator maintenance window.",
+                    "quality": 0.79,
+                    "typed_fact": {"family": "identity", "type": "vpn_event", "quality": 0.79},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "unsupported_hypothesis"
+        assert any(
+            "Re-test the leading explanation against the strongest alternative hypothesis" in item
+            for item in assessment["missing_evidence"]
+        )
+        assert "materially undercut by contradictory evidence" in assessment["summary"]
+
+    def test_root_cause_engine_keeps_tightly_ranked_competing_hypotheses_inconclusive(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious login sequence",
+            reasoning_state={
+                "investigation_lane": "log_identity",
+                "competition": {
+                    "competition_level": "tight",
+                    "lead_margin": 0.041,
+                },
+                "hypotheses": [
+                    {
+                        "id": "hyp-tight-1",
+                        "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                        "status": "supported",
+                        "confidence": 0.71,
+                        "priority": 0.91,
+                        "ranking_score": 0.91,
+                        "evidence_score": 0.36,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-tight-1",
+                                "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                                "quality": 0.82,
+                            },
+                            {
+                                "observation_id": "obs-tight-2",
+                                "summary": "Process telemetry tied the same session to powershell on WS-12.",
+                                "quality": 0.78,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-tight-2",
+                        "statement": "The activity is a legitimate administrator maintenance workflow.",
+                        "status": "open",
+                        "confidence": 0.68,
+                        "priority": 0.869,
+                        "ranking_score": 0.869,
+                        "evidence_score": 0.31,
+                        "contradiction_score": 0.04,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-tight-3",
+                                "summary": "VPN maintenance window overlapped the same source network and host.",
+                                "quality": 0.77,
+                            }
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "alice authenticated to WS-12 from 185.220.101.45."},
+                    {"summary": "powershell launched under the same session."},
+                    {"summary": "maintenance activity overlapped the same host."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-tight-1", "target": "root-cause:sess-tight", "relation": "derived_from", "confidence": 0.86},
+                        {"source": "obs-tight-2", "target": "root-cause:sess-tight", "relation": "derived_from", "confidence": 0.83},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:logon-22",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "session:logon-22",
+                        "target": "host:ws-12",
+                        "relation": "occurred_on",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-tight-1",
+                    "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                    "quality": 0.82,
+                    "typed_fact": {"family": "identity", "type": "auth_event", "quality": 0.82},
+                },
+                {
+                    "observation_id": "obs-tight-2",
+                    "summary": "Process telemetry tied the same session to powershell on WS-12.",
+                    "quality": 0.78,
+                    "typed_fact": {"family": "execution", "type": "process_event", "quality": 0.78},
+                },
+                {
+                    "observation_id": "obs-tight-3",
+                    "summary": "VPN maintenance window overlapped the same source network and host.",
+                    "quality": 0.77,
+                    "typed_fact": {"family": "identity", "type": "vpn_event", "quality": 0.77},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "inconclusive"
+        assert any(
+            "Separate the two strongest competing hypotheses" in item
+            for item in assessment["missing_evidence"]
+        )
+        assert "tightly ranked" in assessment["summary"]
 
 
 class TestEntityAndEvidenceState:
@@ -1220,6 +2359,10 @@ class TestEntityAndEvidenceState:
         relations = {(edge["source"], edge["target"], edge["relation"]) for edge in graph_state["edges"]}
         assert any(relation == "supports" for _, _, relation in relations)
         assert any(relation == "derived_from" for _, _, relation in relations)
+        assert any(relation == "caused_by" for _, _, relation in relations)
+        assert graph_state["causal_support"]["support_count"] >= 2
+        assert graph_state["causal_support"]["root_path_summaries"]
+        assert graph_state["causal_support"]["root_path_summaries"][0]["path_summary"]
         assert any(event["type"] == "root_cause_assessment" for event in graph_state["timeline"])
 
     def test_evidence_graph_preserves_typed_network_observation_metadata(self):
@@ -1271,6 +2414,95 @@ class TestEntityAndEvidenceState:
 
 
 class TestAgentLoopReasoning:
+    @pytest.mark.asyncio
+    async def test_wait_for_approval_marks_timeout_without_failing_session(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="sess-timeout", goal="test")
+        state.request_approval(
+            {"tool": "block_ip"},
+            "Approval required",
+            context={"escalation_conditions": ["Need analyst signoff"]},
+        )
+        loop._active_sessions[state.session_id] = state
+        loop._approval_events[state.session_id] = asyncio.Event()
+
+        async def _timeout_wait_for(awaitable, timeout=None):
+            awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch("src.agent.agent_loop.asyncio.wait_for", side_effect=_timeout_wait_for):
+            approved = await loop._wait_for_approval(state.session_id, state)
+
+        assert approved is False
+        assert state.pending_approval is None
+        assert state.last_approval_outcome["status"] == "timed_out"
+        assert state.last_approval_outcome["reviewed_at"]
+        assert state.phase != AgentPhase.FAILED
+
+    def test_request_approval_preserves_execution_context(self, tmp_path):
+        _make_agent_loop(tmp_path)
+        state = AgentState(session_id="sess-approval", goal="Investigate suspicious login")
+        approval_context = {
+            "tool": "block_ip",
+            "params": {"ip": "185.220.101.45"},
+            "approval_id": "appr-1",
+            "case_id": "case-1",
+            "workflow_id": "incident-response",
+            "specialist": "responder_agent",
+            "step": 2,
+            "reasoning_status": "collecting_evidence",
+            "stop_conditions": ["Stop when deterministic evidence and causal explanation align."],
+            "escalation_conditions": ["Escalate when approval-gated actions are required."],
+            "execution_guidance": {
+                "lane": "log_identity",
+                "deterministic_verdict": "SUSPICIOUS",
+                "deterministic_verdict_owner": "CABTA deterministic core",
+                "required_evidence_fields": ["account", "host", "source_ip"],
+                "escalation_hooks": ["Escalate when the event sequence suggests brute force, password spray, or compromised-session behavior."],
+                "causal_path_summaries": ["alice supports responder approval context"],
+            },
+        }
+        state.request_approval(
+            {"action": "use_tool", "tool": "block_ip", "approval_id": "appr-1"},
+            "Tool 'block_ip' requires analyst approval before execution.",
+            context=approval_context,
+        )
+
+        assert state.pending_approval["status"] == "pending"
+        assert state.pending_approval["context"]["tool"] == "block_ip"
+        assert state.pending_approval["context"]["escalation_conditions"] == ["Escalate when approval-gated actions are required."]
+        assert state.pending_approval["context"]["execution_guidance"]["lane"] == "log_identity"
+        assert state.pending_approval["context"]["execution_guidance"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+        assert "account" in state.pending_approval["context"]["execution_guidance"]["required_evidence_fields"]
+        assert state.pending_approval["context"]["execution_guidance"]["escalation_hooks"]
+
+    def test_record_execution_blocker_updates_reasoning_state(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        state = AgentState(session_id="sess-blocker", goal="Investigate suspicious login")
+        state.reasoning_state = {
+            "status": "collecting_evidence",
+            "missing_evidence": ["Need stronger host attribution."],
+        }
+        approval_context = {
+            "tool": "block_ip",
+            "execution_guidance": {
+                "lane": "log_identity",
+                "deterministic_verdict": "SUSPICIOUS",
+            },
+        }
+
+        loop._record_execution_blocker(
+            state,
+            tool_name="block_ip",
+            blocker_status="timed_out",
+            approval_context=approval_context,
+        )
+
+        assert state.reasoning_state["approval_status"] == "timed_out"
+        assert state.reasoning_state["execution_blockers"][-1]["tool"] == "block_ip"
+        assert "Approval-gated action 'block_ip' is timed_out" in state.reasoning_state["missing_evidence"][-1]
+        assert state.last_approval_outcome["status"] == "timed_out"
+
     @pytest.mark.asyncio
     async def test_chat_with_tools_uses_failover_provider_and_preserves_filtered_tool_list(self, tmp_path):
         loop = _make_agent_loop(tmp_path)

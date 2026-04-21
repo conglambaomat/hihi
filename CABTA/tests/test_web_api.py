@@ -456,26 +456,61 @@ class TestFastAPIEndpoints:
         data = r.json()
         assert data['workflow_id'] == 'ioc-triage'
         assert data['status'] in ('ready', 'degraded', 'blocked')
+        assert data['optional_runtime']['capability_scope'] == 'optional_infrastructure'
+        assert isinstance(data['optional_runtime']['degraded_dependencies'], list)
 
     def test_workflow_run_uses_playbook_backend(self):
         self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
         r = self.client.post('/api/workflows/incident-response/run', json={
             'goal': 'Respond to a malware incident',
-            'params': {'alert_text': 'Suspicious beaconing'},
+            'params': {
+                'alert_text': 'Suspicious beaconing',
+                'investigation_plan': {
+                    'next_action_signals': [{'tool': 'investigate_ioc'}],
+                    'triage_contracts': [
+                        {
+                            'contract_id': 'fortigate_outbound_monitoring',
+                            'required_fields': ['host', 'dest_ip'],
+                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                        }
+                    ],
+                },
+                'typed_observations': [
+                    {'observation_type': 'network_event', 'host': 'WS-12', 'dest_ip': '185.220.101.45'}
+                ],
+            },
         })
         assert r.status_code == 200
         data = r.json()
         assert data['workflow_id'] == 'incident-response'
         assert data['backend'] == 'playbook'
         assert data['session_id'] == 'wf-session'
+        assert 'runtime_enforcement' in data
+        assert data['runtime_enforcement']['status'] in ('ready', 'degraded')
+        assert data['runtime_enforcement']['evidence_contract']['triage_contract_runtime']['satisfied_count'] == 1
+        assert data['dependency_status'] in ('ready', 'degraded')
 
     def test_workflow_run_accepts_inputs_alias_for_params(self):
         self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
 
         r = self.client.post('/api/workflows/threat-hunt/run', json={
+            'goal': 'Investigate suspicious outbound beaconing linked to 185.220.101.45',
             'inputs': {
                 'hunt_hypothesis': 'Investigate suspicious outbound beaconing',
                 'known_indicators': {'ips': ['185.220.101.45']},
+                'investigation_plan': {
+                    'next_action_signals': [{'tool': 'extract_iocs'}],
+                    'triage_contracts': [
+                        {
+                            'contract_id': 'ioc_triage',
+                            'required_fields': ['ioc', 'ioc_type'],
+                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                        }
+                    ],
+                },
+                'typed_observations': [
+                    {'observation_type': 'ioc_enrichment', 'ioc': '185.220.101.45', 'ioc_type': 'ip'}
+                ],
             },
         })
 
@@ -484,6 +519,68 @@ class TestFastAPIEndpoints:
         assert args[0] == 'threat_hunt'
         assert args[1]['hunt_hypothesis'] == 'Investigate suspicious outbound beaconing'
         assert args[1]['known_indicators']['ips'] == ['185.220.101.45']
+
+    def test_workflow_run_rejects_missing_runtime_contract_inputs(self):
+        r = self.client.post('/api/workflows/incident-response/run', json={})
+        assert r.status_code == 400
+        data = r.json()['detail']
+        assert data['message'] == 'Workflow runtime contract is not ready'
+        assert data['runtime_enforcement']['status'] == 'blocked'
+        assert 'missing_plan' in data['runtime_enforcement']['blocking_reasons']
+        assert 'missing_triage_contract_evidence' in data['runtime_enforcement']['blocking_reasons']
+        assert data['runtime_enforcement']['execution_surface']['capability_scope'] == 'workflow_runtime_contract'
+        assert data['runtime_enforcement']['execution_surface']['dependency_status'] in ('ready', 'degraded', 'blocked')
+
+    def test_workflow_run_rejects_incident_response_without_tier1_triage_evidence(self):
+        r = self.client.post('/api/workflows/incident-response/run', json={
+            'goal': 'Respond to suspicious Windows logon activity',
+            'params': {
+                'alert_text': '4625 followed by 4624 for alice',
+                'investigation_plan': {
+                    'next_action_signals': [{'tool': 'investigate_ioc'}],
+                    'triage_contracts': [
+                        {
+                            'contract_id': 'windows_logon_monitoring',
+                            'required_fields': ['account', 'host'],
+                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                        }
+                    ],
+                },
+                'typed_observations': [
+                    {'observation_type': 'auth_event', 'account': 'alice'}
+                ],
+            },
+        })
+        assert r.status_code == 400
+        data = r.json()['detail']
+        assert data['runtime_enforcement']['status'] == 'blocked'
+        assert 'missing_triage_contract_evidence' in data['runtime_enforcement']['blocking_reasons']
+        assert data['runtime_enforcement']['execution_surface']['capability_scope'] == 'workflow_runtime_contract'
+
+    def test_workflow_run_rejects_threat_hunt_without_tier1_ioc_evidence(self):
+        r = self.client.post('/api/workflows/threat-hunt/run', json={
+            'goal': 'Investigate phishing-linked IOC 185.220.101.45 across telemetry',
+            'params': {
+                'hunt_hypothesis': 'Look for IOC activity across hosts',
+                'investigation_plan': {
+                    'next_action_signals': [{'tool': 'extract_iocs'}],
+                    'triage_contracts': [
+                        {
+                            'contract_id': 'ioc_triage',
+                            'required_fields': ['ioc', 'ioc_type'],
+                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                        }
+                    ],
+                },
+                'typed_observations': [
+                    {'observation_type': 'ioc_enrichment', 'ioc': '185.220.101.45'}
+                ],
+            },
+        })
+        assert r.status_code == 400
+        data = r.json()['detail']
+        assert data['runtime_enforcement']['status'] == 'blocked'
+        assert 'missing_triage_contract_evidence' in data['runtime_enforcement']['blocking_reasons']
 
     def test_chat_playbook_accepts_structured_json_input(self):
         self.app.state.playbook_engine.execute = AsyncMock(return_value='chat-playbook-session')
@@ -644,6 +741,22 @@ class TestFastAPIEndpoints:
                 'thread_id': 'case-thread-1',
                 'summary': 'Alice authenticated from a suspicious source IP and initiated a risky session.',
                 'latest_session_id': 'sess-case-memory',
+                'memory_scope': 'published',
+                'memory_boundary': {
+                    'case_id': 'CASE-42',
+                    'thread_id': 'case-thread-1',
+                    'session_id': 'sess-case-memory',
+                    'publication_scope': 'published',
+                },
+                'authoritative_snapshot': {
+                    'root_cause_assessment': {
+                        'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
+                    },
+                    'accepted_facts': [
+                        {'summary': 'Alice authenticated from 185.220.101.45.'},
+                    ],
+                    'unresolved_questions': ['Which host executed the follow-on process activity?'],
+                },
                 'accepted_snapshot': {
                     'root_cause_assessment': {
                         'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
@@ -666,9 +779,11 @@ class TestFastAPIEndpoints:
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Latest root-cause state:' in args[0]
-        assert 'Accepted facts:' in args[0]
+        assert 'Published case snapshot facts:' in args[0]
+        assert 'Answer from the published case snapshot' in args[0]
         assert kwargs['metadata']['thread_id'] == 'case-thread-1'
         assert kwargs['metadata']['case_memory_context']['latest_session_id'] == 'sess-case-memory'
+        assert kwargs['metadata']['case_memory_context']['memory_boundary']['publication_scope'] == 'published'
 
     def test_agent_session_payload_flattens_chat_message_metadata(self):
         session_id = self.app.state.agent_store.create_session(

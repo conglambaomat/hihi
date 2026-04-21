@@ -22,6 +22,24 @@ class EvidenceGraph:
         state.setdefault("updated_at", _now_iso())
         return state
 
+    def summarize_causal_support(self, graph_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        state = self.bootstrap(graph_state)
+        edges = [item for item in state.get("edges", []) if isinstance(item, dict)]
+        supports = [item for item in edges if item.get("relation") in {"supports", "derived_from", "caused_by"}]
+        contradicts = [item for item in edges if item.get("relation") == "contradicts"]
+        strongest_paths = sorted(
+            supports,
+            key=lambda item: float(item.get("confidence", 0.0) or 0.0),
+            reverse=True,
+        )[:6]
+        root_paths = self._root_path_summaries(state, strongest_paths)
+        return {
+            "support_count": len(supports),
+            "contradiction_count": len(contradicts),
+            "strongest_support_paths": strongest_paths,
+            "root_path_summaries": root_paths,
+        }
+
     def ingest_observation(
         self,
         graph_state: Optional[Dict[str, Any]],
@@ -69,6 +87,7 @@ class EvidenceGraph:
                 "timestamp": observation.get("timestamp") or evidence_ref.get("created_at") or _now_iso(),
                 "quality": observation.get("quality"),
                 "source_paths": list(observation.get("source_paths", [])),
+                "entity_count": len(observation.get("entities", []) if isinstance(observation.get("entities"), list) else []),
             }
             self._upsert_node(state, node)
 
@@ -96,6 +115,7 @@ class EvidenceGraph:
                         "basis": "normalized_observation",
                         "explicit": True,
                         "timestamp": node["timestamp"],
+                        "support_kind": "observation_entity_link",
                     },
                 )
 
@@ -198,18 +218,43 @@ class EvidenceGraph:
             for ref in root_cause_assessment.get("supporting_evidence_refs", []) or []:
                 observation_id = self._observation_id_from_ref(session_id, ref)
                 if observation_id:
+                    confidence = ref.get("confidence") or ref.get("quality") or 0.72
                     self._upsert_edge(
                         state,
                         {
                             "source": observation_id,
                             "target": root_node["id"],
                             "relation": "derived_from",
-                            "confidence": ref.get("confidence") or ref.get("quality") or 0.72,
+                            "confidence": confidence,
                             "basis": ref.get("source_kind") or "root_cause_support",
                             "explicit": True,
                             "timestamp": ref.get("created_at") or _now_iso(),
+                            "support_kind": "root_cause_support",
                         },
                     )
+                    for hypothesis in hypotheses[:8]:
+                        if not isinstance(hypothesis, dict):
+                            continue
+                        hypothesis_id = f"hypothesis:{hypothesis.get('id')}".lower()
+                        supporting_refs = hypothesis.get("supporting_evidence_refs", [])
+                        if any(
+                            self._observation_id_from_ref(session_id, item) == observation_id
+                            for item in supporting_refs
+                            if isinstance(item, dict)
+                        ):
+                            self._upsert_edge(
+                                state,
+                                {
+                                    "source": hypothesis_id,
+                                    "target": root_node["id"],
+                                    "relation": "caused_by",
+                                    "confidence": min(0.96, float(confidence) + 0.08),
+                                    "basis": "hypothesis_root_cause_alignment",
+                                    "explicit": False,
+                                    "timestamp": ref.get("created_at") or _now_iso(),
+                                    "support_kind": "hypothesis_bridge",
+                                },
+                            )
             self._append_timeline_event(
                 state,
                 {
@@ -222,16 +267,61 @@ class EvidenceGraph:
                 },
             )
 
+        state["causal_support"] = self.summarize_causal_support(state)
         state["updated_at"] = _now_iso()
         return state
 
+    def _root_path_summaries(self, state: Dict[str, Any], support_edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        node_lookup = {
+            str(item.get("id") or ""): item
+            for item in state.get("nodes", [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        summaries: List[Dict[str, Any]] = []
+        seen = set()
+        for edge in support_edges:
+            if not isinstance(edge, dict):
+                continue
+            source = str(edge.get("source") or "").strip()
+            target = str(edge.get("target") or "").strip()
+            relation = str(edge.get("relation") or "").strip()
+            if not source or not target or not relation:
+                continue
+            summary = {
+                "source": source,
+                "source_type": str(node_lookup.get(source, {}).get("type") or "unknown"),
+                "target": target,
+                "target_type": str(node_lookup.get(target, {}).get("type") or "unknown"),
+                "relation": relation,
+                "confidence": float(edge.get("confidence", 0.0) or 0.0),
+                "basis": str(edge.get("basis") or ""),
+                "support_kind": str(edge.get("support_kind") or ""),
+                "path_summary": self._describe_path(source, target, relation, node_lookup),
+            }
+            key = (summary["source"], summary["target"], summary["relation"], summary["basis"])
+            if key in seen:
+                continue
+            seen.add(key)
+            summaries.append(summary)
+        return summaries[:6]
+
+    @staticmethod
+    def _describe_path(source: str, target: str, relation: str, node_lookup: Dict[str, Dict[str, Any]]) -> str:
+        source_node = node_lookup.get(source, {})
+        target_node = node_lookup.get(target, {})
+        source_label = str(source_node.get("label") or source)
+        target_label = str(target_node.get("label") or target)
+        return f"{source_label} {relation} {target_label}"
+
     def summarize_for_case_event(self, graph_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         state = self.bootstrap(graph_state)
+        causal_support = self.summarize_causal_support(state)
         return {
             "node_count": len(state.get("nodes", [])),
             "edge_count": len(state.get("edges", [])),
             "timeline": list(state.get("timeline", []))[-18:],
             "edges": list(state.get("edges", []))[-40:],
+            "causal_support": causal_support,
         }
 
     def _observation_entity_ids(self, observation: Dict[str, Any], entity_lookup: Dict[str, Any]) -> List[str]:

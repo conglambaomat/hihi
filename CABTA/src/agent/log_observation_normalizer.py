@@ -12,6 +12,15 @@ from typing import Any, Dict, List
 from .observation_type_inference import infer_generic_observation_type
 
 
+LANE_BY_OBSERVATION_TYPE = {
+    "auth_event": "identity",
+    "process_event": "endpoint",
+    "network_event": "network",
+    "host_timeline_event": "endpoint",
+    "correlation_observation": "generic",
+}
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -110,13 +119,38 @@ class LogObservationNormalizer:
 
     def _classify_log_row(self, row: Dict[str, Any]) -> str:
         keys = {str(key).lower() for key in row.keys()}
-        if {"user", "username", "account"} & keys and {"src_ip", "source_ip", "client_ip", "session_id", "logon_id", "action"} & keys:
+        if {"user", "username", "account", "target_user_name"} & keys and {
+            "src_ip",
+            "source_ip",
+            "client_ip",
+            "ip_address",
+            "session_id",
+            "logon_id",
+            "target_logon_id",
+            "action",
+            "event_id",
+            "eventcode",
+            "event_code",
+            "logon_type",
+            "logontype",
+        } & keys:
             return "auth_event"
         if {"process", "process_name", "image", "image_path", "cmdline", "command_line"} & keys:
             return "process_event"
-        if {"dest_ip", "destination_ip", "remote_ip", "domain", "url"} & keys:
+        if {
+            "dest_ip",
+            "destination_ip",
+            "remote_ip",
+            "dstip",
+            "domain",
+            "dest_name",
+            "dstname",
+            "url",
+            "service",
+            "policyid",
+        } & keys:
             return "network_event"
-        if {"host", "hostname", "device"} & keys:
+        if {"host", "hostname", "device", "computer_name"} & keys:
             return "host_timeline_event"
         return "correlation_observation"
 
@@ -125,20 +159,27 @@ class LogObservationNormalizer:
             {
                 "timestamp": row.get("timestamp") or row.get("@timestamp") or row.get("_time"),
                 "action": row.get("action") or row.get("event") or row.get("event_name"),
-                "user": row.get("user") or row.get("username") or row.get("account"),
-                "host": row.get("host") or row.get("hostname") or row.get("device"),
-                "session_id": row.get("session_id") or row.get("logon_id") or row.get("session"),
-                "source_ip": row.get("source_ip") or row.get("src_ip") or row.get("client_ip"),
-                "dest_ip": row.get("dest_ip") or row.get("destination_ip") or row.get("remote_ip"),
-                "domain": row.get("domain"),
+                "user": row.get("user") or row.get("username") or row.get("account") or row.get("target_user_name"),
+                "host": row.get("host") or row.get("hostname") or row.get("device") or row.get("computer_name"),
+                "session_id": row.get("session_id") or row.get("logon_id") or row.get("session") or row.get("target_logon_id"),
+                "source_ip": row.get("source_ip") or row.get("src_ip") or row.get("client_ip") or row.get("ip_address"),
+                "dest_ip": row.get("dest_ip") or row.get("destination_ip") or row.get("remote_ip") or row.get("dstip"),
+                "domain": row.get("domain") or row.get("dest_name") or row.get("dstname"),
                 "url": row.get("url"),
                 "process_name": row.get("process_name") or row.get("process") or row.get("image"),
                 "process_path": row.get("image_path") or row.get("process_path"),
                 "command_line": row.get("cmdline") or row.get("command_line"),
+                "service": row.get("service") or row.get("app") or row.get("application"),
+                "policy_id": row.get("policyid") or row.get("policy_id"),
+                "event_code": row.get("eventcode") or row.get("event_code") or row.get("event_id"),
+                "logon_type": row.get("logon_type") or row.get("Logon_Type") or row.get("logontype"),
+                "vendor": row.get("device_vendor") or row.get("vendor"),
                 "observation_type": observation_type,
             }
         )
         facts["raw_row"] = copy.deepcopy(row)
+        facts["canonical_facts"] = self._canonical_log_facts(facts, observation_type)
+        facts["lane"] = LANE_BY_OBSERVATION_TYPE.get(observation_type, "generic")
         return facts
 
     def _log_row_summary(self, row: Dict[str, Any], observation_type: str) -> str:
@@ -155,7 +196,14 @@ class LogObservationNormalizer:
             parts = [f"process={process_name}" if process_name else "", f"host={host}" if host else "", f"user={user}" if user else "", f"dest_ip={dest_ip}" if dest_ip else ""]
             return "Process telemetry: " + ", ".join(part for part in parts if part)
         if observation_type == "network_event":
-            parts = [f"host={host}" if host else "", f"user={user}" if user else "", f"dest_ip={dest_ip}" if dest_ip else "", f"domain={row.get('domain')}" if row.get("domain") else ""]
+            parts = [
+                f"host={host}" if host else "",
+                f"user={user}" if user else "",
+                f"dest_ip={dest_ip}" if dest_ip else "",
+                f"domain={row.get('domain') or row.get('dest_name') or row.get('dstname')}" if (row.get("domain") or row.get("dest_name") or row.get("dstname")) else "",
+                f"service={row.get('service') or row.get('app') or row.get('application')}" if (row.get("service") or row.get("app") or row.get("application")) else "",
+                f"action={row.get('action') or row.get('event') or row.get('event_name')}" if (row.get("action") or row.get("event") or row.get("event_name")) else "",
+            ]
             return "Network telemetry: " + ", ".join(part for part in parts if part)
         return "Host telemetry row observed."
 
@@ -202,21 +250,25 @@ class LogObservationNormalizer:
         result: Any,
     ) -> Dict[str, Any]:
         observation_id = f"obs:{session_id}:{step_number}:{index}:{tool_name}:{observation_type}".lower()
+        normalized_facts = self._strip_none(facts)
+        lane = str(normalized_facts.get("lane") or LANE_BY_OBSERVATION_TYPE.get(observation_type, "generic"))
         return {
             "observation_id": observation_id,
             "tool_name": tool_name,
             "observation_type": observation_type,
-            "timestamp": str(facts.get("timestamp") or facts.get("@timestamp") or facts.get("time") or _now_iso()),
+            "timestamp": str(normalized_facts.get("timestamp") or normalized_facts.get("@timestamp") or normalized_facts.get("time") or _now_iso()),
             "summary": summary,
             "quality": round(max(0.0, min(1.0, float(quality))), 3),
             "source_kind": source_kind,
             "source_paths": list(source_paths),
             "entities": self._dedupe_entities(entities),
-            "facts": self._strip_none(facts),
+            "facts": normalized_facts,
             "raw_ref": {
                 "params": copy.deepcopy(params),
                 "result_preview": self._preview_result(result),
             },
+            "observation_lane": lane,
+            "contract_version": "observation-contract/v2",
         }
 
     def _entities_from_value(self, value: Any, source_path: str) -> List[Dict[str, Any]]:
@@ -349,6 +401,25 @@ class LogObservationNormalizer:
             return True
         except ValueError:
             return False
+
+    def _canonical_log_facts(self, facts: Dict[str, Any], observation_type: str) -> Dict[str, Any]:
+        canonical = {
+            "observation_type": observation_type,
+            "timestamp": facts.get("timestamp"),
+            "action": facts.get("action"),
+            "principal": facts.get("user"),
+            "asset": facts.get("host"),
+            "session": facts.get("session_id"),
+            "source_ip": facts.get("source_ip"),
+            "destination_ip": facts.get("dest_ip"),
+            "process": facts.get("process_name"),
+            "command_line": facts.get("command_line"),
+            "domain": facts.get("domain"),
+            "url": facts.get("url"),
+        }
+        canonical["lane"] = LANE_BY_OBSERVATION_TYPE.get(observation_type, "generic")
+        canonical["typed_fields"] = sorted(key for key, value in canonical.items() if value not in (None, "", [], {}))
+        return self._strip_none(canonical)
 
     @staticmethod
     def _ip_attributes(value: str) -> Dict[str, Any]:

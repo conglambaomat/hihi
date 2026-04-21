@@ -61,15 +61,19 @@ class AgentState:
     thread_id: Optional[str] = None
     snapshot_lifecycle: Optional[str] = None
     is_published: bool = False
+    restored_memory_scope: Optional[str] = None
+    chat_context_restored_memory_scope: Optional[str] = None
     active_observations: List[Dict[str, Any]] = field(default_factory=list)
     accepted_facts: List[Dict[str, Any]] = field(default_factory=list)
     unresolved_questions: List[str] = field(default_factory=list)
     evidence_quality_summary: Dict[str, Any] = field(default_factory=dict)
+    fact_family_schemas: Dict[str, Any] = field(default_factory=dict)
     reasoning_state: Dict[str, Any] = field(default_factory=dict)
     entity_state: Dict[str, Any] = field(default_factory=dict)
     evidence_state: Dict[str, Any] = field(default_factory=dict)
     deterministic_decision: Dict[str, Any] = field(default_factory=dict)
     agentic_explanation: Dict[str, Any] = field(default_factory=dict)
+    last_approval_outcome: Optional[Dict[str, Any]] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ------------------------------------------------------------------ #
@@ -99,12 +103,14 @@ class AgentState:
         }
         self.findings.append(stamped)
 
-    def request_approval(self, action: Dict[str, Any], reason: str) -> None:
+    def request_approval(self, action: Dict[str, Any], reason: str, *, context: Optional[Dict[str, Any]] = None) -> None:
         """Park the loop until an analyst approves or rejects *action*."""
         self.pending_approval = {
             "action": action,
             "reason": reason,
             "requested_at": datetime.now(timezone.utc).isoformat(),
+            "context": dict(context or {}),
+            "status": "pending",
         }
 
     def clear_approval(self) -> Optional[Dict[str, Any]]:
@@ -173,10 +179,13 @@ class AgentState:
             "thread_id": self.thread_id,
             "snapshot_lifecycle": self.snapshot_lifecycle,
             "is_published": self.is_published,
+            "restored_memory_scope": self.restored_memory_scope,
+            "chat_context_restored_memory_scope": self.chat_context_restored_memory_scope,
             "active_observations": self.active_observations,
             "accepted_facts": self.accepted_facts,
             "unresolved_questions": self.unresolved_questions,
             "evidence_quality_summary": self.evidence_quality_summary,
+            "fact_family_schemas": self.fact_family_schemas,
             "reasoning_state": self.reasoning_state,
             "entity_state": self.entity_state,
             "evidence_state": self.evidence_state,

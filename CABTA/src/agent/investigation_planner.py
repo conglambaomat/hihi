@@ -24,8 +24,11 @@ class InvestigationPlan:
     evidence_gaps: List[str]
     initial_hypotheses: List[str]
     first_pivots: List[str]
+    next_action_signals: List[Dict[str, Any]]
     stopping_conditions: List[str]
     escalation_conditions: List[str]
+    triage_contracts: List[Dict[str, Any]]
+    deterministic_verdict_owner: str = "CABTA deterministic core"
     generated_at: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -83,6 +86,13 @@ class InvestigationPlanner:
             metadata=meta,
         )
         first_pivots = self._first_pivots(lane, primary_entities, observable_summary, evidence_gaps)
+        next_action_signals = self._next_action_signals(
+            lane,
+            observable_summary,
+            evidence_gaps,
+            initial_hypotheses,
+            metadata=meta,
+        )
         stopping_conditions = self._stopping_conditions(
             lane,
             evidence_gaps,
@@ -93,6 +103,15 @@ class InvestigationPlanner:
             lane,
             evidence_gaps,
             observable_summary=observable_summary,
+            metadata=meta,
+        )
+        triage_contracts = self._triage_contracts(
+            lane,
+            observable_summary,
+            evidence_gaps,
+            first_pivots,
+            stopping_conditions,
+            escalation_conditions,
             metadata=meta,
         )
         plan = InvestigationPlan(
@@ -106,8 +125,10 @@ class InvestigationPlanner:
             evidence_gaps=evidence_gaps,
             initial_hypotheses=initial_hypotheses,
             first_pivots=first_pivots,
+            next_action_signals=next_action_signals,
             stopping_conditions=stopping_conditions,
             escalation_conditions=escalation_conditions,
+            triage_contracts=triage_contracts,
         )
         return plan.to_dict()
 
@@ -130,8 +151,13 @@ class InvestigationPlanner:
         payload["evidence_gaps"] = [str(item) for item in payload.get("evidence_gaps", []) if str(item).strip()]
         payload["initial_hypotheses"] = [str(item) for item in payload.get("initial_hypotheses", []) if str(item).strip()]
         payload["first_pivots"] = [str(item) for item in payload.get("first_pivots", []) if str(item).strip()]
+        payload["next_action_signals"] = self._normalize_next_action_signals(payload.get("next_action_signals"))
         payload["stopping_conditions"] = [str(item) for item in payload.get("stopping_conditions", []) if str(item).strip()]
         payload["escalation_conditions"] = [str(item) for item in payload.get("escalation_conditions", []) if str(item).strip()]
+        payload["triage_contracts"] = self._normalize_triage_contracts(payload.get("triage_contracts"))
+        payload["deterministic_verdict_owner"] = str(
+            payload.get("deterministic_verdict_owner") or "CABTA deterministic core"
+        ).strip() or "CABTA deterministic core"
         payload.setdefault("generated_at", _now_iso())
         normalized_payload = {
             "goal": payload["goal"],
@@ -144,8 +170,11 @@ class InvestigationPlanner:
             "evidence_gaps": payload["evidence_gaps"],
             "initial_hypotheses": payload["initial_hypotheses"],
             "first_pivots": payload["first_pivots"],
+            "next_action_signals": payload["next_action_signals"],
             "stopping_conditions": payload["stopping_conditions"],
             "escalation_conditions": payload["escalation_conditions"],
+            "triage_contracts": payload["triage_contracts"],
+            "deterministic_verdict_owner": payload["deterministic_verdict_owner"],
             "generated_at": payload["generated_at"],
         }
         return InvestigationPlan(**normalized_payload).to_dict()
@@ -183,7 +212,28 @@ class InvestigationPlanner:
             return "email"
         if any(token in combined_text for token in ("malware", "sample", "exe", "dll", "payload", "sandbox", "file", "process")):
             return "file"
-        if any(token in combined_text for token in ("splunk", "log", "timeline", "session", "signin", "login", "identity", "telemetry", "hunt")):
+        if any(
+            token in combined_text
+            for token in (
+                "splunk",
+                "log",
+                "timeline",
+                "session",
+                "signin",
+                "login",
+                "identity",
+                "telemetry",
+                "hunt",
+                "fortigate",
+                "fortigate traffic",
+                "outbound",
+                "egress",
+                "firewall",
+                "winlogon",
+                "4624",
+                "4625",
+            )
+        ):
             return "log_identity"
         if any(token in combined_text for token in ("cve", "vulnerability", "exploit", "patch")):
             return "vulnerability"
@@ -582,6 +632,36 @@ class InvestigationPlanner:
                 return "malware_or_file_execution"
             return "file_or_process_artifact"
         if lane == "log_identity":
+            if any(
+                token in combined_text
+                for token in (
+                    "fortigate",
+                    "outbound",
+                    "egress",
+                    "firewall",
+                    "beacon",
+                    "callback",
+                    "destination",
+                    "dest_ip",
+                )
+            ):
+                return "fortigate_outbound_monitoring"
+            if any(
+                token in combined_text
+                for token in (
+                    "4624",
+                    "4625",
+                    "winlogon",
+                    "windows logon",
+                    "login",
+                    "signin",
+                    "session",
+                    "credential",
+                    "identity",
+                    "impossible travel",
+                )
+            ):
+                return "windows_logon_monitoring"
             if any(token in combined_text for token in ("mfa", "signin", "login", "session", "credential", "identity", "impossible travel")):
                 return "identity_or_session_activity"
             return "log_or_identity_activity"
@@ -616,6 +696,23 @@ class InvestigationPlanner:
                     "Need stronger attribution between auth evidence and downstream process or network activity.",
                 ]
             )
+            typed_fact_text = " ".join(
+                str(item).lower()
+                for item in (
+                    metadata.get("typed_fact_hints"),
+                    metadata.get("entity_hints"),
+                    metadata.get("accepted_facts"),
+                    metadata.get("observables"),
+                    metadata.get("observable_summary"),
+                )
+                if str(item or "").strip()
+            )
+            if any(token in typed_fact_text for token in ("fortigate", "outbound", "egress", "firewall", "dest_ip", "destination", "beacon", "callback")):
+                gaps.insert(0, "Need FortiGate egress attribution covering source host, destination, service, action, and policy context.")
+                gaps.append("Need to confirm whether outbound traffic is allowed business activity, blocked noise, or suspicious beacon-like behavior.")
+            if any(token in typed_fact_text for token in ("4624", "4625", "winlogon", "windows logon", "logon type", "credential", "signin")):
+                gaps.insert(0, "Need Windows logon attribution covering account, host, source network, logon type, and success-versus-failure sequence.")
+                gaps.append("Need to distinguish routine logon activity from brute force, password spray, or compromised-session behavior.")
         elif lane == "email":
             gaps.extend(
                 [
@@ -700,11 +797,291 @@ class InvestigationPlanner:
             pivots.insert(0, f"Validate the strongest observable first: {', '.join(observable_summary[:3])}.")
         elif primary_entities and lane == "generic":
             pivots.insert(0, f"Bootstrap the investigation around {', '.join(primary_entities[:3])}.")
+        if any(token in observable_text for token in ("fortigate", "outbound", "egress", "beacon", "callback")):
+            pivots.append("Prioritize pivots that verify source host, destination, service, action, and repeat cadence for outbound traffic.")
+        if any(token in observable_text for token in ("4624", "4625", "winlogon", "logon", "signin", "login")):
+            pivots.append("Prioritize pivots that verify account, host, source network, logon type, and success-failure sequence before expanding scope.")
         if "session" in observable_text or "signin" in observable_text or "login" in observable_text:
             pivots.append("Prioritize pivots that clarify user, session, and host linkage before expanding scope.")
         if evidence_gaps:
             pivots.append(f"Prioritize pivots that reduce this evidence gap: {evidence_gaps[0]}")
         return self._dedupe(pivots)[:6]
+
+    def _next_action_signals(
+        self,
+        lane: str,
+        observable_summary: List[str],
+        evidence_gaps: List[str],
+        initial_hypotheses: List[str],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        meta = metadata or {}
+        typed_fact_text = " ".join(
+            str(item).lower()
+            for item in (
+                meta.get("typed_fact_hints"),
+                meta.get("entity_hints"),
+                meta.get("accepted_facts"),
+                meta.get("observables"),
+                meta.get("observable_summary"),
+            )
+            if str(item or "").strip()
+        )
+        top_gap = str(evidence_gaps[0]).strip() if evidence_gaps else ""
+        strongest_observable = ", ".join(observable_summary[:3])
+        strongest_hypothesis = str(initial_hypotheses[0]).strip() if initial_hypotheses else ""
+        signals: List[Dict[str, Any]] = []
+
+        def _append(tool: str, priority: int, reason: str, signal_type: str) -> None:
+            if not str(tool).strip() or not str(reason).strip():
+                return
+            signals.append(
+                {
+                    "tool": str(tool).strip(),
+                    "priority": int(priority),
+                    "reason": str(reason).strip(),
+                    "signal_type": str(signal_type).strip(),
+                }
+            )
+
+        if lane == "log_identity":
+            _append(
+                "search_logs",
+                100,
+                f"Reduce the highest-priority identity evidence gap first: {top_gap or 'Need explicit user, host, session, and process linkage.'}",
+                "evidence_gap",
+            )
+        elif lane == "email":
+            _append(
+                "analyze_email",
+                100,
+                f"Validate the submitted email artifacts before broader pivots: {strongest_observable or 'submitted email evidence'}.",
+                "plan_pivot",
+            )
+        elif lane == "file":
+            _append(
+                "analyze_malware",
+                100,
+                f"Validate the submitted file or execution artifact before enrichment: {strongest_observable or 'submitted file evidence'}.",
+                "plan_pivot",
+            )
+        else:
+            _append(
+                "investigate_ioc",
+                90,
+                f"Anchor the investigation on the strongest observable first: {strongest_observable or 'submitted observable'}.",
+                "plan_pivot",
+            )
+
+        if top_gap and any(token in top_gap.lower() for token in ("host", "user", "session", "process", "telemetry", "log")):
+            _append("search_logs", 95, f"Close the top telemetry gap directly: {top_gap}", "evidence_gap")
+        if top_gap and any(token in top_gap.lower() for token in ("delivery", "sender", "recipient", "attachment")):
+            _append("analyze_email", 95, f"Close the top email-delivery gap directly: {top_gap}", "evidence_gap")
+        if top_gap and any(token in top_gap.lower() for token in ("file", "hash", "sandbox", "behavior", "execution")):
+            _append("analyze_malware", 95, f"Close the top file-behavior gap directly: {top_gap}", "evidence_gap")
+        if top_gap and any(token in top_gap.lower() for token in ("ioc", "observable", "reputation", "ownership", "corroborating")):
+            _append("investigate_ioc", 92, f"Close the top IOC evidence gap directly: {top_gap}", "evidence_gap")
+
+        if strongest_hypothesis and any(token in strongest_hypothesis.lower() for token in ("command-and-control", "command and control", "callback", "beacon")):
+            _append("investigate_ioc", 88, "Test the leading C2-style hypothesis with deterministic IOC enrichment before deeper interpretation.", "hypothesis")
+        if strongest_hypothesis and any(token in strongest_hypothesis.lower() for token in ("phishing", "business email compromise", "email", "delivery")):
+            _append("analyze_email", 88, "Test the leading phishing or delivery hypothesis against message artifacts before answering.", "hypothesis")
+        if strongest_hypothesis and any(token in strongest_hypothesis.lower() for token in ("malware", "payload", "execution", "binary")):
+            _append("analyze_malware", 88, "Test the leading malware-execution hypothesis against file behavior before answering.", "hypothesis")
+
+        if any(token in typed_fact_text for token in ("fortigate", "outbound", "egress", "firewall", "dest_ip", "destination", "beacon", "callback")):
+            _append("search_logs", 93, "FortiGate outbound triage should confirm source, destination, service, action, and recurrence before conclusion.", "fortigate_outbound")
+        if any(token in typed_fact_text for token in ("4624", "4625", "winlogon", "windows logon", "logon type", "failed logon", "successful logon")):
+            _append("search_logs", 93, "Windows logon triage should confirm account, host, source network, logon type, and success-failure sequence before conclusion.", "windows_logon")
+        if any(token in typed_fact_text for token in ("host:", "user:", "session:", "process:")):
+            _append("search_logs", 84, "Named entities are present; prefer pivots that prove explicit host, user, session, or process linkage.", "entity_linkage")
+        return self._normalize_next_action_signals(signals)[:6]
+
+    def _triage_contracts(
+        self,
+        lane: str,
+        observable_summary: List[str],
+        evidence_gaps: List[str],
+        first_pivots: List[str],
+        stopping_conditions: List[str],
+        escalation_conditions: List[str],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        meta = metadata or {}
+        typed_fact_text = " ".join(
+            str(item).lower()
+            for item in (
+                meta.get("typed_fact_hints"),
+                meta.get("entity_hints"),
+                meta.get("accepted_facts"),
+                meta.get("observables"),
+                meta.get("observable_summary"),
+            )
+            if str(item or "").strip()
+        )
+        contracts: List[Dict[str, Any]] = []
+
+        def _append(
+            contract_id: str,
+            title: str,
+            trigger_tokens: tuple[str, ...],
+            required_fields: List[str],
+            analyst_questions: List[str],
+            escalation_hooks: Optional[List[str]] = None,
+        ) -> None:
+            if trigger_tokens and not any(token in typed_fact_text for token in trigger_tokens):
+                return
+            contracts.append(
+                {
+                    "contract_id": contract_id,
+                    "contract_version": "triage-contract/v1",
+                    "lane": lane,
+                    "title": title,
+                    "deterministic_verdict_owner": "CABTA deterministic core",
+                    "observable_scope": list(observable_summary[:3]),
+                    "required_fields": required_fields,
+                    "analyst_questions": analyst_questions,
+                    "evidence_gaps": [
+                        item for item in evidence_gaps if any(field.replace("_", " ") in item.lower() or field in item.lower() for field in required_fields)
+                    ][:3] or list(evidence_gaps[:2]),
+                    "pivot_priorities": list(first_pivots[:3]),
+                    "stopping_conditions": list(stopping_conditions[:3]),
+                    "escalation_conditions": list(escalation_conditions[:3]),
+                    "escalation_hooks": [str(item).strip() for item in (escalation_hooks or []) if str(item).strip()][:3],
+                    "verdict_policy": "Gather attribution and chronology; do not change verdict ownership or finalize severity in the contract.",
+                }
+            )
+
+        if lane == "log_identity":
+            _append(
+                "fortigate_outbound_monitoring",
+                "FortiGate outbound monitoring triage",
+                ("fortigate", "outbound", "egress", "firewall", "dest_ip", "destination", "beacon", "callback"),
+                ["source_host", "dest_ip", "service", "action", "policy_context", "repeat_cadence"],
+                [
+                    "Which source host initiated the outbound connection?",
+                    "What destination, service, and action were recorded by FortiGate?",
+                    "Does the egress pattern repeat like beaconing or align to expected business activity?",
+                ],
+                [
+                    "Escalate when FortiGate evidence shows beacon-like recurrence without trusted business justification.",
+                    "Escalate when the source host or policy context cannot be attributed after the planned pivots.",
+                ],
+            )
+            _append(
+                "windows_logon_monitoring",
+                "Windows logon monitoring triage",
+                ("4624", "4625", "winlogon", "windows logon", "logon type", "failed logon", "successful logon"),
+                ["account", "host", "source_ip", "logon_type", "event_sequence", "session_id"],
+                [
+                    "Which account and host are tied to the logon events?",
+                    "Did the same source address produce both 4625 and 4624 activity?",
+                    "Does the logon type and sequence suggest normal access, spray, or compromise?",
+                ],
+                [
+                    "Escalate when the event sequence suggests brute force, password spray, or compromised-session behavior.",
+                    "Escalate when account, host, or source attribution remains incomplete after log pivots.",
+                ],
+            )
+        elif lane == "email":
+            _append(
+                "phishing_email_triage",
+                "Phishing email triage",
+                ("email", "phish", "sender", "recipient", "attachment", "url", "dmarc", "dkim", "spf", "bec", "spoof"),
+                ["sender", "recipient", "delivery_path", "auth_results", "message_artifact", "embedded_observables"],
+                [
+                    "Which sender and recipient are tied to the suspicious message?",
+                    "Do SPF, DKIM, and DMARC results support or contradict the claimed sender identity?",
+                    "Which attachment, URL, or message element requires the next deterministic pivot?",
+                ],
+                [
+                    "Escalate when impersonation or BEC indicators target payments, trust, or executive workflows.",
+                    "Escalate when delivery evidence exists but downstream user or host impact remains unresolved.",
+                ],
+            )
+        elif lane == "ioc":
+            _append(
+                "ioc_triage",
+                "IOC triage",
+                ("ioc", "indicator", "ip", "domain", "url", "hash", "reputation", "ownership", "callback", "beacon"),
+                ["observable", "observable_type", "reputation", "ownership", "sightings", "linked_context"],
+                [
+                    "What exact observable is under review and what type is it?",
+                    "What deterministic reputation or ownership evidence supports this IOC assessment?",
+                    "Which host, user, file, or delivery context links this IOC to the investigated case?",
+                ],
+                [
+                    "Escalate when malicious reputation appears without enough case linkage to explain impact.",
+                    "Escalate when infrastructure is suspicious but host, user, or delivery attribution remains unresolved.",
+                ],
+            )
+        return self._normalize_triage_contracts(contracts)[:3]
+
+    def _normalize_next_action_signals(self, signals: Any) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        seen = set()
+        for item in signals or []:
+            if not isinstance(item, dict):
+                continue
+            tool = str(item.get("tool") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            if not tool or not reason:
+                continue
+            try:
+                priority = int(item.get("priority", 0))
+            except (TypeError, ValueError):
+                priority = 0
+            signal_type = str(item.get("signal_type") or "generic").strip() or "generic"
+            key = (tool.lower(), reason.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "tool": tool,
+                    "priority": priority,
+                    "reason": reason,
+                    "signal_type": signal_type,
+                }
+            )
+        normalized.sort(key=lambda item: (-int(item.get("priority", 0)), str(item.get("tool") or ""), str(item.get("reason") or "")))
+        return normalized
+
+    def _normalize_triage_contracts(self, contracts: Any) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        seen = set()
+        for item in contracts or []:
+            if not isinstance(item, dict):
+                continue
+            contract_id = str(item.get("contract_id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not contract_id or not title:
+                continue
+            key = contract_id.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "contract_id": contract_id,
+                    "contract_version": str(item.get("contract_version") or "triage-contract/v1").strip() or "triage-contract/v1",
+                    "lane": str(item.get("lane") or "generic").strip() or "generic",
+                    "title": title,
+                    "deterministic_verdict_owner": str(item.get("deterministic_verdict_owner") or "CABTA deterministic core").strip() or "CABTA deterministic core",
+                    "observable_scope": [str(value).strip() for value in item.get("observable_scope", []) if str(value).strip()],
+                    "required_fields": [str(value).strip() for value in item.get("required_fields", []) if str(value).strip()],
+                    "analyst_questions": [str(value).strip() for value in item.get("analyst_questions", []) if str(value).strip()],
+                    "evidence_gaps": [str(value).strip() for value in item.get("evidence_gaps", []) if str(value).strip()],
+                    "pivot_priorities": [str(value).strip() for value in item.get("pivot_priorities", []) if str(value).strip()],
+                    "stopping_conditions": [str(value).strip() for value in item.get("stopping_conditions", []) if str(value).strip()],
+                    "escalation_conditions": [str(value).strip() for value in item.get("escalation_conditions", []) if str(value).strip()],
+                    "escalation_hooks": [str(value).strip() for value in item.get("escalation_hooks", []) if str(value).strip()],
+                    "verdict_policy": str(item.get("verdict_policy") or "").strip(),
+                }
+            )
+        return normalized
 
     def _stopping_conditions(
         self,

@@ -109,6 +109,10 @@ class LogQueryPlanner:
         focus_kind = self._focus_kind(focus)
         if lane == "log_identity":
             base = ["user", "session", "host", "process"]
+            if any(token in " ".join(questions).lower() for token in ("outbound", "egress", "fortigate", "beacon", "callback", "destination")):
+                base = ["network", "host", "user", "session", "process"]
+            elif any(token in " ".join(questions).lower() for token in ("4624", "4625", "winlogon", "logon type", "failed", "success")):
+                base = ["user", "host", "session", "network", "process"]
         elif focus_kind == "ip":
             base = ["ip", "session", "user", "host"]
         elif focus_kind == "user":
@@ -199,10 +203,20 @@ class LogQueryPlanner:
             summary = focus or "suspicious activity"
             spl_queries.append(f'search index=* "{summary}" | head {max_results}')
 
+        question_text = " ".join(questions).lower()
         if lane == "log_identity" or any(item in next_entities for item in ("user", "session")):
             spl_queries.append(
                 "search index=* (action=login OR action=logon OR event_name=authentication OR EventCode=4624 OR EventCode=4625)"
                 " | head 200"
+            )
+        if any(token in question_text for token in ("fortigate", "outbound", "egress", "firewall", "beacon", "callback", "destination", "dest_ip")):
+            spl_queries.append(
+                "search index=* (device_vendor=Fortinet OR sourcetype=*fortigate* OR firewall*) "
+                "(dest_ip=* OR destination_ip=* OR remote_ip=* OR service=* OR action=* OR policyid=*) | head 200"
+            )
+        if any(token in question_text for token in ("4624", "4625", "winlogon", "windows logon", "logon type", "failed", "success")):
+            spl_queries.append(
+                "search index=* (EventCode=4624 OR EventCode=4625 OR event_id=4624 OR event_id=4625 OR Logon_Type=* OR logon_type=*) | head 200"
             )
         if any(item in next_entities for item in ("process", "host")):
             spl_queries.append(

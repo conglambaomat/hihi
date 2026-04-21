@@ -99,6 +99,14 @@ class SpecialistRouter:
             or reasoning_state.get("investigation_lane")
             or ""
         ).lower()
+        next_action_signals = [
+            item for item in (investigation_plan.get("next_action_signals", []) or [])
+            if isinstance(item, dict)
+        ]
+        triage_contracts = [
+            item for item in (investigation_plan.get("triage_contracts", []) or [])
+            if isinstance(item, dict)
+        ]
         root_cause = agentic_explanation.get("root_cause_assessment", {}) if isinstance(agentic_explanation, dict) else {}
         entity_state = getattr(state, "entity_state", {}) if isinstance(getattr(state, "entity_state", {}), dict) else {}
         entity_types = {
@@ -155,6 +163,28 @@ class SpecialistRouter:
                     return idx
             return None
 
+        next_action_tools = {
+            str(item.get("tool") or "").strip().lower()
+            for item in next_action_signals
+            if str(item.get("tool") or "").strip()
+        }
+        next_action_signal_types = {
+            str(item.get("signal_type") or "").strip().lower()
+            for item in next_action_signals
+            if str(item.get("signal_type") or "").strip()
+        }
+        triage_contract_ids = {
+            str(item.get("contract_id") or "").strip().lower()
+            for item in triage_contracts
+            if str(item.get("contract_id") or "").strip()
+        }
+        triage_required_evidence = {
+            str(evidence).strip().lower()
+            for contract in triage_contracts
+            for evidence in (contract.get("required_evidence") or [])
+            if str(evidence).strip()
+        }
+
         signals = {
             "lane": lane,
             "observation_types": sorted(observation_types),
@@ -168,6 +198,10 @@ class SpecialistRouter:
             "root_cause_status": str(root_cause.get("status") or "").lower(),
             "active_hypothesis_status": str(active_hypothesis.get("status") or "").lower(),
             "active_hypothesis_topics": sorted(active_hypothesis_topics),
+            "next_action_tools": sorted(next_action_tools),
+            "next_action_signal_types": sorted(next_action_signal_types),
+            "triage_contract_ids": sorted(triage_contract_ids),
+            "triage_required_evidence": sorted(triage_required_evidence),
         }
 
         if root_cause.get("status") == "supported":
@@ -268,6 +302,21 @@ class SpecialistRouter:
             _score(["identity", "investigator"], 4, "top_gap_identity")
         if any(token in top_gap for token in ("network", "destination", "domain", "ip", "infrastructure", "beacon")):
             _score(["network", "forensics"], 4, "top_gap_network")
+
+        if next_action_tools & {"analyze_email"} or triage_contract_ids & {"phishing_email_triage"}:
+            _score(["phish", "email"], 5, "workflow_contract_email")
+        if next_action_tools & {"investigate_ioc"} or triage_contract_ids & {"ioc_triage", "fortigate_outbound_monitoring"}:
+            _score(["network", "forensics", "threat", "intel"], 5, "workflow_contract_network")
+        if next_action_tools & {"search_logs"} or triage_contract_ids & {"windows_logon_monitoring"}:
+            _score(["identity", "investigator", "network", "forensics"], 3, "workflow_contract_log_triage")
+        if triage_required_evidence & {"sender", "recipient", "attachment", "delivery", "mailbox"}:
+            _score(["phish", "email"], 4, "required_evidence_email")
+        if triage_required_evidence & {"account", "user", "session", "host", "logon"}:
+            _score(["identity", "investigator"], 4, "required_evidence_identity")
+        if triage_required_evidence & {"ip", "domain", "url", "destination", "network", "dns"}:
+            _score(["network", "forensics", "threat", "intel"], 4, "required_evidence_network")
+        if triage_required_evidence & {"process", "binary", "hash", "sandbox", "execution"}:
+            _score(["malware", "endpoint"], 4, "required_evidence_malware")
 
         if co_observed_only:
             _score(["investigator", "triage"], 2, "co_observed_only")

@@ -606,24 +606,23 @@ class AgentLoop:
 
     async def approve_action(self, session_id: str) -> bool:
         """Approve the pending action so the loop can resume."""
-        state = self._active_sessions.get(session_id)
-        if state is None or state.pending_approval is None:
-            return False
-        # Signal the event so _wait_for_approval unblocks
-        evt = self._approval_events.get(session_id)
-        if evt:
-            state.pending_approval["approved"] = True
-            evt.set()
-        return True
+        return await self._review_approval(session_id, approved=True)
 
     async def reject_action(self, session_id: str) -> bool:
         """Reject the pending action; the loop will skip it and re-think."""
+        return await self._review_approval(session_id, approved=False)
+
+    async def _review_approval(self, session_id: str, *, approved: bool) -> bool:
         state = self._active_sessions.get(session_id)
         if state is None or state.pending_approval is None:
             return False
         evt = self._approval_events.get(session_id)
         if evt:
-            state.pending_approval["approved"] = False
+            self.session_response_builder.apply_approval_review(
+                state=state,
+                approved=approved,
+                reviewed_at=datetime.now(timezone.utc).isoformat(),
+            )
             evt.set()
         return True
 
@@ -812,6 +811,7 @@ class AgentLoop:
             )
             normalized_observations = list(normalization.get("observations", []))
             latest_quality_summary = dict(normalization.get("evidence_quality_summary", {}))
+            latest_fact_family_schemas = dict(normalization.get("fact_family_schemas", {}))
             if normalized_observations:
                 state.active_observations = [*state.active_observations, *normalized_observations][-60:]
             state.accepted_facts = self._merge_fact_snapshots(
@@ -822,6 +822,10 @@ class AgentLoop:
                 state.evidence_quality_summary,
                 latest_quality_summary,
             )
+            state.fact_family_schemas = {
+                **(state.fact_family_schemas if isinstance(state.fact_family_schemas, dict) else {}),
+                **latest_fact_family_schemas,
+            }
             evidence_ref = {
                 "session_id": session_id,
                 "step_number": step_number,
@@ -876,6 +880,8 @@ class AgentLoop:
             )
             state.entity_state = self.entity_resolver.bootstrap(state.entity_state)
             state.evidence_state = self.evidence_graph.bootstrap(state.evidence_state)
+            if not isinstance(getattr(state, "fact_family_schemas", None), dict):
+                state.fact_family_schemas = {}
 
         state.unresolved_questions = self._dedupe_text(
             [
@@ -889,6 +895,7 @@ class AgentLoop:
             reasoning_state=state.reasoning_state,
             deterministic_decision=state.deterministic_decision,
             evidence_state=state.evidence_state,
+            entity_state=state.entity_state,
             active_observations=state.active_observations,
             unresolved_questions=state.unresolved_questions,
         )
@@ -959,6 +966,9 @@ class AgentLoop:
                 "accepted_facts_delta": state.accepted_facts[-12:],
                 "unresolved_questions": state.unresolved_questions,
                 "evidence_quality_summary": state.evidence_quality_summary,
+                "fact_family_schemas": state.fact_family_schemas,
+                "restored_memory_scope": state.restored_memory_scope,
+                "chat_context_restored_memory_scope": state.chat_context_restored_memory_scope,
             },
             merge=True,
         )
@@ -988,6 +998,88 @@ class AgentLoop:
 
     def _specialist_index_from_evidence(self, state: AgentState) -> Optional[int]:
         return self.specialist_router.specialist_index_from_evidence(state)
+
+    def _build_execution_guidance(self, state: AgentState, tool_name: str) -> Dict[str, Any]:
+        plan = state.investigation_plan if isinstance(state.investigation_plan, dict) else {}
+        root_cause = (
+            state.agentic_explanation.get("root_cause_assessment", {})
+            if isinstance(state.agentic_explanation, dict)
+            else {}
+        )
+        causal_support = (
+            state.evidence_state.get("causal_support", {})
+            if isinstance(state.evidence_state, dict)
+            else {}
+        )
+        triage_contracts = plan.get("triage_contracts", []) if isinstance(plan, dict) else []
+        matched_contracts = [
+            dict(item)
+            for item in triage_contracts
+            if isinstance(item, dict)
+            and str(item.get("lane") or plan.get("lane") or "generic").strip().lower() == str(plan.get("lane") or "generic").strip().lower()
+        ]
+        return {
+            "lane": str(plan.get("lane") or "generic"),
+            "tool": tool_name,
+            "deterministic_verdict": str((state.deterministic_decision or {}).get("verdict") or "UNKNOWN").upper(),
+            "deterministic_verdict_owner": str(plan.get("deterministic_verdict_owner") or "CABTA deterministic core"),
+            "reasoning_status": str((state.reasoning_state or {}).get("status") or ""),
+            "root_cause_status": str(root_cause.get("status") or ""),
+            "root_cause_summary": str(root_cause.get("summary") or ""),
+            "top_missing_evidence": list(state.unresolved_questions[:3]),
+            "required_evidence_fields": sorted(
+                {
+                    str(field).strip()
+                    for contract in matched_contracts
+                    for field in contract.get("required_fields", [])
+                    if str(field).strip()
+                }
+            ),
+            "escalation_hooks": [
+                str(hook).strip()
+                for contract in matched_contracts
+                for hook in contract.get("escalation_hooks", [])
+                if str(hook).strip()
+            ][:6],
+            "causal_path_summaries": [
+                str(item.get("path_summary") or "")
+                for item in causal_support.get("root_path_summaries", [])
+                if isinstance(item, dict) and str(item.get("path_summary") or "").strip()
+            ][:3],
+        }
+
+    def _record_execution_blocker(
+        self,
+        state: AgentState,
+        *,
+        tool_name: str,
+        blocker_status: str,
+        approval_context: Dict[str, Any],
+    ) -> None:
+        blocker = {
+            "type": "approval_blocker",
+            "tool": tool_name,
+            "status": blocker_status,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "approval_context": dict(approval_context or {}),
+            "execution_guidance": dict((approval_context or {}).get("execution_guidance", {})),
+        }
+        if isinstance(state.reasoning_state, dict):
+            blockers = list(state.reasoning_state.get("execution_blockers", []))
+            blockers.append(blocker)
+            state.reasoning_state["execution_blockers"] = blockers[-6:]
+            state.reasoning_state["approval_status"] = blocker_status
+            if blocker_status in {"rejected", "timed_out"}:
+                follow_up = f"Approval-gated action '{tool_name}' is {blocker_status}; analyst decision or a safer alternate pivot is required."
+                missing = list(state.reasoning_state.get("missing_evidence", []))
+                if follow_up not in missing:
+                    state.reasoning_state["missing_evidence"] = [*missing, follow_up][-8:]
+        state.last_approval_outcome = {
+            "tool": tool_name,
+            "status": blocker_status,
+            "context": dict(approval_context or {}),
+            "recorded_at": blocker["captured_at"],
+        }
 
     # ------------------------------------------------------------------ #
     #  Pub / Sub
@@ -1246,30 +1338,53 @@ class AgentLoop:
                                 'decision': decision,
                             },
                         )
+                    approval_context = self.session_response_builder.build_approval_context(
+                        session_id=session_id,
+                        state=state,
+                        tool_name=tool_name,
+                        params=decision.get('params', {}),
+                        approval_id=approval_id,
+                        case_id=self._session_case_id(session_id),
+                        execution_guidance=self._build_execution_guidance(state, tool_name),
+                    )
+                    approval_reason = f"Tool '{tool_name}' requires analyst approval before execution."
                     state.request_approval(
-                        {**decision, 'approval_id': approval_id},
-                        f"Tool '{tool_name}' requires analyst approval before execution.",
+                        self.session_response_builder.build_approval_pending_payload(
+                            decision=decision,
+                            approval_id=approval_id,
+                        ),
+                        approval_reason,
+                        context=approval_context,
                     )
                     state.phase = AgentPhase.WAITING_HUMAN
-                    self._notify(session_id, {
-                        "type": "approval_required",
-                        "tool": tool_name,
-                        "params": decision.get('params', {}),
-                        "reason": state.pending_approval["reason"],
-                    })
+                    self._notify(
+                        session_id,
+                        self.session_response_builder.build_approval_required_event(
+                            tool_name=tool_name,
+                            params=decision.get('params', {}),
+                            reason=approval_reason,
+                            approval_context=approval_context,
+                        ),
+                    )
 
                     # Wait until approve/reject/cancel
                     approved = await self._wait_for_approval(session_id, state)
                     if state.is_terminal():
                         break
                     if not approved:
-                        # Rejected - skip tool and re-think
-                        state.add_finding({
-                            "type": "approval_rejected",
-                            "tool": tool_name,
-                        })
+                        rejection_transition = self.session_response_builder.build_approval_rejection_transition(
+                            tool_name=tool_name,
+                            approval_outcome=state.last_approval_outcome,
+                        )
+                        state.add_finding(rejection_transition["finding"])
+                        self._record_execution_blocker(
+                            state,
+                            tool_name=tool_name,
+                            blocker_status=rejection_transition["blocker_status"],
+                            approval_context=rejection_transition["approval_context"],
+                        )
                         state.step_count += 1
-                        self._sync_specialist_progress(session_id, state, reason="Approval was rejected; ownership moved to the next specialist.")
+                        self._sync_specialist_progress(session_id, state, reason="Approval was rejected or timed out; ownership moved to the next specialist.")
                         state.transition(AgentPhase.THINKING)
                         continue
                     # Approved - fall through to ACT
@@ -1487,25 +1602,37 @@ class AgentLoop:
                 if state.step_count >= state.max_steps:
                     state.errors.append(f"Step limit ({state.max_steps}) reached")
                 state.phase = AgentPhase.COMPLETED
-            final_status = 'completed' if state.phase == AgentPhase.COMPLETED else 'failed'
             self._refresh_reasoning_outputs(session_id, state)
-            self._persist_specialist_metadata(session_id, state, terminal_status=final_status, reason="Workflow session finished.")
-            self._sync_case_reasoning_checkpoint(session_id, state, terminal_status=final_status)
             summary = await self._generate_summary(state)
-            self.store.update_session_status(session_id, final_status, summary)
+            terminal_payload = self.session_response_builder.build_terminal_status_payload(
+                state=state,
+                summary=summary,
+            )
+            self._persist_specialist_metadata(
+                session_id,
+                state,
+                terminal_status=terminal_payload["status"],
+                reason="Workflow session finished.",
+            )
+            self._sync_case_reasoning_checkpoint(
+                session_id,
+                state,
+                terminal_status=terminal_payload["status"],
+            )
+            self.store.update_session_status(
+                session_id,
+                terminal_payload["status"],
+                terminal_payload["summary"],
+            )
             self.store.update_session_findings(session_id, state.findings)
-            if summary and not any(
-                finding.get("type") == "final_answer"
-                for finding in state.findings
-                if isinstance(finding, dict)
-            ):
-                self._record_thread_assistant_message(state, summary)
+            if terminal_payload["record_thread_message"]:
+                self._record_thread_assistant_message(state, terminal_payload["summary"])
 
             self._notify(session_id, {
                 "type": "completed",
-                "status": final_status,
-                "summary": summary,
-                "steps": state.step_count,
+                "status": terminal_payload["status"],
+                "summary": terminal_payload["summary"],
+                "steps": terminal_payload["steps"],
             })
 
         except Exception as exc:
@@ -1542,6 +1669,10 @@ class AgentLoop:
             if str(tool.get("function", {}).get("name", "")).strip()
         }
         request_tools_json = list(tools_json)
+        planned_decision = self._chat_short_circuit_decision(state)
+        if isinstance(planned_decision, dict) and planned_decision.get("action") == "use_tool":
+            return planned_decision
+
         model_only_chat = self._chat_should_force_model_answer_without_tools(state)
         if model_only_chat:
             tools_json = []
@@ -1549,7 +1680,7 @@ class AgentLoop:
             if self._provider_is_recently_unavailable(self.provider):
                 logger.info(
                     "[AGENT] Skipping direct chat retry because %s is still marked unavailable within the cooldown window.",
-                    self._provider_display_name(self.provider),
+                    self.session_response_builder.provider_display_name(self.provider),
                 )
                 return self._fallback_decision_without_llm(state)
         has_native_tools = len(request_tools_json) > 0 and not self._provider_prefers_json_decision_mode(self.provider)
@@ -1570,16 +1701,10 @@ class AgentLoop:
             has_native_tools=has_native_tools,
         )
         messages = prompt_payload["messages"]
-        request_metadata = {
-            "prompt_mode": prompt_payload.get("prompt_mode"),
-            "provider_context_block": prompt_payload.get("provider_context_block"),
-            "prompt_envelope": prompt_payload.get("prompt_envelope"),
-            "model_only_chat": prompt_payload.get("model_only_chat"),
-            "uses_native_tools": prompt_payload.get("uses_native_tools"),
-            "planned_next_step_summary": self.session_response_builder.build_planned_next_step_summary(
-                decision=self._chat_short_circuit_decision(state)
-            ),
-        }
+        request_metadata = self.session_response_builder.build_think_request_metadata(
+            prompt_payload=prompt_payload,
+            planned_decision=planned_decision,
+        )
 
         # Attempt tool-calling API first, fall back to plain chat
         try:
@@ -1603,9 +1728,10 @@ class AgentLoop:
                 provider=self.provider,
                 model=self._active_model_name(self.provider),
                 available=False,
-                error=(
-                    f"{self._provider_display_name(self.provider)} direct chat request timed out "
-                    f"after {self.chat_response_timeout_seconds:.0f}s"
+                error=self.session_response_builder.build_provider_timeout_error(
+                    provider=self.provider,
+                    timeout_seconds=self.chat_response_timeout_seconds,
+                    provider_display_name=self.session_response_builder.provider_display_name,
                 ),
             )
             raw = None
@@ -2454,39 +2580,27 @@ class AgentLoop:
         return has_simple_intent and observable_count <= 2
 
     def _build_response_style_block(self, state: AgentState) -> str:
-        if not self._is_chat_session(state):
-            return ""
-        block = (
-            "Response style for analyst chat:\n"
-            "- When you have enough evidence, answer the analyst's question directly in the first sentence.\n"
-            "- Use plain, practical SOC language instead of stiff report boilerplate.\n"
-            "- After the direct answer, briefly explain the evidence and why it matters.\n"
-            "- End with concrete next steps only if they add value."
+        metadata = self._session_metadata(state.session_id)
+        return self.session_response_builder.build_chat_response_style_block(
+            is_chat_session=self._is_chat_session(state),
+            chat_context_restored=bool(metadata.get("chat_context_restored")),
         )
-        if self._session_metadata(state.session_id).get("chat_context_restored"):
-            block += "\n- Treat carried-over findings as live investigation context, not as a stale summary."
-        return block
 
     def _build_chat_decision_block(self, state: AgentState) -> str:
-        if not self._is_chat_session(state):
-            return ""
-        block = (
-            "Chat decision policy:\n"
-            "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
-            "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
-            "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
-        )
         metadata = self._session_metadata(state.session_id)
-        if metadata.get("chat_context_restored"):
-            if metadata.get("chat_follow_up_requires_fresh_evidence"):
-                block += (
-                    "\n- This is a follow-up chat turn with carried-over findings. Continue from that context and gather fresh evidence only for the new pivot the analyst requested."
-                )
-            else:
-                block += (
-                    "\n- This is a follow-up chat turn with carried-over findings. Prefer answering from that restored evidence before starting new tool calls."
-                )
-        return block
+        return self.session_response_builder.build_chat_decision_block(
+            is_chat_session=self._is_chat_session(state),
+            chat_context_restored=bool(metadata.get("chat_context_restored")),
+            requires_fresh_evidence=bool(metadata.get("chat_follow_up_requires_fresh_evidence")),
+        )
+
+    def _build_fallback_response_context(self) -> Dict[str, Any]:
+        return self.session_response_builder.build_fallback_response_context(
+            provider_runtime_status=self.provider_runtime_status,
+            provider_name=self.provider,
+            normalize_provider=self._normalize_provider,
+            active_model_name=self._active_model_name,
+        )
 
     def _build_direct_chat_fallback_answer(self, goal: str) -> str:
         return self.session_response_builder.build_direct_chat_fallback_answer(
@@ -2494,14 +2608,17 @@ class AgentLoop:
         )
 
     def _build_chat_model_unavailable_answer(self, state: AgentState) -> str:
-        return self.session_response_builder.build_chat_model_unavailable_answer(
+        return self.session_response_builder.build_chat_model_unavailable_answer_from_context(
             state=state,
+            fallback_context=self._build_fallback_response_context(),
             build_direct_chat_fallback_answer=self._build_direct_chat_fallback_answer,
             goal=state.goal,
             authoritative_outcome=self._resolve_authoritative_outcome(state),
             fallback_evidence_points=lambda current_state, limit: self._fallback_evidence_points(current_state, limit=limit),
             build_fallback_answer=self._build_fallback_answer,
-            llm_unavailable_notice=self._llm_unavailable_notice(),
+            build_chat_specific_fallback=self._build_chat_specific_fallback,
+            provider_display_name=self.session_response_builder.provider_display_name,
+            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
         )
 
     def _build_tools_block(self) -> str:
@@ -2562,6 +2679,12 @@ class AgentLoop:
             if len(parts) >= limit:
                 break
         return " | ".join(parts[:limit])
+
+    def _describe_fallback_evidence(self, tool_name: str, result: Any) -> str:
+        return self.session_response_builder.describe_fallback_evidence(
+            tool_name=tool_name,
+            result=result,
+        )
 
     def _build_findings_block(self, state: AgentState) -> str:
         """Summarise findings so far (capped to keep context manageable)."""
@@ -2634,16 +2757,13 @@ class AgentLoop:
         if authoritative_outcome is None:
             return None
 
-        reasoning_status = (
-            str(state.reasoning_state.get("status") or "")
-            if isinstance(state.reasoning_state, dict)
-            else ""
-        )
-
+        reasoning_status, root_cause, has_strong_evidence = self._chat_evidence_summary(state)
         if not self._has_tool_result(state, "correlate_findings"):
-            if (
-                reasoning_status == "sufficient_evidence"
-                or self._simple_chat_has_strong_evidence(state)
+            if self.session_response_builder.chat_evidence_allows_answer_without_tools(
+                reasoning_status=reasoning_status,
+                root_cause=root_cause,
+                has_strong_evidence=has_strong_evidence,
+                require_supported_root_cause_refs=False,
             ) and self.tools.get_tool("correlate_findings") is not None:
                 return {
                     "action": "use_tool",
@@ -2653,19 +2773,10 @@ class AgentLoop:
                 }
             return None
 
-        root_cause = (
-            state.agentic_explanation.get("root_cause_assessment", {})
-            if isinstance(state.agentic_explanation, dict)
-            else {}
-        )
-        if (
-            reasoning_status == "sufficient_evidence"
-            or (
-                isinstance(root_cause, dict)
-                and root_cause.get("status") == "supported"
-                and root_cause.get("supporting_evidence_refs")
-            )
-            or self._simple_chat_has_strong_evidence(state)
+        if self.session_response_builder.chat_evidence_allows_answer_without_tools(
+            reasoning_status=reasoning_status,
+            root_cause=root_cause,
+            has_strong_evidence=has_strong_evidence,
         ):
             return None
         return None
@@ -2689,6 +2800,14 @@ class AgentLoop:
         if not self._has_tool_result(state, "correlate_findings"):
             return False
 
+        reasoning_status, root_cause, has_strong_evidence = self._chat_evidence_summary(state)
+        return self.session_response_builder.chat_evidence_allows_answer_without_tools(
+            reasoning_status=reasoning_status,
+            root_cause=root_cause,
+            has_strong_evidence=has_strong_evidence,
+        )
+
+    def _chat_evidence_summary(self, state: AgentState) -> tuple[str, Dict[str, Any], bool]:
         reasoning_status = (
             str(state.reasoning_state.get("status") or "")
             if isinstance(state.reasoning_state, dict)
@@ -2699,15 +2818,8 @@ class AgentLoop:
             if isinstance(state.agentic_explanation, dict)
             else {}
         )
-        return bool(
-            reasoning_status == "sufficient_evidence"
-            or (
-                isinstance(root_cause, dict)
-                and root_cause.get("status") == "supported"
-                and root_cause.get("supporting_evidence_refs")
-            )
-            or self._simple_chat_has_strong_evidence(state)
-        )
+        has_strong_evidence = self._simple_chat_has_strong_evidence(state)
+        return reasoning_status, root_cause, has_strong_evidence
 
     def _session_case_id(self, session_id: str) -> Optional[str]:
         session = self.store.get_session(session_id)
@@ -2828,15 +2940,15 @@ class AgentLoop:
             return False
 
         evt.clear()
-        # Wait up to 30 minutes for human response
         try:
             await asyncio.wait_for(evt.wait(), timeout=1800)
         except asyncio.TimeoutError:
-            state.errors.append("Approval timed out (30 min)")
-            state.phase = AgentPhase.FAILED
-            return False
+            self.session_response_builder.mark_approval_timeout(
+                state=state,
+                reviewed_at=datetime.now(timezone.utc).isoformat(),
+            )
 
-        approval = state.clear_approval()
+        approval = self.session_response_builder.consume_approval_outcome(state=state)
         if approval is None:
             return False
         return approval.get("approved", False)
@@ -2908,202 +3020,29 @@ class AgentLoop:
 
     def _build_chat_specific_fallback(self, state: AgentState) -> str:
         """Answer simple analyst lookup questions directly from collected evidence."""
-        if not self._is_chat_session(state):
-            return ""
-
-        focused_goal = self._focus_goal_text(state.goal).lower()
-        wants_org = any(
-            phrase in focused_goal
-            for phrase in ("what organization", "which organization", "who owns this ip")
+        return self.session_response_builder.build_chat_specific_fallback(
+            is_chat_session=self._is_chat_session(state),
+            focused_goal=self._focus_goal_text(state.goal),
+            findings=list(state.findings or []),
+            reasoning_state=state.reasoning_state if isinstance(state.reasoning_state, dict) else None,
         )
-        wants_host = any(
-            phrase in focused_goal
-            for phrase in ("what hostname", "what host name", "hostname", "host name")
-        )
-        if not wants_org and not wants_host:
-            return ""
-
-        organization = ""
-        hostname = ""
-        for finding in reversed(state.findings):
-            if finding.get("type") != "tool_result":
-                continue
-            result = finding.get("result")
-            payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
-            if not isinstance(payload, dict):
-                continue
-            if not organization:
-                organization = str(
-                    payload.get("organization")
-                    or payload.get("org_name")
-                    or payload.get("registrant_org")
-                    or ""
-                ).strip()
-                parsed_fields = payload.get("parsed_fields", {}) if isinstance(payload.get("parsed_fields"), dict) else {}
-                if not organization:
-                    registrant_org = parsed_fields.get("registrant_org")
-                    if isinstance(registrant_org, list) and registrant_org:
-                        organization = str(registrant_org[0]).strip()
-                    elif registrant_org:
-                        organization = str(registrant_org).strip()
-            if not hostname:
-                hostnames = payload.get("hostnames")
-                if isinstance(hostnames, list) and hostnames:
-                    hostname = str(hostnames[0]).strip()
-                elif payload.get("reverse_dns"):
-                    hostname = str(payload.get("reverse_dns")).strip()
-                elif payload.get("hostname"):
-                    hostname = str(payload.get("hostname")).strip()
-            if organization and hostname:
-                break
-
-        if not organization and not hostname:
-            return ""
-
-        subject = ""
-        if isinstance(state.reasoning_state, dict):
-            subject = str(state.reasoning_state.get("goal_focus") or "").strip()
-        subject = subject or "the investigation target"
-
-        details: List[str] = []
-        if wants_org and organization:
-            details.append(f"organization {organization}")
-        if wants_host and hostname:
-            details.append(f"hostname {hostname}")
-        if not details:
-            return ""
-        if len(details) == 1:
-            return f"For {subject}, the strongest current mapping is {details[0]}."
-        return f"For {subject}, the strongest current mapping is {details[0]} and {details[1]}."
 
     def _llm_unavailable_notice(self) -> str:
-        status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
-        return self.session_response_builder.llm_unavailable_notice(
-            status=status,
-            provider_name=self.provider,
-            active_model_name=self._active_model_name,
-            provider_display_name=self._provider_display_name,
-            provider_runtime_error_excerpt=self._provider_runtime_error_excerpt,
+        return self.session_response_builder.llm_unavailable_notice_from_context(
+            fallback_context=self._build_fallback_response_context(),
+            provider_display_name=self.session_response_builder.provider_display_name,
+            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
         )
 
-    def _provider_display_name(self, provider: Optional[str] = None) -> str:
-        return self.session_response_builder.provider_display_name(
-            self._normalize_provider(provider),
+    def _fallback_evidence_points(self, state: AgentState, limit: int = 3) -> List[str]:
+        return self.session_response_builder.build_fallback_evidence_points(
+            findings=list(state.findings or []),
+            describe_fallback_evidence=lambda tool_name, result: self.session_response_builder.describe_fallback_evidence(
+                tool_name=tool_name,
+                result=result,
+            ),
+            limit=limit,
         )
-
-    def _provider_runtime_error_excerpt(self) -> str:
-        status = self.provider_runtime_status if isinstance(self.provider_runtime_status, dict) else {}
-        return self.session_response_builder.provider_runtime_error_excerpt(
-            status=status,
-            provider_display_name=self._provider_display_name,
-        )
-
-    @classmethod
-    def _fallback_evidence_points(cls, state: AgentState, limit: int = 3) -> List[str]:
-        evidence: List[str] = []
-        for finding in state.findings:
-            if finding.get("type") != "tool_result":
-                continue
-            tool_name = str(finding.get("tool") or "tool_result")
-            point = cls._describe_fallback_evidence(tool_name, finding.get("result"))
-            if point and point not in evidence:
-                evidence.append(point)
-            if len(evidence) >= limit:
-                break
-        return evidence[:limit]
-
-    @staticmethod
-    def _describe_fallback_evidence(tool_name: str, result: Any) -> str:
-        if not isinstance(result, dict):
-            return ""
-
-        payload = result.get("result") if isinstance(result.get("result"), dict) else result
-        if not isinstance(payload, dict):
-            return ""
-
-        error = payload.get("error")
-        if error:
-            return f"{tool_name} reported error={str(error)[:120]}."
-        if payload.get("timed_out"):
-            return f"{tool_name} timed out while gathering enrichment."
-
-        if tool_name == "investigate_ioc":
-            ioc = str(payload.get("ioc") or "IOC")
-            verdict = str(payload.get("verdict") or "UNKNOWN").upper()
-            threat_score = payload.get("threat_score")
-            domain_enrichment = payload.get("domain_enrichment", {})
-            domain_age = domain_enrichment.get("domain_age", {}) if isinstance(domain_enrichment, dict) else {}
-            if isinstance(domain_age, dict) and domain_age.get("is_newly_registered"):
-                age_days = domain_age.get("age_days")
-                return (
-                    f"{ioc} classified as {verdict} with threat_score={threat_score}; "
-                    f"domain age is {age_days} days."
-                )
-            return f"{ioc} classified as {verdict} with threat_score={threat_score}."
-
-        if tool_name.endswith("whois_lookup"):
-            target = str(payload.get("target") or "domain")
-            creation_date = str(payload.get("creation_date") or "").strip()
-            registrar = payload.get("registrar")
-            registrar_name = ""
-            if isinstance(registrar, list) and registrar:
-                registrar_name = str(registrar[0]).strip()
-            elif registrar:
-                registrar_name = str(registrar).strip()
-            details = ", ".join(
-                part
-                for part in [
-                    f"created={creation_date}" if creation_date else "",
-                    f"registrar={registrar_name}" if registrar_name else "",
-                ]
-                if part
-            )
-            if details:
-                return f"WHOIS for {target}: {details}."
-            return f"WHOIS data collected for {target}."
-
-        if tool_name.endswith("dns_resolve"):
-            domain = str(payload.get("domain") or "domain")
-            records = payload.get("records", {}) if isinstance(payload.get("records"), dict) else {}
-            a_records = records.get("A") if isinstance(records.get("A"), list) else []
-            if a_records:
-                return f"DNS for {domain} resolved to {', '.join(str(ip) for ip in a_records[:3])}."
-            return f"DNS data collected for {domain}."
-
-        if tool_name.endswith("ssl_certificate_info"):
-            host = str(payload.get("host") or "host")
-            issuer = payload.get("issuer", {}) if isinstance(payload.get("issuer"), dict) else {}
-            issuer_cn = str(issuer.get("commonName") or "").strip()
-            not_after = str(payload.get("not_after") or "").strip()
-            details = ", ".join(
-                part
-                for part in [
-                    f"issuer={issuer_cn}" if issuer_cn else "",
-                    f"expires={not_after}" if not_after else "",
-                ]
-                if part
-            )
-            if details:
-                return f"TLS certificate for {host}: {details}."
-            return f"TLS certificate metadata collected for {host}."
-
-        if tool_name == "correlate_findings":
-            severity = str(payload.get("severity") or "").upper()
-            stats = payload.get("statistics", {}) if isinstance(payload.get("statistics"), dict) else {}
-            unique_iocs = stats.get("unique_iocs")
-            if severity:
-                return f"Correlation rated the case severity={severity} across {unique_iocs or 0} unique IOCs."
-            return "Correlation completed across collected findings."
-
-        verdict = payload.get("verdict")
-        if verdict:
-            return f"{tool_name} reported verdict={str(verdict).upper()}."
-
-        severity = payload.get("severity")
-        if severity:
-            return f"{tool_name} reported severity={str(severity).upper()}."
-
-        return ""
 
     async def _generate_summary(self, state: AgentState) -> str:
         """Ask the LLM to produce a concise investigation summary."""

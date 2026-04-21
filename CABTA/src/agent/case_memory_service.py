@@ -45,6 +45,18 @@ class CaseMemoryService:
             "thread_id": thread_id,
             "snapshot_lifecycle": normalized_lifecycle or None,
             "memory_scope": normalized_lifecycle if normalized_lifecycle in {"accepted", "published"} else None,
+            "memory_boundary": {
+                "case_id": case_id,
+                "thread_id": thread_id,
+                "session_id": session_id,
+                "publication_scope": normalized_lifecycle if normalized_lifecycle in {"accepted", "published"} else "working",
+            },
+            "case_scope": {
+                "case_id": case_id,
+            },
+            "thread_context": {
+                "thread_id": thread_id,
+            },
             "investigation_plan": investigation_plan,
             "deterministic_decision": deterministic_decision,
             "reasoning_status": reasoning_state.get("status") if isinstance(reasoning_state, dict) else None,
@@ -68,9 +80,16 @@ class CaseMemoryService:
             "case_memory_publication_ready": publication_ready,
             "root_cause_solidification_ready": root_cause_ready,
             "accepted_fact_solidification_ready": publication_ready,
+            "thread_publication_allowed": publication_ready and bool(thread_id),
+            "cross_thread_publication_blocked": not publication_ready,
         }
         if publication_ready:
             accepted_memory = {
+                "case_id": case_id,
+                "thread_id": thread_id,
+                "memory_boundary": dict(payload["memory_boundary"]),
+                "case_scope": {"case_id": case_id},
+                "thread_context": {"thread_id": thread_id},
                 "investigation_plan": investigation_plan,
                 "deterministic_decision": deterministic_decision,
                 "reasoning_state": reasoning_state,
@@ -136,7 +155,7 @@ class CaseMemoryService:
                     "edges": list(evidence_edges or []),
                 }
 
-        accepted_snapshot = {
+        authoritative_snapshot = {
             "investigation_plan": payload.get("investigation_plan", metadata.get("investigation_plan", {})),
             "reasoning_state": payload.get("reasoning_state", metadata.get("reasoning_state", {})),
             "entity_state": entity_state,
@@ -166,8 +185,15 @@ class CaseMemoryService:
             "latest_session_id": selected_session.get("id") if isinstance(selected_session, dict) else None,
             "thread_id": metadata.get("thread_id"),
             "summary": summary,
-            "accepted_snapshot": accepted_snapshot,
+            "authoritative_snapshot": authoritative_snapshot,
+            "accepted_snapshot": authoritative_snapshot,
             "memory_scope": memory_scope,
+            "memory_boundary": {
+                "case_id": case_id,
+                "thread_id": metadata.get("thread_id"),
+                "session_id": selected_session.get("id") if isinstance(selected_session, dict) else None,
+                "publication_scope": memory_scope or "legacy",
+            },
         }
 
     @staticmethod

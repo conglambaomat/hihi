@@ -14,6 +14,61 @@ class SessionContextService:
         self.thread_store = thread_store
 
     @staticmethod
+    def _normalized_case_id(value: Any) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def _memory_boundary_matches(
+        cls,
+        payload: Dict[str, Any],
+        *,
+        expected_case_id: Optional[str],
+        expected_thread_id: Optional[str],
+    ) -> bool:
+        boundary = payload.get("memory_boundary", {})
+        if not isinstance(boundary, dict):
+            boundary = {}
+        boundary_case_id = cls._normalized_case_id(boundary.get("case_id"))
+        boundary_thread_id = cls._normalized_case_id(boundary.get("thread_id"))
+        expected_case = cls._normalized_case_id(expected_case_id)
+        expected_thread = cls._normalized_case_id(expected_thread_id)
+        if expected_case and boundary_case_id and boundary_case_id != expected_case:
+            return False
+        if expected_thread and boundary_thread_id and boundary_thread_id != expected_thread:
+            return False
+        return True
+
+    @classmethod
+    def _scope_matches_case(
+        cls,
+        payload: Dict[str, Any],
+        *,
+        expected_case_id: Optional[str],
+    ) -> bool:
+        expected = cls._normalized_case_id(expected_case_id)
+        if not expected:
+            return True
+        payload_case_id = cls._normalized_case_id(payload.get("case_id") or payload.get("case_scope", {}).get("case_id"))
+        return not payload_case_id or payload_case_id == expected
+
+    @classmethod
+    def _scope_matches_thread(
+        cls,
+        payload: Dict[str, Any],
+        *,
+        expected_thread_id: Optional[str],
+    ) -> bool:
+        expected = cls._normalized_case_id(expected_thread_id)
+        if not expected:
+            return True
+        payload_thread_id = cls._normalized_case_id(
+            payload.get("thread_id")
+            or payload.get("thread_context", {}).get("thread_id")
+            or payload.get("memory_boundary", {}).get("thread_id")
+        )
+        return not payload_thread_id or payload_thread_id == expected
+
+    @staticmethod
     def _memory_scope_payload(snapshot: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
         if not isinstance(snapshot, dict):
             return {}, None
@@ -55,12 +110,39 @@ class SessionContextService:
         return snapshot, None
 
     @classmethod
-    def restore_state_from_snapshot(cls, state: Any, snapshot: Dict[str, Any]) -> Optional[str]:
+    def restore_state_from_snapshot(
+        cls,
+        state: Any,
+        snapshot: Dict[str, Any],
+        *,
+        expected_case_id: Optional[str] = None,
+        expected_thread_id: Optional[str] = None,
+    ) -> Optional[str]:
         if not isinstance(snapshot, dict):
             return None
         payload, memory_scope = cls._memory_scope_payload(snapshot)
         if not payload:
             payload = snapshot
+        if not cls._scope_matches_case(snapshot, expected_case_id=expected_case_id):
+            return None
+        if not cls._scope_matches_case(payload, expected_case_id=expected_case_id):
+            return None
+        if not cls._scope_matches_thread(snapshot, expected_thread_id=expected_thread_id):
+            return None
+        if not cls._scope_matches_thread(payload, expected_thread_id=expected_thread_id):
+            return None
+        if not cls._memory_boundary_matches(
+            snapshot,
+            expected_case_id=expected_case_id,
+            expected_thread_id=expected_thread_id,
+        ):
+            return None
+        if not cls._memory_boundary_matches(
+            payload,
+            expected_case_id=expected_case_id,
+            expected_thread_id=expected_thread_id,
+        ):
+            return None
         state.investigation_plan = copy.deepcopy(payload.get("investigation_plan") or state.investigation_plan)
         state.reasoning_state = copy.deepcopy(payload.get("reasoning_state") or {})
         state.entity_state = copy.deepcopy(payload.get("entity_state") or {})
@@ -73,6 +155,9 @@ class SessionContextService:
         )
         state.unresolved_questions = list(payload.get("unresolved_questions") or [])
         state.evidence_quality_summary = copy.deepcopy(payload.get("evidence_quality_summary") or {})
+        state.fact_family_schemas = copy.deepcopy(payload.get("fact_family_schemas") or {})
+        state.restored_memory_scope = memory_scope
+        state.chat_context_restored_memory_scope = memory_scope
         return memory_scope
 
     def resolve_thread_id(
@@ -187,6 +272,9 @@ class SessionContextService:
             "chat_context_restored_reasoning_status": (
                 reasoning_state.get("status") if isinstance(reasoning_state, dict) else None
             ),
+            "chat_context_restored_fact_family_schemas": copy.deepcopy(
+                getattr(state, "fact_family_schemas", {}) or {}
+            ),
         }
 
     def restore_follow_up_context(
@@ -213,19 +301,33 @@ class SessionContextService:
         restored_memory_scope = None
         snapshot_id = None
         thread_id = str((metadata or {}).get("thread_id") or parent_metadata.get("thread_id") or "").strip()
+        expected_case_id = self._normalized_case_id((metadata or {}).get("case_id") or parent_session.get("case_id")) or None
         if thread_id and self.thread_store is not None:
-            accepted_snapshot = {}
+            authoritative_snapshot = {}
             get_latest_accepted_snapshot = getattr(self.thread_store, "get_latest_accepted_snapshot", None)
             if callable(get_latest_accepted_snapshot):
-                accepted_snapshot = get_latest_accepted_snapshot(thread_id) or {}
+                authoritative_snapshot = get_latest_accepted_snapshot(thread_id) or {}
 
-            latest_snapshot = accepted_snapshot or (self.thread_store.get_latest_snapshot(thread_id) or {})
+            latest_snapshot = authoritative_snapshot or (self.thread_store.get_latest_snapshot(thread_id) or {})
             snapshot = latest_snapshot.get("snapshot", {}) if isinstance(latest_snapshot, dict) else {}
             if isinstance(snapshot, dict) and snapshot:
                 snapshot_id = latest_snapshot.get("snapshot_id")
-                restored_memory_scope = self.restore_state_from_snapshot(state, snapshot)
-                restored = True
-                restored_source = "thread_snapshot"
+                restored_memory_scope = self.restore_state_from_snapshot(
+                    state,
+                    snapshot,
+                    expected_case_id=expected_case_id,
+                    expected_thread_id=thread_id,
+                )
+                restored = restored_memory_scope is not None or bool(
+                    state.reasoning_state
+                    or state.entity_state
+                    or state.evidence_state
+                    or state.active_observations
+                    or state.accepted_facts
+                    or state.unresolved_questions
+                )
+                if restored:
+                    restored_source = "thread_snapshot"
 
         if not restored:
             case_memory_context = (metadata or {}).get("case_memory_context")
@@ -233,19 +335,42 @@ class SessionContextService:
             if isinstance(case_memory_context, dict):
                 memory_snapshot = (
                     case_memory_context.get("memory_snapshot")
+                    or case_memory_context.get("authoritative_snapshot")
                     or case_memory_context.get("accepted_snapshot")
                     or {}
                 )
             if isinstance(memory_snapshot, dict) and memory_snapshot:
-                restored_memory_scope = self.restore_state_from_snapshot(state, memory_snapshot)
+                restored_memory_scope = self.restore_state_from_snapshot(
+                    state,
+                    memory_snapshot,
+                    expected_case_id=expected_case_id,
+                    expected_thread_id=thread_id or None,
+                )
                 snapshot_id = str(case_memory_context.get("latest_session_id") or "").strip() or None
-                restored = True
-                restored_source = "case_memory"
+                if not snapshot_id:
+                    boundary_payload, _ = self._memory_scope_payload(memory_snapshot)
+                    if not boundary_payload:
+                        boundary_payload = memory_snapshot if isinstance(memory_snapshot, dict) else {}
+                    boundary = boundary_payload.get("memory_boundary", {}) if isinstance(boundary_payload, dict) else {}
+                    if isinstance(boundary, dict):
+                        snapshot_id = str(boundary.get("session_id") or "").strip() or None
+                restored = restored_memory_scope is not None or bool(
+                    state.reasoning_state
+                    or state.entity_state
+                    or state.evidence_state
+                    or state.active_observations
+                    or state.accepted_facts
+                    or state.unresolved_questions
+                )
+                if restored:
+                    restored_source = "case_memory"
 
         if not restored:
             restored_memory_scope = self.restore_state_from_snapshot(
                 state,
                 {
+                    "case_id": expected_case_id,
+                    "thread_id": thread_id or None,
                     "investigation_plan": parent_metadata.get("investigation_plan") or state.investigation_plan,
                     "reasoning_state": parent_metadata.get("reasoning_state") or {},
                     "entity_state": parent_metadata.get("entity_state") or {},
@@ -255,6 +380,8 @@ class SessionContextService:
                     "unresolved_questions": parent_metadata.get("unresolved_questions") or [],
                     "evidence_quality_summary": parent_metadata.get("evidence_quality_summary") or {},
                 },
+                expected_case_id=expected_case_id,
+                expected_thread_id=thread_id or None,
             )
             if state.reasoning_state or state.entity_state or state.evidence_state or state.active_observations:
                 restored_source = "parent_session"

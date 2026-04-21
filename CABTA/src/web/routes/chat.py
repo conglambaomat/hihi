@@ -308,13 +308,14 @@ async def send_message(request: Request, body: ChatMessage):
         case_memory_context = None
         if not snapshot and case_memory_service is not None and session.get("case_id"):
             case_memory_context = case_memory_service.get_case_memory(session.get("case_id"))
-            accepted_snapshot = (
-                case_memory_context.get("accepted_snapshot", {})
+            authoritative_snapshot = (
+                case_memory_context.get("authoritative_snapshot")
+                or case_memory_context.get("accepted_snapshot", {})
                 if isinstance(case_memory_context, dict)
                 else {}
             )
-            if isinstance(accepted_snapshot, dict) and accepted_snapshot:
-                snapshot = accepted_snapshot
+            if isinstance(authoritative_snapshot, dict) and authoritative_snapshot:
+                snapshot = authoritative_snapshot
                 thread_summary = thread_summary or str(case_memory_context.get("summary") or "").strip()
                 thread_id = thread_id or str(case_memory_context.get("thread_id") or "").strip()
 
@@ -326,6 +327,11 @@ async def send_message(request: Request, body: ChatMessage):
                 message=body.message,
                 intent=intent_payload["intent"],
                 requires_fresh_evidence=bool(intent_payload["requires_fresh_evidence"]),
+                memory_scope=(
+                    case_memory_context.get("memory_scope")
+                    if isinstance(case_memory_context, dict)
+                    else None
+                ),
             )
         else:
             context = _build_follow_up_goal(session, body.message)
