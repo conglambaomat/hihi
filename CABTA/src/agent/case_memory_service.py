@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .thread_sync_service import ThreadSyncService
+
 
 class CaseMemoryService:
     """Persist and retrieve accepted case memory without adding a new DB layer."""
@@ -35,21 +37,20 @@ class CaseMemoryService:
             return
 
         hypotheses = reasoning_state.get("hypotheses", []) if isinstance(reasoning_state, dict) else []
-        normalized_lifecycle = str(snapshot_lifecycle or "").strip().lower()
-        if normalized_lifecycle not in {"working", "candidate", "accepted", "published"}:
-            normalized_lifecycle = ""
+        normalized_lifecycle = ThreadSyncService.normalize_lifecycle(snapshot_lifecycle) or ""
 
         payload = {
             "session_id": session_id,
             "terminal_status": terminal_status,
             "thread_id": thread_id,
             "snapshot_lifecycle": normalized_lifecycle or None,
-            "memory_scope": normalized_lifecycle if normalized_lifecycle in {"accepted", "published"} else None,
+            "memory_scope": ThreadSyncService.authoritative_memory_scope(normalized_lifecycle),
+            "authoritative_memory_scope": ThreadSyncService.authoritative_memory_scope(normalized_lifecycle),
             "memory_boundary": {
                 "case_id": case_id,
                 "thread_id": thread_id,
                 "session_id": session_id,
-                "publication_scope": normalized_lifecycle if normalized_lifecycle in {"accepted", "published"} else "working",
+                "publication_scope": ThreadSyncService.authoritative_memory_scope(normalized_lifecycle) or normalized_lifecycle or "working",
             },
             "case_scope": {
                 "case_id": case_id,
@@ -71,12 +72,13 @@ class CaseMemoryService:
             "checkpoint_metrics": dict(checkpoint_metrics or {}),
             "checkpoint_summary": dict(checkpoint_summary or {}),
         }
-        publication_ready = normalized_lifecycle in {"accepted", "published"}
+        publication_ready = ThreadSyncService.authoritative_memory_scope(normalized_lifecycle) is not None
         root_cause_ready = publication_ready and isinstance(root_cause_assessment, dict) and bool(
             root_cause_assessment.get("primary_root_cause")
         )
         payload["checkpoint_contract"] = {
-            "case_memory_scope": normalized_lifecycle if publication_ready else None,
+            "case_memory_scope": ThreadSyncService.authoritative_memory_scope(normalized_lifecycle),
+            "authoritative_memory_scope": ThreadSyncService.authoritative_memory_scope(normalized_lifecycle),
             "case_memory_publication_ready": publication_ready,
             "root_cause_solidification_ready": root_cause_ready,
             "accepted_fact_solidification_ready": publication_ready,
@@ -135,7 +137,7 @@ class CaseMemoryService:
         if not isinstance(metadata, dict):
             metadata = {}
 
-        payload, memory_scope = self._accepted_memory_payload(metadata)
+        payload, memory_scope = self._authoritative_memory_payload(metadata)
         root_cause = payload.get("root_cause_assessment", {})
         if not isinstance(root_cause, dict) or not root_cause:
             root_cause = metadata.get("root_cause_assessment", {})
@@ -180,24 +182,38 @@ class CaseMemoryService:
         if not summary:
             summary = str(selected_session.get("summary") or "").strip() if isinstance(selected_session, dict) else ""
 
+        lifecycle = ThreadSyncService.normalize_lifecycle(memory_scope)
+        authoritative_scope = ThreadSyncService.authoritative_memory_scope(lifecycle)
+        compatibility_snapshot = authoritative_snapshot if lifecycle == "accepted" else None
+
         return {
             "case_id": case_id,
             "latest_session_id": selected_session.get("id") if isinstance(selected_session, dict) else None,
             "thread_id": metadata.get("thread_id"),
             "summary": summary,
             "authoritative_snapshot": authoritative_snapshot,
-            "accepted_snapshot": authoritative_snapshot,
-            "memory_scope": memory_scope,
+            "memory_snapshot": authoritative_snapshot,
+            "accepted_snapshot": compatibility_snapshot,
+            "memory_scope": lifecycle,
+            "authoritative_memory_scope": authoritative_scope,
+            "memory_lifecycle": lifecycle,
+            "memory_kind": (
+                "authoritative_case_truth" if authoritative_scope is not None else "working_context"
+            ),
+            "memory_is_authoritative": authoritative_scope is not None,
+            "compatibility_aliases": {
+                "accepted_snapshot": lifecycle == "accepted",
+            },
             "memory_boundary": {
                 "case_id": case_id,
                 "thread_id": metadata.get("thread_id"),
                 "session_id": selected_session.get("id") if isinstance(selected_session, dict) else None,
-                "publication_scope": memory_scope or "legacy",
+                "publication_scope": authoritative_scope or lifecycle or "legacy",
             },
         }
 
     @staticmethod
-    def _accepted_memory_payload(metadata: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
+    def _authoritative_memory_payload(metadata: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
         if not isinstance(metadata, dict):
             return {}, None
 
@@ -210,24 +226,28 @@ class CaseMemoryService:
             if isinstance(accepted, dict) and accepted:
                 return accepted, "accepted"
 
-        snapshot_lifecycle = str(
+        snapshot_lifecycle = ThreadSyncService.normalize_lifecycle(
             metadata.get("snapshot_lifecycle")
             or (
                 metadata.get("snapshot_contract", {}).get("lifecycle")
                 if isinstance(metadata.get("snapshot_contract"), dict)
                 else ""
             )
-            or ""
-        ).strip().lower()
+        )
 
         accepted_memory = metadata.get("accepted_memory", {})
-        if snapshot_lifecycle in {"published", "accepted"} and isinstance(accepted_memory, dict) and accepted_memory:
-            return accepted_memory, snapshot_lifecycle
+        authority_scope = ThreadSyncService.authoritative_memory_scope(snapshot_lifecycle)
+        if authority_scope and isinstance(accepted_memory, dict) and accepted_memory:
+            return accepted_memory, authority_scope
 
         if metadata.get("snapshot_state") == "accepted" and isinstance(accepted_memory, dict) and accepted_memory:
             return accepted_memory, "accepted"
 
         return metadata, None
+
+    @staticmethod
+    def _accepted_memory_payload(metadata: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
+        return CaseMemoryService._authoritative_memory_payload(metadata)
 
     def _select_authoritative_session(self, case_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         workflows = case_payload.get("workflows", []) if isinstance(case_payload, dict) else []
@@ -246,7 +266,7 @@ class CaseMemoryService:
 
         def _score(session: Dict[str, Any]) -> tuple[int, str]:
             metadata = session.get("metadata", {}) if isinstance(session.get("metadata"), dict) else {}
-            payload, memory_scope = self._accepted_memory_payload(metadata)
+            payload, memory_scope = self._authoritative_memory_payload(metadata)
             timestamp = str(session.get("completed_at") or session.get("created_at") or "")
 
             if memory_scope == "published":

@@ -448,6 +448,96 @@ class TestHypothesisManager:
         assert benign["confidence"] > malicious["confidence"]
 
 
+    def test_revise_records_typed_signal_and_heuristic_dependence_for_supported_observation(self):
+        manager = HypothesisManager()
+        state = manager.bootstrap(
+            "Investigate suspicious login sequence",
+            "sess-threshold-profile",
+            investigation_plan={
+                "lane": "log_identity",
+                "initial_hypotheses": ["Credential misuse or session abuse is the strongest specialized hypothesis."],
+            },
+        )
+
+        updated = manager.revise(
+            state,
+            goal="Investigate suspicious login sequence",
+            session_id="sess-threshold-profile",
+            tool_name="search_logs",
+            params={"query": "user=alice"},
+            result={},
+            finding_index=0,
+            step_number=0,
+            observations=[
+                {
+                    "observation_id": "obs:sess-threshold-profile:0:0",
+                    "tool_name": "search_logs",
+                    "observation_type": "auth_event",
+                    "summary": "Authentication telemetry tied alice to session S-1 on WS-12.",
+                    "quality": 0.83,
+                    "source_kind": "log_row",
+                    "source_paths": ["result.results[0]"],
+                    "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.83},
+                    "facts": {"user": "alice", "session_id": "S-1", "verdict": "SUSPICIOUS", "severity": "high"},
+                    "entities": [{"type": "user", "value": "alice"}, {"type": "session", "value": "S-1"}],
+                }
+            ],
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:s-1",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    }
+                ]
+            },
+        )
+
+        support_ref = updated["hypotheses"][0]["supporting_evidence_refs"][0]
+        assert support_ref["typed_signal_strength"] >= 0.64
+        assert support_ref["heuristic_dependence"] <= 0.45
+        assert support_ref["weighted_support"] > 0
+
+    def test_revise_keeps_narrative_only_observation_neutral_when_thresholds_are_not_met(self):
+        manager = HypothesisManager()
+        state = manager.bootstrap(
+            "Investigate suspicious finance email",
+            "sess-narrative-neutral",
+            investigation_plan={
+                "lane": "email",
+                "initial_hypotheses": ["Initial access likely occurred through phishing or malicious email delivery."],
+            },
+        )
+
+        updated = manager.revise(
+            state,
+            goal="Investigate suspicious finance email",
+            session_id="sess-narrative-neutral",
+            tool_name="analyze_email",
+            params={"message_id": "msg-2"},
+            result={},
+            finding_index=0,
+            step_number=0,
+            observations=[
+                {
+                    "observation_id": "obs:sess-narrative-neutral:0:0",
+                    "tool_name": "analyze_email",
+                    "observation_type": "correlation_observation",
+                    "summary": "Analyst narrative says this feels like phishing, but delivery artifacts are still missing.",
+                    "quality": 0.82,
+                    "source_kind": "analyst_note",
+                    "source_paths": ["result.note"],
+                    "facts": {"severity": "medium"},
+                    "entities": [],
+                }
+            ],
+        )
+
+        primary = updated["hypotheses"][0]
+        assert primary["supporting_evidence_refs"] == []
+        assert updated["recent_evidence_refs"][-1]["stance"] == "neutral"
+
     def test_revise_uses_explicit_relationships_and_plan_gaps_for_evidence_aware_state(self):
         manager = HypothesisManager()
         plan = {
@@ -1276,6 +1366,10 @@ class TestObservationPlannerAndRootCause:
 
         assert assessment["status"] == "insufficient_evidence"
         assert assessment["primary_root_cause"] == "Insufficient evidence to determine root cause confidently."
+        assert any(
+            "less narrative-only support" in item
+            for item in assessment["missing_evidence"]
+        )
 
     def test_root_cause_engine_accepts_typed_email_support_with_explicit_relations(self):
         engine = RootCauseEngine()
@@ -2048,7 +2142,49 @@ class TestObservationPlannerAndRootCause:
             "Separate the two strongest competing hypotheses" in item
             for item in assessment["missing_evidence"]
         )
-        assert "tightly ranked" in assessment["summary"]
+
+    def test_root_cause_engine_rejects_ioc_support_when_most_support_is_narrative_only(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious domain activity",
+            reasoning_state={
+                "investigation_lane": "ioc",
+                "hypotheses": [
+                    {
+                        "id": "hyp-ioc-narrative-1",
+                        "statement": "The domain is malicious infrastructure used for phishing delivery.",
+                        "confidence": 0.77,
+                        "priority": 0.91,
+                        "ranking_score": 0.91,
+                        "evidence_score": 0.46,
+                        "contradiction_score": 0.04,
+                        "supporting_evidence_refs": [
+                            {"observation_id": "obs-ioc-narrative-1", "summary": "Analyst narrative says the domain feels malicious.", "quality": 0.87},
+                            {"observation_id": "obs-ioc-narrative-2", "summary": "Provider commentary mentions phishing campaigns in prose.", "quality": 0.81},
+                        ],
+                        "contradicting_evidence_refs": [],
+                    }
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Narrative reporting discussed the domain."},
+                    {"summary": "No typed enrichment was preserved."},
+                ]
+            },
+            entity_state={"relationships": []},
+            active_observations=[
+                {"observation_id": "obs-ioc-narrative-1", "summary": "Analyst narrative says the domain feels malicious.", "quality": 0.87},
+                {"observation_id": "obs-ioc-narrative-2", "summary": "Provider commentary mentions phishing campaigns in prose.", "quality": 0.81},
+            ],
+        )
+
+        assert assessment["status"] == "insufficient_evidence"
+        assert any("less narrative-only support" in item for item in assessment["missing_evidence"])
 
 
 class TestEntityAndEvidenceState:

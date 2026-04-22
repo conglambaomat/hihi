@@ -43,10 +43,16 @@ def test_get_case_memory_prefers_published_memory_payload():
     assert result["latest_session_id"] == "sess-1"
     assert result["thread_id"] == "thread-1"
     assert result["memory_scope"] == "published"
+    assert result["authoritative_memory_scope"] == "published"
     assert result["authoritative_snapshot"]["reasoning_state"]["status"] == "published"
     assert result["authoritative_snapshot"]["accepted_facts"][0]["summary"] == "published fact"
     assert result["authoritative_snapshot"]["root_cause_assessment"]["primary_root_cause"] == "Published root cause"
-    assert result["accepted_snapshot"] == result["authoritative_snapshot"]
+    assert result["memory_snapshot"] == result["authoritative_snapshot"]
+    assert result["accepted_snapshot"] is None
+    assert result["memory_lifecycle"] == "published"
+    assert result["memory_kind"] == "authoritative_case_truth"
+    assert result["memory_is_authoritative"] is True
+    assert result["compatibility_aliases"]["accepted_snapshot"] is False
     assert result["summary"] == "Published root cause summary."
     assert result["memory_boundary"]["case_id"] == "case-1"
     assert result["memory_boundary"]["publication_scope"] == "published"
@@ -87,6 +93,7 @@ def test_get_case_memory_uses_lifecycle_accepted_memory_when_present():
     result = service.get_case_memory("case-2")
 
     assert result["memory_scope"] == "accepted"
+    assert result["authoritative_memory_scope"] == "accepted"
     assert result["authoritative_snapshot"]["reasoning_state"]["status"] == "accepted-lifecycle"
     assert result["authoritative_snapshot"]["accepted_facts"][0]["summary"] == "accepted lifecycle fact"
     assert result["authoritative_snapshot"]["entity_state"]["relationships"][0]["id"] == "rel-accepted"
@@ -94,7 +101,12 @@ def test_get_case_memory_uses_lifecycle_accepted_memory_when_present():
     assert result["authoritative_snapshot"]["evidence_state"]["edges"][0]["id"] == "edge-accepted"
     assert result["authoritative_snapshot"]["evidence_quality_summary"]["average_quality"] == 0.88
     assert result["authoritative_snapshot"]["root_cause_assessment"]["primary_root_cause"] == "Lifecycle root cause"
+    assert result["memory_snapshot"] == result["authoritative_snapshot"]
     assert result["accepted_snapshot"] == result["authoritative_snapshot"]
+    assert result["memory_lifecycle"] == "accepted"
+    assert result["memory_kind"] == "authoritative_case_truth"
+    assert result["memory_is_authoritative"] is True
+    assert result["compatibility_aliases"]["accepted_snapshot"] is True
     assert result["memory_boundary"]["thread_id"] == "thread-2"
     assert result["memory_boundary"]["publication_scope"] == "accepted"
 
@@ -153,8 +165,13 @@ def test_get_case_memory_prefers_published_session_over_accepted_session():
     assert result["latest_session_id"] == "sess-published"
     assert result["thread_id"] == "thread-published"
     assert result["memory_scope"] == "published"
+    assert result["authoritative_memory_scope"] == "published"
     assert result["authoritative_snapshot"]["reasoning_state"]["status"] == "published"
-    assert result["accepted_snapshot"] == result["authoritative_snapshot"]
+    assert result["memory_snapshot"] == result["authoritative_snapshot"]
+    assert result["accepted_snapshot"] is None
+    assert result["memory_lifecycle"] == "published"
+    assert result["memory_is_authoritative"] is True
+    assert result["compatibility_aliases"]["accepted_snapshot"] is False
     assert result["summary"] == "Published root cause summary."
 
 
@@ -184,10 +201,16 @@ def test_get_case_memory_preserves_legacy_metadata_fallback():
     result = service.get_case_memory("case-3")
 
     assert result["memory_scope"] is None
+    assert result["authoritative_memory_scope"] is None
     assert result["authoritative_snapshot"]["reasoning_state"]["status"] == "legacy"
     assert result["authoritative_snapshot"]["accepted_facts"][0]["summary"] == "legacy fact"
     assert result["authoritative_snapshot"]["root_cause_assessment"]["primary_root_cause"] == "Legacy root cause"
-    assert result["accepted_snapshot"] == result["authoritative_snapshot"]
+    assert result["memory_snapshot"] == result["authoritative_snapshot"]
+    assert result["accepted_snapshot"] is None
+    assert result["memory_lifecycle"] is None
+    assert result["memory_kind"] == "working_context"
+    assert result["memory_is_authoritative"] is False
+    assert result["compatibility_aliases"]["accepted_snapshot"] is False
     assert result["summary"] == "Legacy root cause summary."
 
 
@@ -215,8 +238,11 @@ def test_record_reasoning_checkpoint_does_not_materialize_accepted_memory_for_wo
     payload = case_store.add_event.call_args.kwargs["payload"]
     assert payload["snapshot_lifecycle"] == "working"
     assert payload["memory_scope"] is None
+    assert payload["authoritative_memory_scope"] is None
     assert "accepted_memory" not in payload
     assert payload.get("memory") is None
+    assert payload["checkpoint_contract"]["case_memory_scope"] is None
+    assert payload["checkpoint_contract"]["authoritative_memory_scope"] is None
     assert payload["checkpoint_contract"]["case_memory_publication_ready"] is False
     assert payload["checkpoint_contract"]["accepted_fact_solidification_ready"] is False
     assert payload["checkpoint_contract"]["root_cause_solidification_ready"] is False
@@ -253,9 +279,12 @@ def test_record_reasoning_checkpoint_materializes_published_and_accepted_memory_
     for payload in (first_payload, second_payload):
         assert payload["snapshot_lifecycle"] == "published"
         assert payload["memory_scope"] == "published"
+        assert payload["authoritative_memory_scope"] == "published"
         assert payload["accepted_memory"]["accepted_facts"][0]["summary"] == "published fact"
         assert payload["memory"]["accepted"]["accepted_facts"][0]["summary"] == "published fact"
         assert payload["memory"]["published"]["root_cause_assessment"]["primary_root_cause"] == "Published root cause"
+        assert payload["checkpoint_contract"]["case_memory_scope"] == "published"
+        assert payload["checkpoint_contract"]["authoritative_memory_scope"] == "published"
         assert payload["checkpoint_contract"]["case_memory_publication_ready"] is True
         assert payload["checkpoint_contract"]["accepted_fact_solidification_ready"] is True
         assert payload["checkpoint_contract"]["root_cause_solidification_ready"] is True
@@ -292,6 +321,7 @@ def test_record_reasoning_checkpoint_materializes_only_accepted_memory_for_accep
     for payload in (first_payload, second_payload):
         assert payload["snapshot_lifecycle"] == "accepted"
         assert payload["memory_scope"] == "accepted"
+        assert payload["authoritative_memory_scope"] == "accepted"
         assert payload["accepted_memory"]["accepted_facts"][0]["summary"] == "accepted fact"
         assert payload["memory"]["accepted"]["root_cause_assessment"]["primary_root_cause"] == "Accepted root cause"
         assert "published" not in payload["memory"]
@@ -330,6 +360,7 @@ def test_record_reasoning_checkpoint_does_not_emit_root_cause_event_before_publi
     payload = case_store.add_event.call_args.kwargs["payload"]
     assert payload["snapshot_lifecycle"] == "candidate"
     assert payload["memory_scope"] is None
+    assert payload["authoritative_memory_scope"] is None
     assert payload["checkpoint_contract"]["case_memory_publication_ready"] is False
     assert payload["checkpoint_contract"]["accepted_fact_solidification_ready"] is False
     assert payload["checkpoint_contract"]["root_cause_solidification_ready"] is False

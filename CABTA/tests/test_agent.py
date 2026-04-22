@@ -4160,7 +4160,7 @@ class TestAgentLoop:
         assert decision is None
         assert loop._chat_should_force_model_answer_without_tools(state) is True
 
-    def test_response_style_block_uses_response_builder_for_restored_chat_context(self, tmp_path):
+    def test_chat_prompt_policy_delegates_to_response_builder_for_restored_chat_context(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         session_id = loop.store.create_session(
             goal="Explain the prior IOC conclusion.",
@@ -4168,16 +4168,24 @@ class TestAgentLoop:
                 "chat_mode": True,
                 "response_style": "conversational",
                 "chat_context_restored": True,
+                "chat_context_restored_memory_scope": "published",
+                "chat_context_restored_memory_is_authoritative": True,
             },
         )
         state = AgentState(session_id=session_id, goal="Explain the prior IOC conclusion.")
+        state.chat_context_restored_memory_scope = "published"
+        state.restored_memory_is_authoritative = True
 
-        block = loop._build_response_style_block(state)
+        policy = loop._chat_prompt_policy(state)
 
-        assert "Response style for analyst chat:" in block
-        assert "Treat carried-over findings as live investigation context" in block
+        assert "Response style for analyst chat:" in policy["response_style_block"]
+        assert "Treat carried-over findings as live investigation context" in policy["response_style_block"]
+        assert "authoritative case truth" in policy["response_style_block"]
+        assert "published memory" in policy["response_style_block"]
+        assert "Chat decision policy:" in policy["chat_decision_block"]
+        assert "restored published case truth" in policy["chat_decision_block"]
 
-    def test_chat_decision_block_uses_response_builder_for_fresh_evidence_follow_up(self, tmp_path):
+    def test_build_chat_decision_block_reads_from_delegated_prompt_policy(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         session_id = loop.store.create_session(
             goal="Pivot on the registrar tied to the domain.",
@@ -4189,11 +4197,14 @@ class TestAgentLoop:
             },
         )
         state = AgentState(session_id=session_id, goal="Pivot on the registrar tied to the domain.")
+        state.chat_context_restored_memory_scope = "accepted"
+        state.restored_memory_is_authoritative = True
 
         block = loop._build_chat_decision_block(state)
 
         assert "Chat decision policy:" in block
         assert "gather fresh evidence only for the new pivot" in block
+        assert "restored accepted case truth" in block
 
     def test_reasoning_guided_next_action_prefers_search_logs_for_entity_gap(self, tmp_path):
         loop = _make_agent_loop(tmp_path)

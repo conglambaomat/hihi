@@ -86,11 +86,25 @@ def test_build_thread_snapshot_exposes_candidate_lifecycle_contract(sample_state
 
     assert snapshot["snapshot_state"] == "working"
     assert snapshot["snapshot_lifecycle"] == "candidate"
+    assert sample_state.snapshot_lifecycle == "candidate"
     assert snapshot["lifecycle_memory_layers"]["candidate"] == "working_memory"
     assert snapshot["snapshot_contract"]["state_version"] == "thread-snapshot-lifecycle/v1"
     assert snapshot["snapshot_contract"]["lifecycle"] == "candidate"
     assert snapshot["snapshot_contract"]["is_terminal"] is False
     assert snapshot["snapshot_contract"]["publication_ready"] is False
+
+
+def test_finalize_lifecycle_for_state_normalizes_terminal_defaults():
+    completed_state = SimpleNamespace(snapshot_lifecycle=None, is_published=False, is_terminal=lambda: True)
+    published_state = SimpleNamespace(snapshot_lifecycle=None, is_published=True, is_terminal=lambda: True)
+    active_state = SimpleNamespace(snapshot_lifecycle=None, is_published=False, is_terminal=lambda: False)
+
+    assert ThreadSyncService.finalize_lifecycle_for_state(completed_state) == "accepted"
+    assert completed_state.snapshot_lifecycle == "accepted"
+    assert ThreadSyncService.finalize_lifecycle_for_state(published_state) == "published"
+    assert published_state.snapshot_lifecycle == "published"
+    assert ThreadSyncService.finalize_lifecycle_for_state(active_state) == "working"
+    assert active_state.snapshot_lifecycle == "working"
 
 
 def test_sync_thread_snapshot_marks_terminal_state_as_completed():

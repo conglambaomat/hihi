@@ -9,10 +9,45 @@ from typing import Any, Callable, Dict, List, Optional
 class ThreadSyncService:
     """Encapsulate thread snapshot persistence and pending command application."""
 
+    VALID_LIFECYCLES = {"working", "candidate", "accepted", "published"}
+    AUTHORITATIVE_LIFECYCLES = {"accepted", "published"}
+
     def __init__(self, *, thread_store=None, store=None, notify: Optional[Callable[[str, Dict[str, Any]], None]] = None):
         self.thread_store = thread_store
         self.store = store
         self.notify = notify
+
+    @classmethod
+    def normalize_lifecycle(cls, value: Any) -> Optional[str]:
+        clean = str(value or "").strip().lower()
+        if clean in cls.VALID_LIFECYCLES:
+            return clean
+        return None
+
+    @classmethod
+    def authoritative_memory_scope(cls, value: Any) -> Optional[str]:
+        lifecycle = cls.normalize_lifecycle(value)
+        if lifecycle in cls.AUTHORITATIVE_LIFECYCLES:
+            return lifecycle
+        return None
+
+    @classmethod
+    def snapshot_lifecycle_for_state(cls, state: Any) -> str:
+        explicit = cls.normalize_lifecycle(getattr(state, "snapshot_lifecycle", ""))
+        if explicit:
+            return explicit
+        if bool(getattr(state, "is_terminal", lambda: False)()):
+            if bool(getattr(state, "is_published", False)):
+                return "published"
+            return "accepted"
+        return "working"
+
+    @classmethod
+    def finalize_lifecycle_for_state(cls, state: Any) -> str:
+        lifecycle = cls.snapshot_lifecycle_for_state(state)
+        if lifecycle in cls.VALID_LIFECYCLES:
+            setattr(state, "snapshot_lifecycle", lifecycle)
+        return lifecycle
 
     @staticmethod
     def _snapshot_state_for(state: Any) -> str:
@@ -24,17 +59,6 @@ class ThreadSyncService:
     def _normalized_scope_value(value: Any) -> Optional[str]:
         clean = str(value or "").strip()
         return clean or None
-
-    @staticmethod
-    def _snapshot_lifecycle_for(state: Any) -> str:
-        explicit = str(getattr(state, "snapshot_lifecycle", "") or "").strip().lower()
-        if explicit in {"working", "candidate", "accepted", "published"}:
-            return explicit
-        if bool(getattr(state, "is_terminal", lambda: False)()):
-            if bool(getattr(state, "is_published", False)):
-                return "published"
-            return "accepted"
-        return "working"
 
     @staticmethod
     def get_working_memory(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -69,7 +93,7 @@ class ThreadSyncService:
         accepted_facts = list(getattr(state, "accepted_facts", []))[-16:]
         unresolved_questions = list(getattr(state, "unresolved_questions", []))
         snapshot_state = self._snapshot_state_for(state)
-        snapshot_lifecycle = self._snapshot_lifecycle_for(state)
+        snapshot_lifecycle = self.finalize_lifecycle_for_state(state)
         investigation_plan = getattr(state, "investigation_plan", {}) or {}
         reasoning_state = getattr(state, "reasoning_state", {}) or {}
         entity_state = getattr(state, "entity_state", {}) or {}

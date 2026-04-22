@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -238,6 +240,35 @@ def test_think_short_circuits_planned_chat_tool_without_prompt_round_trip():
     assert result == planned_decision
     loop.prompt_composer.build_think_payload.assert_not_called()
     loop._chat_with_tools.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "builder_method_name"),
+    [
+        ("_runtime_fallback_artifacts", "build_runtime_fallback_artifacts"),
+        ("_build_direct_chat_fallback_answer", "build_direct_chat_fallback_answer_with_runtime_status"),
+        ("_llm_unavailable_notice", "build_runtime_unavailable_notice"),
+    ],
+)
+def test_runtime_fallback_helpers_reuse_shared_builder_kwargs(method_name, builder_method_name):
+    loop = _build_agent_loop()
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return "delegated-result"
+
+    setattr(loop.session_response_builder, builder_method_name, _capture)
+
+    result = getattr(loop, method_name)("ignored-goal") if method_name == "_build_direct_chat_fallback_answer" else getattr(loop, method_name)()
+
+    assert result == "delegated-result"
+    assert captured["provider_runtime_status"] is loop.provider_runtime_status
+    assert captured["provider_name"] == loop.provider
+    assert captured["normalize_provider"] == loop._normalize_provider
+    assert captured["active_model_name"] == loop._active_model_name
+    assert captured["provider_display_name"] == loop.session_response_builder.provider_display_name
+    assert captured["provider_runtime_error_excerpt"] == loop.session_response_builder.provider_runtime_error_excerpt
 
 
 def test_response_builder_approval_helpers_shape_loop_payloads():

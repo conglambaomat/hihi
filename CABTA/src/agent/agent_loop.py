@@ -915,34 +915,8 @@ class AgentLoop:
         )
         self._persist_reasoning_metadata(session_id, state)
 
-    def _normalize_terminal_snapshot_publication(self, state: AgentState) -> None:
-        lifecycle = str(getattr(state, "snapshot_lifecycle", "") or "").strip().lower()
-        if lifecycle in {"working", "candidate", "accepted", "published"}:
-            return
-        if state.phase != AgentPhase.COMPLETED:
-            return
-
-        root_cause = getattr(state, "root_cause_assessment", {}) or {}
-        accepted_facts = getattr(state, "accepted_facts", []) or []
-        reasoning_state = getattr(state, "reasoning_state", {}) or {}
-
-        has_root_cause = isinstance(root_cause, dict) and bool(str(root_cause.get("primary_root_cause") or "").strip())
-        has_accepted_facts = isinstance(accepted_facts, list) and any(isinstance(item, dict) for item in accepted_facts)
-        reasoning_status = str(reasoning_state.get("status") or "").strip().lower() if isinstance(reasoning_state, dict) else ""
-        reasoning_ready = reasoning_status in {"supported", "sufficient_evidence", "complete", "completed"}
-
-        if bool(getattr(state, "is_published", False)):
-            state.snapshot_lifecycle = "published"
-            return
-
-        if has_root_cause or has_accepted_facts or reasoning_ready:
-            state.snapshot_lifecycle = "accepted"
-            return
-
-        state.snapshot_lifecycle = "candidate"
-
     def _persist_reasoning_metadata(self, session_id: str, state: AgentState) -> None:
-        self._normalize_terminal_snapshot_publication(state)
+        self.thread_sync_service.finalize_lifecycle_for_state(state)
         snapshot_id = self._sync_thread_snapshot(session_id, state)
         if snapshot_id:
             state.session_snapshot_id = snapshot_id
@@ -1724,15 +1698,16 @@ class AgentLoop:
                     request_metadata=request_metadata,
                 )
         except asyncio.TimeoutError:
+            timeout_status = self.session_response_builder.build_provider_timeout_runtime_status(
+                provider=self.provider,
+                timeout_seconds=self.chat_response_timeout_seconds,
+                provider_display_name=self.session_response_builder.provider_display_name,
+            )
             self._record_llm_runtime_status(
                 provider=self.provider,
                 model=self._active_model_name(self.provider),
                 available=False,
-                error=self.session_response_builder.build_provider_timeout_error(
-                    provider=self.provider,
-                    timeout_seconds=self.chat_response_timeout_seconds,
-                    provider_display_name=self.session_response_builder.provider_display_name,
-                ),
+                error=timeout_status.get("error"),
             )
             raw = None
         logger.info(f"[AGENT] LLM raw response type={type(raw).__name__}, "
@@ -2579,46 +2554,57 @@ class AgentLoop:
 
         return has_simple_intent and observable_count <= 2
 
-    def _build_response_style_block(self, state: AgentState) -> str:
-        metadata = self._session_metadata(state.session_id)
-        return self.session_response_builder.build_chat_response_style_block(
-            is_chat_session=self._is_chat_session(state),
-            chat_context_restored=bool(metadata.get("chat_context_restored")),
+    def _chat_context_flags(self, state: AgentState) -> Dict[str, Any]:
+        return self.session_context_service.build_chat_context_flags(
+            state=state,
+            metadata=self._session_metadata(state.session_id),
         )
+
+    def _chat_prompt_policy(self, state: AgentState) -> Dict[str, str]:
+        context_flags = self._chat_context_flags(state)
+        return self.session_response_builder.build_chat_prompt_policy(
+            is_chat_session=self._is_chat_session(state),
+            chat_context_restored=bool(context_flags.get("chat_context_restored")),
+            requires_fresh_evidence=bool(context_flags.get("requires_fresh_evidence")),
+            restored_memory_scope=str(context_flags.get("restored_memory_scope") or ""),
+            restored_memory_is_authoritative=bool(context_flags.get("restored_memory_is_authoritative")),
+        )
+
+    def _build_response_style_block(self, state: AgentState) -> str:
+        return str(self._chat_prompt_policy(state).get("response_style_block") or "")
 
     def _build_chat_decision_block(self, state: AgentState) -> str:
-        metadata = self._session_metadata(state.session_id)
-        return self.session_response_builder.build_chat_decision_block(
-            is_chat_session=self._is_chat_session(state),
-            chat_context_restored=bool(metadata.get("chat_context_restored")),
-            requires_fresh_evidence=bool(metadata.get("chat_follow_up_requires_fresh_evidence")),
-        )
+        return str(self._chat_prompt_policy(state).get("chat_decision_block") or "")
 
-    def _build_fallback_response_context(self) -> Dict[str, Any]:
-        return self.session_response_builder.build_fallback_response_context(
-            provider_runtime_status=self.provider_runtime_status,
-            provider_name=self.provider,
-            normalize_provider=self._normalize_provider,
-            active_model_name=self._active_model_name,
+    def _runtime_fallback_builder_kwargs(self) -> Dict[str, Any]:
+        return {
+            "provider_runtime_status": self.provider_runtime_status,
+            "provider_name": self.provider,
+            "normalize_provider": self._normalize_provider,
+            "active_model_name": self._active_model_name,
+            "provider_display_name": self.session_response_builder.provider_display_name,
+            "provider_runtime_error_excerpt": self.session_response_builder.provider_runtime_error_excerpt,
+        }
+
+    def _runtime_fallback_artifacts(self) -> Dict[str, Any]:
+        return self.session_response_builder.build_runtime_fallback_artifacts(
+            **self._runtime_fallback_builder_kwargs(),
         )
 
     def _build_direct_chat_fallback_answer(self, goal: str) -> str:
-        return self.session_response_builder.build_direct_chat_fallback_answer(
-            llm_unavailable_notice=self._llm_unavailable_notice(),
+        return self.session_response_builder.build_direct_chat_fallback_answer_with_runtime_status(
+            **self._runtime_fallback_builder_kwargs(),
         )
 
     def _build_chat_model_unavailable_answer(self, state: AgentState) -> str:
-        return self.session_response_builder.build_chat_model_unavailable_answer_from_context(
+        return self.session_response_builder.build_chat_model_unavailable_answer_with_runtime_status(
             state=state,
-            fallback_context=self._build_fallback_response_context(),
             build_direct_chat_fallback_answer=self._build_direct_chat_fallback_answer,
             goal=state.goal,
             authoritative_outcome=self._resolve_authoritative_outcome(state),
             fallback_evidence_points=lambda current_state, limit: self._fallback_evidence_points(current_state, limit=limit),
-            build_fallback_answer=self._build_fallback_answer,
             build_chat_specific_fallback=self._build_chat_specific_fallback,
-            provider_display_name=self.session_response_builder.provider_display_name,
-            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
+            **self._runtime_fallback_builder_kwargs(),
         )
 
     def _build_tools_block(self) -> str:
@@ -3009,13 +2995,17 @@ class AgentLoop:
         )
 
     def _build_fallback_answer(
-        self, state: AgentState, authoritative_outcome: Optional[Dict[str, str]],
+        self,
+        state: AgentState,
+        authoritative_outcome: Optional[Dict[str, str]],
+        include_runtime_notice: bool = True,
     ) -> str:
         """Build a deterministic evidence-backed answer when LLM calls fail."""
         return self.session_response_builder.build_fallback_answer(
             state=state,
             authoritative_outcome=authoritative_outcome,
             build_evidence_backed_answer=self._build_evidence_backed_answer,
+            include_runtime_notice=include_runtime_notice,
         )
 
     def _build_chat_specific_fallback(self, state: AgentState) -> str:
@@ -3028,10 +3018,8 @@ class AgentLoop:
         )
 
     def _llm_unavailable_notice(self) -> str:
-        return self.session_response_builder.llm_unavailable_notice_from_context(
-            fallback_context=self._build_fallback_response_context(),
-            provider_display_name=self.session_response_builder.provider_display_name,
-            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
+        return self.session_response_builder.build_runtime_unavailable_notice(
+            **self._runtime_fallback_builder_kwargs(),
         )
 
     def _fallback_evidence_points(self, state: AgentState, limit: int = 3) -> List[str]:
@@ -3058,7 +3046,7 @@ class AgentLoop:
         )
 
         try:
-            return await self.session_response_builder.generate_summary(
+            return await self.session_response_builder.generate_summary_with_runtime_fallback(
                 state=state,
                 authoritative_outcome=authoritative_outcome,
                 prompt=prompt,
@@ -3071,9 +3059,15 @@ class AgentLoop:
             )
         except Exception as exc:
             logger.warning(f"[AGENT] Summary generation failed: {exc}")
-            if self._is_chat_session(state) and self._provider_is_currently_unavailable(self.provider):
-                return self._build_chat_model_unavailable_answer(state)
-            return self._build_fallback_answer(state, authoritative_outcome)
+            return self.session_response_builder.build_summary_fallback_answer(
+                state=state,
+                authoritative_outcome=authoritative_outcome,
+                is_chat_session=self._is_chat_session,
+                provider_is_currently_unavailable=self._provider_is_currently_unavailable,
+                provider_name=self.provider,
+                build_chat_model_unavailable_answer=self._build_chat_model_unavailable_answer,
+                build_fallback_answer=self._build_fallback_answer,
+            )
 
     # ================================================================== #
     #  LLM communication

@@ -703,6 +703,40 @@ class TestFastAPIEndpoints:
         assert 'Only use tools if the current evidence is insufficient.' in args[0]
         assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
 
+    def test_chat_follow_up_builder_handles_legacy_context_without_snapshot(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='(Follow-up to previous investigation:\nInvestigate suspicious sign-in activity)',
+            case_id='CASE-42',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Prior summary from the original investigation.',
+        )
+        self.app.state.agent_store.update_session_findings(
+            original_session,
+            [
+                {'type': 'tool_result', 'tool': 'correlate_findings', 'result': {'verdict': 'SUSPICIOUS'}},
+            ],
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Explain why this case stayed suspicious.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert args[0].startswith('Continue the previous analyst conversation about the security investigation.')
+        assert '(Follow-up to previous investigation:' not in args[0]
+        assert 'Previous investigation goal:\nInvestigate suspicious sign-in activity)' in args[0]
+        assert 'Previous evidence snapshot:' in args[0]
+        assert 'Only use tools if the current evidence is insufficient.' in args[0]
+        assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
+
     def test_chat_follow_up_while_active_queues_thread_command(self):
         active_session = self.app.state.agent_store.create_session(
             goal='Investigate suspicious sign-in activity',
@@ -742,6 +776,7 @@ class TestFastAPIEndpoints:
                 'summary': 'Alice authenticated from a suspicious source IP and initiated a risky session.',
                 'latest_session_id': 'sess-case-memory',
                 'memory_scope': 'published',
+                'authoritative_memory_scope': 'published',
                 'memory_boundary': {
                     'case_id': 'CASE-42',
                     'thread_id': 'case-thread-1',
@@ -749,6 +784,15 @@ class TestFastAPIEndpoints:
                     'publication_scope': 'published',
                 },
                 'authoritative_snapshot': {
+                    'root_cause_assessment': {
+                        'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
+                    },
+                    'accepted_facts': [
+                        {'summary': 'Alice authenticated from 185.220.101.45.'},
+                    ],
+                    'unresolved_questions': ['Which host executed the follow-on process activity?'],
+                },
+                'memory_snapshot': {
                     'root_cause_assessment': {
                         'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
                     },
@@ -779,10 +823,13 @@ class TestFastAPIEndpoints:
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Latest root-cause state:' in args[0]
-        assert 'Published case snapshot facts:' in args[0]
-        assert 'Answer from the published case snapshot' in args[0]
+        assert 'Published case memory facts:' in args[0]
+        assert 'Answer from the published case memory' in args[0]
+        assert 'Do not overstate published case truth beyond its lifecycle.' in args[0]
         assert kwargs['metadata']['thread_id'] == 'case-thread-1'
         assert kwargs['metadata']['case_memory_context']['latest_session_id'] == 'sess-case-memory'
+        assert kwargs['metadata']['case_memory_context']['authoritative_memory_scope'] == 'published'
+        assert kwargs['metadata']['case_memory_context']['authoritative_memory_scope'] == 'published'
         assert kwargs['metadata']['case_memory_context']['memory_boundary']['publication_scope'] == 'published'
 
     def test_agent_session_payload_flattens_chat_message_metadata(self):

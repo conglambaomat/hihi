@@ -117,96 +117,13 @@ def _finding_snapshot(findings, limit: int = 3) -> str:
     return "\n".join(lines)
 
 
-def _message_requests_fresh_evidence(message: str) -> bool:
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-
-    explanation_patterns = (
-        "why",
-        "how did",
-        "what evidence",
-        "summarize",
-        "summary",
-        "recap",
-        "explain",
-        "because",
-        "tai sao",
-        "vi sao",
-        "giai thich",
-        "tom tat",
-        "bang chung",
-        "dua tren",
-        "what did you find",
-    )
-    if any(pattern in text for pattern in explanation_patterns):
-        return False
-
-    investigation_patterns = (
-        "investigate",
-        "pivot",
-        "check",
-        "analyze",
-        "lookup",
-        "look up",
-        "search",
-        "hunt",
-        "query",
-        "scan",
-        "enrich",
-        "triage",
-        "verify",
-        "confirm",
-        "correlate",
-        "find related",
-        "pull",
-        "dieu tra",
-        "kiem tra",
-        "phan tich",
-        "tra cuu",
-        "xac minh",
-        "tim them",
-        "san",
-        "quet",
-    )
-    if any(pattern in text for pattern in investigation_patterns):
-        return True
-
-    if re.search(r"\b(pivot|registrar|infrastructure|related hosts?|related domains?)\b", text):
-        return True
-
-    return False
-
-
 def _build_follow_up_goal(session: dict, message: str) -> str:
-    previous_goal = str(session.get("goal") or "").strip()
-    if previous_goal.lower().startswith("(follow-up to previous investigation:"):
-        _, _, remainder = previous_goal.partition("\n")
-        previous_goal = remainder.strip() or previous_goal
-    previous_summary = str(session.get("summary") or "").strip()
-    evidence_snapshot = _finding_snapshot(session.get("findings"))
-    needs_fresh_evidence = _message_requests_fresh_evidence(message)
-
-    blocks = ["Continue the previous analyst conversation about the security investigation."]
-    if previous_goal:
-        blocks.append(f"Previous investigation goal:\n{previous_goal}")
-    if previous_summary:
-        blocks.append(f"Previous investigation summary:\n{previous_summary}")
-    if evidence_snapshot:
-        blocks.append(f"Previous evidence snapshot:\n{evidence_snapshot}")
-    blocks.append(f"New analyst request:\n{message.strip()}")
-    if needs_fresh_evidence:
-        blocks.append(
-            "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
-            "Gather fresh evidence with tools if the analyst is asking for a new pivot or if the carried-over evidence is still insufficient."
-        )
-    else:
-        blocks.append(
-            "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
-            "If the analyst is asking for explanation, recap, or judgment from the current evidence, answer directly from that carried-over context. "
-            "Only use tools if the current evidence is insufficient."
-        )
-    return "\n\n".join(blocks)
+    return _response_builder.build_legacy_follow_up_goal(
+        previous_goal=str(session.get("goal") or ""),
+        previous_summary=str(session.get("summary") or "").strip(),
+        evidence_snapshot=_finding_snapshot(session.get("findings")),
+        message=message,
+    )
 
 
 @router.post('')
@@ -310,6 +227,7 @@ async def send_message(request: Request, body: ChatMessage):
             case_memory_context = case_memory_service.get_case_memory(session.get("case_id"))
             authoritative_snapshot = (
                 case_memory_context.get("authoritative_snapshot")
+                or case_memory_context.get("memory_snapshot")
                 or case_memory_context.get("accepted_snapshot", {})
                 if isinstance(case_memory_context, dict)
                 else {}
@@ -328,7 +246,8 @@ async def send_message(request: Request, body: ChatMessage):
                 intent=intent_payload["intent"],
                 requires_fresh_evidence=bool(intent_payload["requires_fresh_evidence"]),
                 memory_scope=(
-                    case_memory_context.get("memory_scope")
+                    case_memory_context.get("authoritative_memory_scope")
+                    or case_memory_context.get("memory_scope")
                     if isinstance(case_memory_context, dict)
                     else None
                 ),

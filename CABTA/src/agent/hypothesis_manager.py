@@ -77,6 +77,9 @@ class ObservationAssessment:
     tool_reliability: float
     entity_coverage: float
     causal_relevance: float
+    typed_signal_strength: float
+    heuristic_dependence: float
+    threshold_profile: Dict[str, float]
     tags: List[str]
     summary: str
     open_questions: List[str]
@@ -465,6 +468,26 @@ class HypothesisManager:
         if typed_fact.get("family") in {"log", "ioc", "email", "file"}:
             causal_relevance += 0.04
         causal_relevance = min(1.0, causal_relevance)
+        typed_signal_strength = self._typed_signal_strength(
+            observation=observation,
+            obs_type=obs_type,
+            fact_family=fact_family,
+            quality=quality,
+            relation_signal=relation_signal,
+            entity_coverage=entity_coverage,
+        )
+        heuristic_dependence = self._heuristic_dependence(
+            observation=observation,
+            typed_signal_strength=typed_signal_strength,
+            relation_signal=relation_signal,
+            entity_coverage=entity_coverage,
+        )
+        threshold_profile = self._observation_threshold_profile(
+            lane=lane,
+            statement=hypothesis.statement,
+            typed_signal_strength=typed_signal_strength,
+            heuristic_dependence=heuristic_dependence,
+        )
         tags = self._observation_tags(observation, lane)
         relevance = self._topic_relevance(hypothesis, obs_type, fact_family, tags)
         malicious_signal = self._is_supportive_signal(observation)
@@ -472,19 +495,32 @@ class HypothesisManager:
         statement = hypothesis.statement.lower()
         stance = "neutral"
 
+        support_relevance_floor = threshold_profile["support_relevance_floor"]
+        contradiction_relevance_floor = threshold_profile["contradiction_relevance_floor"]
+        typed_support_floor = threshold_profile["typed_support_floor"]
+        typed_contradiction_floor = threshold_profile["typed_contradiction_floor"]
+        relation_only_support_floor = threshold_profile["relation_only_support_floor"]
+
         if "benign" in statement or "noisy" in statement or "insufficient" in statement:
-            if benign_signal:
+            if benign_signal and (relevance >= contradiction_relevance_floor or typed_signal_strength >= typed_contradiction_floor):
                 stance = "supports"
-            elif malicious_signal:
+            elif malicious_signal and (relevance >= support_relevance_floor or typed_signal_strength >= typed_support_floor):
                 stance = "contradicts"
         else:
-            if malicious_signal and relevance >= 0.3:
+            if malicious_signal and (
+                relevance >= support_relevance_floor
+                or typed_signal_strength >= typed_support_floor
+            ):
                 stance = "supports"
-            elif benign_signal and relevance >= 0.2:
+            elif benign_signal and (
+                relevance >= contradiction_relevance_floor
+                or typed_signal_strength >= typed_contradiction_floor
+            ):
                 stance = "contradicts"
             elif (
-                relation_signal >= 0.9
-                and relevance >= 0.75
+                relation_signal >= relation_only_support_floor
+                and typed_signal_strength >= typed_support_floor
+                and heuristic_dependence <= 0.45
                 and obs_type in {"auth_event", "process_event", "network_event", "email_delivery", "file_execution"}
             ):
                 stance = "supports"
@@ -492,9 +528,19 @@ class HypothesisManager:
         if obs_type == "correlation_observation" and facts.get("results_count") == 0 and not malicious_signal and not benign_signal:
             stance = "neutral"
 
+        evidence_strength = self._observation_evidence_strength(
+            relevance=relevance,
+            quality=quality,
+            reliability=reliability,
+            causal_relevance=causal_relevance,
+            typed_signal_strength=typed_signal_strength,
+            heuristic_dependence=heuristic_dependence,
+        )
+        if stance != "neutral" and evidence_strength < threshold_profile["minimum_strength_for_stance"]:
+            stance = "neutral"
+
         summary = str(observation.get("summary") or f"{tool_name} observation").strip()
         open_questions = self._questions_from_observation(observation, lane)
-        evidence_strength = max(0.0, min(1.0, relevance * quality * reliability * causal_relevance))
         return ObservationAssessment(
             stance=stance,
             evidence_strength=evidence_strength,
@@ -502,6 +548,9 @@ class HypothesisManager:
             tool_reliability=reliability,
             entity_coverage=entity_coverage,
             causal_relevance=causal_relevance,
+            typed_signal_strength=typed_signal_strength,
+            heuristic_dependence=heuristic_dependence,
+            threshold_profile=threshold_profile,
             tags=tags,
             summary=summary,
             open_questions=open_questions,
@@ -518,6 +567,8 @@ class HypothesisManager:
             "evidence_quality": round(float(assessment.evidence_quality), 3),
             "tool_reliability": round(float(assessment.tool_reliability), 3),
             "causal_relevance": round(float(assessment.causal_relevance), 3),
+            "typed_signal_strength": round(float(assessment.typed_signal_strength), 3),
+            "heuristic_dependence": round(float(assessment.heuristic_dependence), 3),
         }
         hypothesis.supporting_evidence_refs.append(evidence)
         hypothesis.confidence = min(0.99, hypothesis.confidence + support_gain * (1 - hypothesis.confidence))
@@ -537,6 +588,8 @@ class HypothesisManager:
             "evidence_quality": round(float(assessment.evidence_quality), 3),
             "tool_reliability": round(float(assessment.tool_reliability), 3),
             "causal_relevance": round(float(assessment.causal_relevance), 3),
+            "typed_signal_strength": round(float(assessment.typed_signal_strength), 3),
+            "heuristic_dependence": round(float(assessment.heuristic_dependence), 3),
         }
         hypothesis.contradicting_evidence_refs.append(evidence)
         hypothesis.confidence = max(0.01, hypothesis.confidence - contradiction_loss * hypothesis.confidence)
@@ -841,9 +894,21 @@ class HypothesisManager:
         coverage_factor = max(0.35, assessment.entity_coverage)
         causal_factor = max(0.35, assessment.causal_relevance)
         reliability_factor = max(0.35, assessment.tool_reliability)
+        typed_factor = max(0.3, assessment.typed_signal_strength)
+        heuristic_penalty = max(0.45, 1.0 - (assessment.heuristic_dependence * 0.45))
         chain_bonus = 1.08 if assessment.entity_coverage >= 0.75 and assessment.causal_relevance >= 0.75 else 1.0
-        gain = 0.34 * assessment.evidence_strength * quality_factor * coverage_factor * causal_factor * reliability_factor * chain_bonus
-        if assessment.evidence_quality >= 0.55 and assessment.tool_reliability >= 0.8:
+        gain = (
+            0.34
+            * assessment.evidence_strength
+            * quality_factor
+            * coverage_factor
+            * causal_factor
+            * reliability_factor
+            * typed_factor
+            * heuristic_penalty
+            * chain_bonus
+        )
+        if assessment.evidence_quality >= 0.55 and assessment.tool_reliability >= 0.8 and assessment.typed_signal_strength >= 0.58:
             gain = max(gain, 0.018)
         return gain
 
@@ -852,8 +917,134 @@ class HypothesisManager:
         coverage_factor = max(0.35, assessment.entity_coverage)
         causal_factor = max(0.35, assessment.causal_relevance)
         reliability_factor = max(0.35, assessment.tool_reliability)
+        typed_factor = max(0.35, assessment.typed_signal_strength)
         severity_bonus = 1.12 if assessment.evidence_quality >= 0.8 and assessment.causal_relevance >= 0.72 else 1.0
-        return 0.29 * assessment.evidence_strength * quality_factor * coverage_factor * causal_factor * reliability_factor * severity_bonus
+        heuristic_penalty = max(0.55, 1.0 - (assessment.heuristic_dependence * 0.28))
+        return (
+            0.29
+            * assessment.evidence_strength
+            * quality_factor
+            * coverage_factor
+            * causal_factor
+            * reliability_factor
+            * typed_factor
+            * heuristic_penalty
+            * severity_bonus
+        )
+
+    def _observation_evidence_strength(
+        self,
+        *,
+        relevance: float,
+        quality: float,
+        reliability: float,
+        causal_relevance: float,
+        typed_signal_strength: float,
+        heuristic_dependence: float,
+    ) -> float:
+        structural_strength = quality * reliability * causal_relevance
+        typed_floor = typed_signal_strength * 0.38
+        heuristic_penalty = heuristic_dependence * 0.24
+        return max(0.0, min(1.0, (relevance * structural_strength) + typed_floor - heuristic_penalty))
+
+    def _typed_signal_strength(
+        self,
+        *,
+        observation: Dict[str, Any],
+        obs_type: str,
+        fact_family: str,
+        quality: float,
+        relation_signal: float,
+        entity_coverage: float,
+    ) -> float:
+        typed_fact = observation.get("typed_fact", {}) if isinstance(observation.get("typed_fact"), dict) else {}
+        typed_presence = 0.0
+        has_typed_fact = bool(typed_fact.get("type") or typed_fact.get("family"))
+        if typed_fact.get("type"):
+            typed_presence += 0.42
+        if typed_fact.get("family"):
+            typed_presence += 0.22
+        if str(obs_type or "").strip().lower() != "correlation_observation" and has_typed_fact:
+            typed_presence += 0.1
+        if str(fact_family or "").strip().lower() not in {"", "generic", "correlation"} and has_typed_fact:
+            typed_presence += 0.08
+        if has_typed_fact:
+            typed_presence += min(0.1, quality * 0.1)
+            typed_presence += min(0.05, relation_signal * 0.05)
+            typed_presence += min(0.03, entity_coverage * 0.03)
+        else:
+            typed_presence += min(0.02, relation_signal * 0.02)
+        return max(0.0, min(1.0, typed_presence))
+
+    def _heuristic_dependence(
+        self,
+        *,
+        observation: Dict[str, Any],
+        typed_signal_strength: float,
+        relation_signal: float,
+        entity_coverage: float,
+    ) -> float:
+        summary = str(observation.get("summary") or "").strip()
+        typed_fact = observation.get("typed_fact", {}) if isinstance(observation.get("typed_fact"), dict) else {}
+        facts = observation.get("facts", {}) if isinstance(observation.get("facts"), dict) else {}
+        observation_type = str(observation.get("observation_type") or "").strip().lower()
+        dependence = 0.52
+        if summary:
+            dependence += 0.08
+        if not typed_fact:
+            dependence += 0.16
+        if not facts:
+            dependence += 0.08
+        if observation_type == "correlation_observation" and not typed_fact:
+            dependence += 0.1
+        dependence -= typed_signal_strength * 0.4
+        dependence -= relation_signal * 0.12
+        dependence -= entity_coverage * 0.08
+        return max(0.0, min(1.0, dependence))
+
+    def _observation_threshold_profile(
+        self,
+        *,
+        lane: str,
+        statement: str,
+        typed_signal_strength: float,
+        heuristic_dependence: float,
+    ) -> Dict[str, float]:
+        statement_lower = str(statement or "").lower()
+        benign_hypothesis = any(token in statement_lower for token in {"benign", "noisy", "insufficient"})
+        support_relevance_floor = 0.3
+        contradiction_relevance_floor = 0.2
+        typed_support_floor = 0.58
+        typed_contradiction_floor = 0.5
+        minimum_strength_for_stance = 0.065
+        relation_only_support_floor = 0.9
+
+        if lane in {"email", "file", "vulnerability", "log_identity"}:
+            typed_support_floor = 0.64
+            minimum_strength_for_stance = 0.08
+        if lane in {"email", "file", "vulnerability"}:
+            support_relevance_floor = 0.34
+            contradiction_relevance_floor = 0.24
+            typed_support_floor = 0.7
+            minimum_strength_for_stance = 0.095
+        if heuristic_dependence >= 0.58:
+            support_relevance_floor += 0.08
+            contradiction_relevance_floor += 0.04
+            minimum_strength_for_stance += 0.015
+        if typed_signal_strength >= 0.78:
+            support_relevance_floor = max(0.22, support_relevance_floor - 0.06)
+            contradiction_relevance_floor = max(0.16, contradiction_relevance_floor - 0.04)
+        if benign_hypothesis:
+            typed_contradiction_floor = max(typed_contradiction_floor, 0.56)
+
+        return {
+            "support_relevance_floor": support_relevance_floor,
+            "contradiction_relevance_floor": contradiction_relevance_floor,
+            "typed_support_floor": typed_support_floor,
+            "typed_contradiction_floor": typed_contradiction_floor,
+            "minimum_strength_for_stance": minimum_strength_for_stance,
+            "relation_only_support_floor": relation_only_support_floor,
+        }
 
     def _tool_reliability(self, tool_name: str) -> float:
         mapping = {

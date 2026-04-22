@@ -122,7 +122,7 @@ def test_generate_summary_prefers_llm_text_when_available():
             provider_is_currently_unavailable=lambda _provider: False,
             provider_name="openrouter",
             build_chat_model_unavailable_answer=lambda _state: "unavailable",
-            build_fallback_answer=lambda _state, _outcome: "fallback",
+            build_fallback_answer=lambda _state, _outcome, _include_runtime_notice: "fallback",
         )
     )
 
@@ -148,7 +148,7 @@ def test_generate_summary_returns_unavailable_chat_answer_when_provider_is_down(
             provider_is_currently_unavailable=lambda _provider: True,
             provider_name="openrouter",
             build_chat_model_unavailable_answer=lambda _state: "provider unavailable preserved state",
-            build_fallback_answer=lambda _state, _outcome: "fallback",
+            build_fallback_answer=lambda _state, _outcome, _include_runtime_notice: "fallback",
         )
     )
 
@@ -207,7 +207,24 @@ def test_build_chat_specific_fallback_returns_mapping_for_chat_lookup_questions(
 
 
 
-def test_build_fallback_response_context_normalizes_provider_and_model():
+def test_build_provider_runtime_fallback_context_normalizes_provider_and_model():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_provider_runtime_fallback_context(
+        provider_runtime_status={"provider": "gemini", "available": False, "error": "quota exceeded"},
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"model-for:{provider}",
+    )
+
+    assert result == {
+        "provider_name": "openrouter",
+        "status": {"provider": "gemini", "available": False, "error": "quota exceeded"},
+        "active_model_name": "model-for:openrouter",
+    }
+
+
+def test_build_fallback_response_context_delegates_to_provider_runtime_context_builder():
     builder = SessionResponseBuilder()
 
     result = builder.build_fallback_response_context(
@@ -222,6 +239,37 @@ def test_build_fallback_response_context_normalizes_provider_and_model():
         "status": {"provider": "gemini", "available": False, "error": "quota exceeded"},
         "active_model_name": "model-for:openrouter",
     }
+
+
+def test_build_runtime_fallback_artifacts_returns_shared_context_and_notice():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_runtime_fallback_artifacts(
+        provider_runtime_status={
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"{provider}/model-a",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
+    )
+
+    assert result["fallback_context"] == {
+        "provider_name": "openrouter",
+        "status": {
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        "active_model_name": "openrouter/model-a",
+    }
+    assert result["llm_unavailable_notice"].startswith(
+        "Gemini model openrouter/model-a is currently unavailable"
+    )
+    assert "did not fall back to another model" in result["llm_unavailable_notice"]
 
 
 
@@ -270,13 +318,248 @@ def test_build_chat_model_unavailable_answer_from_context_reuses_fallback_contex
         goal="Summarize the evidence",
         authoritative_outcome={"label": "CLEAN"},
         fallback_evidence_points=lambda _state, limit: ["Evidence point"][:limit],
-        build_fallback_answer=lambda _state, _outcome: "fallback answer",
         build_chat_specific_fallback=lambda _state: "chat-specific",
         provider_display_name=builder.provider_display_name,
         provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
     )
 
-    assert result == "fallback answer"
+    assert result.startswith("Gemini model openrouter/model-a is currently unavailable")
+    assert "The investigation completed 0 steps before switching to a deterministic fallback summary." not in result
+    assert "Evidence-backed outcome: CLEAN." in result
+    assert "Key evidence: Evidence point" in result
+    assert "did not fall back to another model" in result
+
+
+def test_build_unavailable_model_preserved_outputs_answer_reuses_notice_wording():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_unavailable_model_preserved_outputs_answer(
+        llm_unavailable_notice="Gemini model openrouter/model-a is currently unavailable. CABTA did not fall back to another model.",
+    )
+
+    assert result.startswith("Gemini model openrouter/model-a is currently unavailable")
+    assert "preserved the collected tool outputs" in result
+
+
+def test_build_fallback_answer_can_skip_runtime_notice_when_requested():
+    builder = SessionResponseBuilder()
+    calls = []
+
+    result = builder.build_fallback_answer(
+        state=SimpleNamespace(),
+        authoritative_outcome={"label": "CLEAN"},
+        include_runtime_notice=False,
+        build_evidence_backed_answer=lambda **kwargs: calls.append(kwargs["include_runtime_notice"]) or "fallback",
+    )
+
+    assert result == "fallback"
+    assert calls == [False]
+
+
+
+def test_build_runtime_unavailable_notice_builds_context_internally():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_runtime_unavailable_notice(
+        provider_runtime_status={
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"{provider}/model-a",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
+    )
+
+    assert "Gemini model openrouter/model-a is currently unavailable" in result
+    assert "did not fall back to another model" in result
+
+
+def test_llm_unavailable_notice_with_runtime_status_delegates_to_runtime_notice_builder():
+    builder = SessionResponseBuilder()
+
+    result = builder.llm_unavailable_notice_with_runtime_status(
+        provider_runtime_status={
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"{provider}/model-a",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
+    )
+
+    assert "Gemini model openrouter/model-a is currently unavailable" in result
+    assert "did not fall back to another model" in result
+
+
+
+def test_build_direct_chat_fallback_answer_with_runtime_status_reuses_runtime_notice_builder():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_direct_chat_fallback_answer_with_runtime_status(
+        provider_runtime_status={
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"{provider}/model-a",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
+    )
+
+    assert result.startswith("Gemini model openrouter/model-a is currently unavailable")
+    assert "Please share a concrete IOC" in result
+
+
+
+def test_build_chat_model_unavailable_answer_with_runtime_status_reuses_runtime_context_builder():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings", "result": {"verdict": "CLEAN"}}])
+
+    result = builder.build_chat_model_unavailable_answer_with_runtime_status(
+        state=state,
+        provider_runtime_status={
+            "provider": "gemini",
+            "available": False,
+            "error": "Gemini HTTP 429: quota exceeded",
+        },
+        provider_name="OpenRouter",
+        normalize_provider=lambda provider: str(provider).lower(),
+        active_model_name=lambda provider: f"{provider}/model-a",
+        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
+        goal="Summarize the evidence",
+        authoritative_outcome={"label": "CLEAN"},
+        fallback_evidence_points=lambda _state, limit: ["Evidence point"][:limit],
+        build_chat_specific_fallback=lambda _state: "chat-specific",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=builder.provider_runtime_error_excerpt,
+    )
+
+    assert result.startswith("Gemini model openrouter/model-a is currently unavailable")
+    assert "Evidence-backed outcome: CLEAN." in result
+    assert "Key evidence: Evidence point" in result
+
+
+def test_build_chat_model_unavailable_answer_from_context_uses_supplied_notice_without_recomputing():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings", "result": {"verdict": "CLEAN"}}])
+    calls = []
+
+    def _raising_excerpt(**_kwargs):
+        calls.append("recomputed")
+        raise AssertionError("should not recompute runtime excerpt")
+
+    result = builder.build_chat_model_unavailable_answer_from_context(
+        state=state,
+        fallback_context={
+            "provider_name": "openrouter",
+            "active_model_name": "openrouter/model-a",
+            "status": {"provider": "gemini", "available": False, "error": "Gemini HTTP 429: quota exceeded"},
+        },
+        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
+        goal="Summarize the evidence",
+        authoritative_outcome={"label": "CLEAN"},
+        fallback_evidence_points=lambda _state, limit: ["Evidence point"][:limit],
+        build_chat_specific_fallback=lambda _state: "chat-specific",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=_raising_excerpt,
+        llm_unavailable_notice="Precomputed unavailable notice.",
+    )
+
+    assert result.startswith("Precomputed unavailable notice.")
+    assert "Evidence-backed outcome: CLEAN." in result
+    assert calls == []
+
+
+
+def test_build_provider_timeout_runtime_status_builds_unavailable_status_payload():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_provider_timeout_runtime_status(
+        provider="NVIDIA",
+        timeout_seconds=8,
+        provider_display_name=builder.provider_display_name,
+    )
+
+    assert result == {
+        "provider": "nvidia",
+        "available": False,
+        "error": "NVIDIA Build direct chat request timed out after 8s",
+    }
+
+
+def test_build_summary_fallback_answer_prefers_chat_unavailable_path_when_provider_is_down():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings"}])
+
+    result = builder.build_summary_fallback_answer(
+        state=state,
+        authoritative_outcome={"label": "SUSPICIOUS"},
+        is_chat_session=lambda _state: True,
+        provider_is_currently_unavailable=lambda _provider: True,
+        provider_name="openrouter",
+        build_chat_model_unavailable_answer=lambda _state: "provider unavailable preserved state",
+        build_fallback_answer=lambda _state, _outcome, _include_runtime_notice: "fallback",
+    )
+
+    assert result == "provider unavailable preserved state"
+
+
+def test_build_summary_fallback_answer_uses_runtime_notice_for_deterministic_summary():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings"}])
+    calls = []
+
+    result = builder.build_summary_fallback_answer(
+        state=state,
+        authoritative_outcome={"label": "CLEAN"},
+        is_chat_session=lambda _state: False,
+        provider_is_currently_unavailable=lambda _provider: False,
+        provider_name="openrouter",
+        build_chat_model_unavailable_answer=lambda _state: "provider unavailable preserved state",
+        build_fallback_answer=lambda _state, _outcome, include_runtime_notice: calls.append(include_runtime_notice) or "fallback",
+    )
+
+    assert result == "fallback"
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_with_runtime_fallback_returns_summary_fallback_on_builder_error():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings"}], errors=[])
+
+    async def call_llm_text(_prompt):
+        return "unused"
+
+    async def raise_from_generate_summary(**_kwargs):
+        raise RuntimeError("summary failure")
+
+    original = builder.generate_summary
+    builder.generate_summary = raise_from_generate_summary
+    try:
+        result = await builder.generate_summary_with_runtime_fallback(
+            state=state,
+            authoritative_outcome={"label": "SUSPICIOUS"},
+            prompt="Summarise the investigation",
+            call_llm_text=call_llm_text,
+            is_chat_session=lambda _state: False,
+            provider_is_currently_unavailable=lambda _provider: False,
+            provider_name="openrouter",
+            build_chat_model_unavailable_answer=lambda _state: "provider unavailable preserved state",
+            build_fallback_answer=lambda _state, _outcome, include_runtime_notice: "fallback" if include_runtime_notice else "wrong",
+        )
+    finally:
+        builder.generate_summary = original
+
+    assert result == "fallback"
 
 
 
@@ -663,6 +946,45 @@ def test_chat_follow_up_can_answer_from_context_requires_restored_context_and_no
     ) is False
 
 
+def test_message_requests_fresh_evidence_distinguishes_explanation_from_new_pivot():
+    builder = SessionResponseBuilder()
+
+    assert builder.message_requests_fresh_evidence("Pivot on registrar-linked infrastructure.") is True
+    assert builder.message_requests_fresh_evidence("Giải thích vì sao bạn kết luận domain này độc hại.") is False
+
+
+def test_build_legacy_follow_up_goal_mentions_when_fresh_evidence_is_required():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_legacy_follow_up_goal(
+        previous_goal="Investigate suspicious domain activity",
+        previous_summary="Prior thread isolated suspicious registrar patterns.",
+        evidence_snapshot="- investigate_ioc: verdict=SUSPICIOUS",
+        message="Pivot on registrar-linked infrastructure.",
+    )
+
+    assert "Continue the previous analyst conversation" in result
+    assert "Previous investigation goal:" in result
+    assert "Previous investigation summary:" in result
+    assert "Previous evidence snapshot:" in result
+    assert "Gather fresh evidence with tools" in result
+
+
+def test_build_legacy_follow_up_goal_strips_nested_follow_up_prefix_and_uses_existing_context_when_sufficient():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_legacy_follow_up_goal(
+        previous_goal="(Follow-up to previous investigation:\nInvestigate suspicious sign-in activity)",
+        previous_summary="Prior summary",
+        evidence_snapshot="- correlate_findings: verdict=SUSPICIOUS",
+        message="Explain why this case stayed suspicious.",
+    )
+
+    assert "(Follow-up to previous investigation:" not in result
+    assert "Previous investigation goal:\nInvestigate suspicious sign-in activity)" in result
+    assert "Only use tools if the current evidence is insufficient." in result
+
+
 def test_build_follow_up_goal_mentions_when_fresh_evidence_is_required():
     builder = SessionResponseBuilder()
 
@@ -682,7 +1004,8 @@ def test_build_follow_up_goal_mentions_when_fresh_evidence_is_required():
     assert "Continue the same analyst thread" in result
     assert "Follow-up analyst request (new_pivot):" in result
     assert "collect fresh evidence" in result
-    assert "accepted snapshot" in result
+    assert "accepted case memory" in result
+    assert "accepted case truth" in result
     assert "Registrar matched known abuse cluster." in result
 
 
@@ -702,9 +1025,10 @@ def test_build_follow_up_goal_uses_published_memory_scope_language_when_provided
         memory_scope="published",
     )
 
-    assert "published case snapshot" in result
-    assert "Published case snapshot facts:" in result
-    assert "Answer from the published case snapshot" in result
+    assert "published case memory" in result
+    assert "Published case memory facts:" in result
+    assert "Answer from the published case memory" in result
+    assert "Do not overstate published case truth beyond its lifecycle." in result
 
 
 def test_build_chat_response_style_block_is_empty_for_non_chat_sessions():
@@ -728,6 +1052,39 @@ def test_build_chat_response_style_block_mentions_restored_context_when_present(
     assert "Treat carried-over findings as live investigation context" in result
 
 
+def test_build_chat_response_style_block_mentions_memory_scope_truth_when_restored():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_chat_response_style_block(
+        is_chat_session=True,
+        chat_context_restored=True,
+        restored_memory_scope="published",
+        restored_memory_is_authoritative=True,
+    )
+
+    assert "authoritative case truth" in result
+    assert "published memory" in result
+
+
+def test_build_chat_prompt_policy_returns_both_blocks_for_restored_authoritative_context():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_chat_prompt_policy(
+        is_chat_session=True,
+        chat_context_restored=True,
+        requires_fresh_evidence=True,
+        restored_memory_scope="published",
+        restored_memory_is_authoritative=True,
+    )
+
+    assert "Response style for analyst chat:" in result["response_style_block"]
+    assert "Treat carried-over findings as live investigation context" in result["response_style_block"]
+    assert "published memory" in result["response_style_block"]
+    assert "Chat decision policy:" in result["chat_decision_block"]
+    assert "gather fresh evidence only for the new pivot" in result["chat_decision_block"]
+    assert "restored published case truth" in result["chat_decision_block"]
+
+
 def test_build_chat_decision_block_varies_with_follow_up_fresh_evidence_policy():
     builder = SessionResponseBuilder()
 
@@ -735,12 +1092,17 @@ def test_build_chat_decision_block_varies_with_follow_up_fresh_evidence_policy()
         is_chat_session=True,
         chat_context_restored=True,
         requires_fresh_evidence=True,
+        restored_memory_scope="accepted",
+        restored_memory_is_authoritative=True,
     )
     restored_result = builder.build_chat_decision_block(
         is_chat_session=True,
         chat_context_restored=True,
         requires_fresh_evidence=False,
+        restored_memory_scope="working",
+        restored_memory_is_authoritative=False,
     )
 
     assert "gather fresh evidence only for the new pivot" in fresh_result
-    assert "Prefer answering from that restored evidence" in restored_result
+    assert "restored accepted case truth" in fresh_result
+    assert "Prefer answering from the restored working working context" in restored_result

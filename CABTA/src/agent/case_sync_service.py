@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from .thread_sync_service import ThreadSyncService
+
 
 class CaseSyncService:
     """Persist case-facing reasoning checkpoints without changing verdict authority."""
@@ -16,16 +18,11 @@ class CaseSyncService:
 
     @staticmethod
     def _normalize_snapshot_lifecycle(state: Any) -> Optional[str]:
-        snapshot_lifecycle = str(getattr(state, "snapshot_lifecycle", "") or "").strip().lower()
-        if snapshot_lifecycle not in {"working", "candidate", "accepted", "published"}:
-            return None
-        return snapshot_lifecycle
+        return ThreadSyncService.normalize_lifecycle(getattr(state, "snapshot_lifecycle", ""))
 
     @staticmethod
     def _case_memory_scope_for_lifecycle(snapshot_lifecycle: Optional[str]) -> Optional[str]:
-        if snapshot_lifecycle in {"accepted", "published"}:
-            return snapshot_lifecycle
-        return None
+        return ThreadSyncService.authoritative_memory_scope(snapshot_lifecycle)
 
     def _build_checkpoint_payload(
         self,

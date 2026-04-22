@@ -97,10 +97,12 @@ class RootCauseEngine:
         evidence_score = float(top.get("evidence_score", 0.0) or 0.0)
         contradiction_score = float(top.get("contradiction_score", 0.0) or 0.0)
         lane = self._investigation_lane(goal=goal, reasoning_state=reasoning_state)
+        lane_thresholds = self._lane_thresholds(lane)
         quality = self._observation_quality(active_observations, support_refs)
         typed_profile = self._typed_evidence_profile(active_observations, support_refs)
         typed_evidence_ratio = typed_profile["ratio"]
         typed_support_count = typed_profile["typed_count"]
+        narrative_support_ratio = self._narrative_support_ratio(active_observations, support_refs)
         relation_profile = self._relation_profile(entity_state)
         relation_quality = relation_profile["quality"]
         explicit_relation_ratio = relation_profile["explicit_ratio"]
@@ -149,16 +151,22 @@ class RootCauseEngine:
             )
         ):
             status = "unsupported_hypothesis"
-        elif not support_refs or ((quality < 0.45 and relation_quality < 0.5) and evidence_score < 0.25):
+        elif not support_refs or ((quality < lane_thresholds["minimum_observation_quality"] and relation_quality < lane_thresholds["minimum_relation_quality"]) and evidence_score < lane_thresholds["minimum_evidence_score"]):
             status = "insufficient_evidence"
-        elif self._typed_evidence_required(lane=lane, relation_quality=relation_quality) and typed_evidence_ratio < 0.5:
+        elif narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"]:
+            missing = self._dedupe([
+                *missing,
+                self._narrative_dependence_gap_message(lane),
+            ])[:8]
+            status = "insufficient_evidence"
+        elif self._typed_evidence_required(lane=lane, relation_quality=relation_quality) and typed_evidence_ratio < lane_thresholds["required_typed_ratio"]:
             missing = self._dedupe([
                 *missing,
                 self._typed_evidence_gap_message(lane),
             ])[:8]
             status = "insufficient_evidence"
         elif self._lane_requires_explicit_relations(lane=lane, gap_pressure=gap_pressure) and (
-            relation_quality < 0.9 or explicit_relation_ratio < self._required_explicit_ratio(lane)
+            relation_quality < lane_thresholds["explicit_relation_quality_floor"] or explicit_relation_ratio < self._required_explicit_ratio(lane)
         ):
             missing = self._dedupe([
                 *missing,
@@ -180,9 +188,9 @@ class RootCauseEngine:
                 self._structural_conflict_gap_message(lane),
             ])[:8]
             status = "inconclusive"
-        elif gap_pressure >= 0.85 and relation_quality < 0.9 and chain_quality < 0.78:
+        elif gap_pressure >= lane_thresholds["high_gap_pressure"] and relation_quality < lane_thresholds["explicit_relation_quality_floor"] and chain_quality < lane_thresholds["supported_chain_floor"]:
             status = "insufficient_evidence"
-        elif contradiction_pressure >= 0.72:
+        elif contradiction_pressure >= lane_thresholds["contradiction_inconclusive_floor"]:
             missing = self._dedupe([
                 *missing,
                 self._contradiction_gap_message(lane),
@@ -209,6 +217,8 @@ class RootCauseEngine:
             chain_quality=chain_quality,
             support_balance=support_balance,
             contradiction_pressure=contradiction_pressure,
+            lane_thresholds=lane_thresholds,
+            narrative_support_ratio=narrative_support_ratio,
         ):
             status = "supported"
         else:
@@ -444,6 +454,60 @@ class RootCauseEngine:
         return lane in {"log_identity", "email", "file", "vulnerability"} and gap_pressure >= 0.62
 
     @staticmethod
+    def _lane_thresholds(lane: str) -> Dict[str, float]:
+        thresholds = {
+            "minimum_observation_quality": 0.45,
+            "minimum_relation_quality": 0.5,
+            "minimum_evidence_score": 0.25,
+            "required_typed_ratio": 0.5,
+            "explicit_relation_quality_floor": 0.9,
+            "supported_chain_floor": 0.78,
+            "high_gap_pressure": 0.85,
+            "contradiction_inconclusive_floor": 0.72,
+            "maximum_narrative_support_ratio": 0.74,
+            "supported_confidence_floor": 0.66,
+            "supported_rank_floor": 0.88,
+            "supported_margin_floor": 0.12,
+            "supported_balance_floor": 0.55,
+            "supported_relation_floor": 0.76,
+            "supported_chain_accept_floor": 0.62,
+            "supported_contradiction_ceiling": 0.28,
+            "supported_structure_floor": 0.72,
+        }
+        if lane == "ioc":
+            thresholds.update(
+                {
+                    "required_typed_ratio": 0.55,
+                    "maximum_narrative_support_ratio": 0.45,
+                    "supported_confidence_floor": 0.62,
+                    "supported_rank_floor": 0.82,
+                    "supported_margin_floor": 0.08,
+                    "supported_balance_floor": 0.5,
+                    "supported_structure_floor": 0.72,
+                    "supported_contradiction_ceiling": 0.34,
+                }
+            )
+        elif lane == "log_identity":
+            thresholds.update(
+                {
+                    "required_typed_ratio": 0.0,
+                    "supported_balance_floor": 0.48,
+                    "maximum_narrative_support_ratio": 0.58,
+                }
+            )
+        elif lane in {"email", "file", "vulnerability"}:
+            thresholds.update(
+                {
+                    "minimum_observation_quality": 0.5,
+                    "required_typed_ratio": 0.5,
+                    "supported_margin_floor": 0.16,
+                    "supported_balance_floor": 0.58,
+                    "maximum_narrative_support_ratio": 0.34,
+                }
+            )
+        return thresholds
+
+    @staticmethod
     def _support_balance(
         *,
         top_conf: float,
@@ -488,40 +552,40 @@ class RootCauseEngine:
         chain_quality: float,
         support_balance: float,
         contradiction_pressure: float,
+        lane_thresholds: Dict[str, float],
+        narrative_support_ratio: float,
     ) -> bool:
         if evidence_score <= contradiction_score or contradiction_pressure >= 0.5:
             return False
+        if narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"]:
+            return False
         if lane == "ioc":
             return (
-                top_conf >= 0.62
-                and top_rank_score >= 0.82
-                and score_margin >= 0.08
-                and support_balance >= 0.5
-                and typed_evidence_ratio >= 0.55
-                and contradiction_pressure <= 0.34
-                and max(relation_quality, timeline_quality, graph_support, chain_quality) >= 0.72
+                top_conf >= lane_thresholds["supported_confidence_floor"]
+                and top_rank_score >= lane_thresholds["supported_rank_floor"]
+                and score_margin >= lane_thresholds["supported_margin_floor"]
+                and support_balance >= lane_thresholds["supported_balance_floor"]
+                and typed_evidence_ratio >= lane_thresholds["required_typed_ratio"]
+                and contradiction_pressure <= lane_thresholds["supported_contradiction_ceiling"]
+                and max(relation_quality, timeline_quality, graph_support, chain_quality) >= lane_thresholds["supported_structure_floor"]
             )
-        required_typed_ratio = 0.5
-        required_support_balance = 0.55
-        required_score_margin = 0.12
+        required_typed_ratio = lane_thresholds["required_typed_ratio"]
+        required_support_balance = lane_thresholds["supported_balance_floor"]
+        required_score_margin = lane_thresholds["supported_margin_floor"]
         required_explicit_ratio = RootCauseEngine._required_explicit_ratio(lane)
         if lane == "log_identity" and relation_quality >= 0.9:
             required_typed_ratio = 0.0
-            required_support_balance = 0.48
-        elif lane in {"email", "file", "vulnerability"}:
-            required_support_balance = 0.58
-            required_score_margin = 0.16
         return (
-            top_conf >= 0.66
-            and top_rank_score >= 0.88
+            top_conf >= lane_thresholds["supported_confidence_floor"]
+            and top_rank_score >= lane_thresholds["supported_rank_floor"]
             and score_margin >= required_score_margin
             and support_balance >= required_support_balance
             and typed_evidence_ratio >= required_typed_ratio
-            and relation_quality >= 0.76
+            and relation_quality >= lane_thresholds["supported_relation_floor"]
             and explicit_relation_ratio >= required_explicit_ratio
-            and chain_quality >= 0.62
-            and contradiction_pressure <= 0.28
-            and max(timeline_quality, graph_support, relation_quality) >= 0.72
+            and chain_quality >= lane_thresholds["supported_chain_accept_floor"]
+            and contradiction_pressure <= lane_thresholds["supported_contradiction_ceiling"]
+            and max(timeline_quality, graph_support, relation_quality) >= lane_thresholds["supported_structure_floor"]
         )
 
     @staticmethod
@@ -634,6 +698,15 @@ class RootCauseEngine:
     @staticmethod
     def _typed_evidence_ratio(active_observations: Optional[List[Dict[str, Any]]], refs: List[Dict[str, Any]]) -> float:
         return RootCauseEngine._typed_evidence_profile(active_observations, refs)["ratio"]
+
+    @staticmethod
+    def _narrative_support_ratio(active_observations: Optional[List[Dict[str, Any]]], refs: List[Dict[str, Any]]) -> float:
+        if not refs:
+            return 1.0
+        profile = RootCauseEngine._typed_evidence_profile(active_observations, refs)
+        total = max(profile["total_count"], 1.0)
+        narrative_count = max(0.0, total - profile["typed_count"])
+        return narrative_count / total
 
     @staticmethod
     def _typed_evidence_required(*, lane: str, relation_quality: float) -> bool:
@@ -765,6 +838,16 @@ class RootCauseEngine:
         if lane == "file":
             return "Resolve contradictory execution or behavior evidence before closing the file hypothesis."
         return "Resolve the strongest contradictory evidence before closing the leading hypothesis."
+
+    @staticmethod
+    def _narrative_dependence_gap_message(lane: str) -> str:
+        if lane == "email":
+            return "Need more typed delivery, attachment, or mailbox evidence and less narrative-only support before closing the email hypothesis."
+        if lane == "file":
+            return "Need more typed execution or sandbox evidence and less narrative-only support before closing the file hypothesis."
+        if lane == "log_identity":
+            return "Need more typed authentication, process, or session evidence and less narrative-only support before closing the identity hypothesis."
+        return "Need more typed supporting observations and less narrative-only support before closing the leading hypothesis."
 
     @staticmethod
     def _is_materially_contradicted(

@@ -137,6 +137,106 @@ class SessionResponseBuilder:
         )
         return decision
 
+    def message_requests_fresh_evidence(self, message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+
+        explanation_patterns = (
+            "why",
+            "how did",
+            "what evidence",
+            "summarize",
+            "summary",
+            "recap",
+            "explain",
+            "because",
+            "tai sao",
+            "vi sao",
+            "giai thich",
+            "tom tat",
+            "bang chung",
+            "dua tren",
+            "what did you find",
+        )
+        if any(pattern in text for pattern in explanation_patterns):
+            return False
+
+        investigation_patterns = (
+            "investigate",
+            "pivot",
+            "check",
+            "analyze",
+            "lookup",
+            "look up",
+            "search",
+            "hunt",
+            "query",
+            "scan",
+            "enrich",
+            "triage",
+            "verify",
+            "confirm",
+            "correlate",
+            "find related",
+            "pull",
+            "dieu tra",
+            "kiem tra",
+            "phan tich",
+            "tra cuu",
+            "xac minh",
+            "tim them",
+            "san",
+            "quet",
+        )
+        if any(pattern in text for pattern in investigation_patterns):
+            return True
+
+        registrar_and_related_terms = (
+            "registrar",
+            "infrastructure",
+            "related host",
+            "related hosts",
+            "related domain",
+            "related domains",
+        )
+        return "pivot" in text or any(term in text for term in registrar_and_related_terms)
+
+    def build_legacy_follow_up_goal(
+        self,
+        *,
+        previous_goal: str,
+        previous_summary: str,
+        evidence_snapshot: str,
+        message: str,
+    ) -> str:
+        clean_goal = str(previous_goal or "").strip()
+        if clean_goal.lower().startswith("(follow-up to previous investigation:"):
+            _, _, remainder = clean_goal.partition("\n")
+            clean_goal = remainder.strip() or clean_goal
+        needs_fresh_evidence = self.message_requests_fresh_evidence(message)
+
+        blocks = ["Continue the previous analyst conversation about the security investigation."]
+        if clean_goal:
+            blocks.append(f"Previous investigation goal:\n{clean_goal}")
+        if previous_summary:
+            blocks.append(f"Previous investigation summary:\n{previous_summary}")
+        if evidence_snapshot:
+            blocks.append(f"Previous evidence snapshot:\n{evidence_snapshot}")
+        blocks.append(f"New analyst request:\n{str(message or '').strip()}")
+        if needs_fresh_evidence:
+            blocks.append(
+                "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
+                "Gather fresh evidence with tools if the analyst is asking for a new pivot or if the carried-over evidence is still insufficient."
+            )
+        else:
+            blocks.append(
+                "Carry forward the existing findings, reasoning state, and tracked entities from the previous session. "
+                "If the analyst is asking for explanation, recap, or judgment from the current evidence, answer directly from that carried-over context. "
+                "Only use tools if the current evidence is insufficient."
+            )
+        return "\n\n".join(blocks)
+
     def build_follow_up_goal(
         self,
         *,
@@ -159,10 +259,16 @@ class SessionResponseBuilder:
         if scope not in {"working", "candidate", "accepted", "published"}:
             scope = "accepted"
         snapshot_label = {
-            "working": "working snapshot",
-            "candidate": "candidate snapshot",
-            "accepted": "accepted snapshot",
-            "published": "published case snapshot",
+            "working": "working session context",
+            "candidate": "candidate session context",
+            "accepted": "accepted case memory",
+            "published": "published case memory",
+        }[scope]
+        scope_noun = {
+            "working": "context",
+            "candidate": "candidate context",
+            "accepted": "accepted case truth",
+            "published": "published case truth",
         }[scope]
 
         root_cause = snapshot.get("root_cause_assessment", {}) if isinstance(snapshot, dict) else {}
@@ -173,7 +279,12 @@ class SessionResponseBuilder:
         if isinstance(accepted_facts, list) and accepted_facts:
             fact_lines = [f"- {item.get('summary')}" for item in accepted_facts[-4:] if isinstance(item, dict) and item.get("summary")]
             if fact_lines:
-                blocks.append(f"{snapshot_label.capitalize()} facts:\n" + "\n".join(fact_lines))
+                fact_heading = (
+                    f"{snapshot_label.capitalize()} facts"
+                    if scope in {"accepted", "published"}
+                    else f"{snapshot_label.capitalize()} observations and candidate facts"
+                )
+                blocks.append(f"{fact_heading}:\n" + "\n".join(fact_lines))
 
         unresolved = snapshot.get("unresolved_questions", []) if isinstance(snapshot, dict) else []
         if isinstance(unresolved, list) and unresolved:
@@ -184,11 +295,11 @@ class SessionResponseBuilder:
         blocks.append(f"Follow-up analyst request ({intent}):\n{str(message or '').strip()}")
         if requires_fresh_evidence:
             blocks.append(
-                f"Use the {snapshot_label} as bounded context, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
+                f"Use the {snapshot_label} as bounded {scope_noun}, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
             )
         else:
             blocks.append(
-                f"Answer from the {snapshot_label} and structured reasoning state unless the available evidence is clearly insufficient."
+                f"Answer from the {snapshot_label} and structured reasoning state unless the available evidence is clearly insufficient. Do not overstate {scope_noun} beyond its lifecycle."
             )
         return "\n\n".join(blocks)
 
@@ -473,6 +584,17 @@ class SessionResponseBuilder:
             "Please share a concrete IOC, file path, email artifact, or log snippet if you want me to run the available investigation tools."
         )
 
+    def build_unavailable_model_preserved_outputs_answer(
+        self,
+        *,
+        llm_unavailable_notice: str,
+    ) -> str:
+        return (
+            f"{llm_unavailable_notice} "
+            "CABTA preserved the collected tool outputs in this session and did not synthesize a fallback narrative answer while the model was unavailable. "
+            "Review the tool results above or retry once the model is available again."
+        )
+
     def build_chat_model_unavailable_answer(
         self,
         *,
@@ -481,22 +603,20 @@ class SessionResponseBuilder:
         goal: str,
         authoritative_outcome: Optional[Dict[str, str]],
         fallback_evidence_points: Callable[[Any, int], List[str]],
-        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]]], str],
+        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]], bool], str],
         llm_unavailable_notice: str,
     ) -> str:
         if not getattr(state, "findings", None):
             return build_direct_chat_fallback_answer(goal)
 
         if authoritative_outcome is not None or fallback_evidence_points(state, 1):
-            return build_fallback_answer(state, authoritative_outcome)
+            return build_fallback_answer(state, authoritative_outcome, True)
 
-        return (
-            f"{llm_unavailable_notice} "
-            "CABTA preserved the collected tool outputs in this session and did not synthesize a fallback narrative answer while the model was unavailable. "
-            "Review the tool results above or retry once the model is available again."
+        return self.build_unavailable_model_preserved_outputs_answer(
+            llm_unavailable_notice=llm_unavailable_notice,
         )
 
-    def build_fallback_response_context(
+    def build_provider_runtime_fallback_context(
         self,
         *,
         provider_runtime_status: Any,
@@ -511,6 +631,165 @@ class SessionResponseBuilder:
             "status": status,
             "active_model_name": active_model_name(normalized_provider),
         }
+
+    def build_runtime_fallback_artifacts(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> Dict[str, Any]:
+        fallback_context = self.build_provider_runtime_fallback_context(
+            provider_runtime_status=provider_runtime_status,
+            provider_name=provider_name,
+            normalize_provider=normalize_provider,
+            active_model_name=active_model_name,
+        )
+        unavailable_notice = self.llm_unavailable_notice_from_context(
+            fallback_context=fallback_context,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+        )
+        return {
+            "fallback_context": fallback_context,
+            "llm_unavailable_notice": unavailable_notice,
+        }
+
+    def build_runtime_unavailable_notice(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        return str(
+            self.build_runtime_fallback_artifacts(
+                provider_runtime_status=provider_runtime_status,
+                provider_name=provider_name,
+                normalize_provider=normalize_provider,
+                active_model_name=active_model_name,
+                provider_display_name=provider_display_name,
+                provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+            ).get("llm_unavailable_notice")
+            or ""
+        )
+
+    def build_direct_chat_fallback_answer_with_runtime_status(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        artifacts = self.build_runtime_fallback_artifacts(
+            provider_runtime_status=provider_runtime_status,
+            provider_name=provider_name,
+            normalize_provider=normalize_provider,
+            active_model_name=active_model_name,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+        )
+        return self.build_direct_chat_fallback_answer(
+            llm_unavailable_notice=str(artifacts.get("llm_unavailable_notice") or "")
+        )
+
+    def build_chat_model_unavailable_answer_with_runtime_status(
+        self,
+        *,
+        state: Any,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+        build_direct_chat_fallback_answer: Callable[[str], str],
+        goal: str,
+        authoritative_outcome: Optional[Dict[str, str]],
+        fallback_evidence_points: Callable[[Any, int], List[str]],
+        build_chat_specific_fallback: Callable[[Any], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        artifacts = self.build_runtime_fallback_artifacts(
+            provider_runtime_status=provider_runtime_status,
+            provider_name=provider_name,
+            normalize_provider=normalize_provider,
+            active_model_name=active_model_name,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+        )
+        return self.build_chat_model_unavailable_answer_from_context(
+            state=state,
+            fallback_context=dict(artifacts.get("fallback_context") or {}),
+            build_direct_chat_fallback_answer=build_direct_chat_fallback_answer,
+            goal=goal,
+            authoritative_outcome=authoritative_outcome,
+            fallback_evidence_points=fallback_evidence_points,
+            build_chat_specific_fallback=build_chat_specific_fallback,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+            llm_unavailable_notice=str(artifacts.get("llm_unavailable_notice") or ""),
+        )
+
+    def build_provider_timeout_runtime_status(
+        self,
+        *,
+        provider: Optional[str],
+        timeout_seconds: float,
+        provider_display_name: Callable[[Optional[str]], str],
+    ) -> Dict[str, Any]:
+        normalized_provider = str(provider or "").strip().lower()
+        return {
+            "provider": normalized_provider,
+            "available": False,
+            "error": self.build_provider_timeout_error(
+                provider=normalized_provider,
+                timeout_seconds=timeout_seconds,
+                provider_display_name=provider_display_name,
+            ),
+        }
+
+    def build_fallback_response_context(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+    ) -> Dict[str, Any]:
+        return self.build_provider_runtime_fallback_context(
+            provider_runtime_status=provider_runtime_status,
+            provider_name=provider_name,
+            normalize_provider=normalize_provider,
+            active_model_name=active_model_name,
+        )
+
+    def llm_unavailable_notice_with_runtime_status(
+        self,
+        *,
+        provider_runtime_status: Any,
+        provider_name: Optional[str],
+        normalize_provider: Callable[[Optional[str]], str],
+        active_model_name: Callable[[Optional[str]], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        return self.build_runtime_unavailable_notice(
+            provider_runtime_status=provider_runtime_status,
+            provider_name=provider_name,
+            normalize_provider=normalize_provider,
+            active_model_name=active_model_name,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+        )
 
     def llm_unavailable_notice_from_context(
         self,
@@ -539,12 +818,12 @@ class SessionResponseBuilder:
         goal: str,
         authoritative_outcome: Optional[Dict[str, str]],
         fallback_evidence_points: Callable[[Any, int], List[str]],
-        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]]], str],
         build_chat_specific_fallback: Callable[[Any], str],
         provider_display_name: Callable[[Optional[str]], str],
         provider_runtime_error_excerpt: Callable[..., str],
+        llm_unavailable_notice: Optional[str] = None,
     ) -> str:
-        unavailable_notice = self.llm_unavailable_notice_from_context(
+        unavailable_notice = str(llm_unavailable_notice or "").strip() or self.llm_unavailable_notice_from_context(
             fallback_context=fallback_context,
             provider_display_name=provider_display_name,
             provider_runtime_error_excerpt=provider_runtime_error_excerpt,
@@ -555,9 +834,10 @@ class SessionResponseBuilder:
             goal=goal,
             authoritative_outcome=authoritative_outcome,
             fallback_evidence_points=fallback_evidence_points,
-            build_fallback_answer=lambda current_state, current_outcome: self.build_fallback_answer(
+            build_fallback_answer=lambda current_state, current_outcome, include_runtime_notice: self.build_fallback_answer(
                 state=current_state,
                 authoritative_outcome=current_outcome,
+                include_runtime_notice=include_runtime_notice,
                 build_evidence_backed_answer=lambda **kwargs: self.build_evidence_backed_answer(
                     **kwargs,
                     llm_unavailable_notice=lambda: unavailable_notice,
@@ -751,24 +1031,85 @@ class SessionResponseBuilder:
             "approval_context": rejection_finding["approval_context"],
         }
 
-    def build_chat_response_style_block(
+    def build_chat_prompt_policy(
         self,
         *,
         is_chat_session: bool,
         chat_context_restored: bool,
-    ) -> str:
+        requires_fresh_evidence: bool = False,
+        restored_memory_scope: str = "",
+        restored_memory_is_authoritative: bool = False,
+    ) -> Dict[str, str]:
+        response_style_block = ""
+        chat_decision_block = ""
         if not is_chat_session:
-            return ""
-        block = (
+            return {
+                "response_style_block": response_style_block,
+                "chat_decision_block": chat_decision_block,
+            }
+
+        response_style_block = (
             "Response style for analyst chat:\n"
             "- When you have enough evidence, answer the analyst's question directly in the first sentence.\n"
             "- Use plain, practical SOC language instead of stiff report boilerplate.\n"
             "- After the direct answer, briefly explain the evidence and why it matters.\n"
             "- End with concrete next steps only if they add value."
         )
+        chat_decision_block = (
+            "Chat decision policy:\n"
+            "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
+            "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
+            "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
+        )
         if chat_context_restored:
-            block += "\n- Treat carried-over findings as live investigation context, not as a stale summary."
-        return block
+            response_style_block += "\n- Treat carried-over findings as live investigation context, not as a stale summary."
+            scope_label = restored_memory_scope.replace("_", " ").strip()
+            if scope_label:
+                if restored_memory_is_authoritative:
+                    response_style_block += (
+                        f"\n- The restored {scope_label} memory is authoritative case truth within its lifecycle boundary."
+                    )
+                else:
+                    response_style_block += (
+                        f"\n- The restored {scope_label} memory is bounded working context, not finalized case truth."
+                    )
+
+            scope_phrase_label = scope_label or "restored"
+            if restored_memory_is_authoritative:
+                scope_phrase = f"the restored {scope_phrase_label} case truth"
+            else:
+                scope_phrase = f"the restored {scope_phrase_label} working context"
+            if requires_fresh_evidence:
+                chat_decision_block += (
+                    f"\n- This is a follow-up chat turn with carried-over findings. Continue from {scope_phrase} and gather fresh evidence only for the new pivot the analyst requested."
+                )
+            else:
+                chat_decision_block += (
+                    f"\n- This is a follow-up chat turn with carried-over findings. Prefer answering from {scope_phrase} before starting new tool calls."
+                )
+
+        return {
+            "response_style_block": response_style_block,
+            "chat_decision_block": chat_decision_block,
+        }
+
+    def build_chat_response_style_block(
+        self,
+        *,
+        is_chat_session: bool,
+        chat_context_restored: bool,
+        restored_memory_scope: str = "",
+        restored_memory_is_authoritative: bool = False,
+    ) -> str:
+        return str(
+            self.build_chat_prompt_policy(
+                is_chat_session=is_chat_session,
+                chat_context_restored=chat_context_restored,
+                restored_memory_scope=restored_memory_scope,
+                restored_memory_is_authoritative=restored_memory_is_authoritative,
+            ).get("response_style_block")
+            or ""
+        )
 
     def build_chat_decision_block(
         self,
@@ -776,25 +1117,19 @@ class SessionResponseBuilder:
         is_chat_session: bool,
         chat_context_restored: bool,
         requires_fresh_evidence: bool,
+        restored_memory_scope: str = "",
+        restored_memory_is_authoritative: bool = False,
     ) -> str:
-        if not is_chat_session:
-            return ""
-        block = (
-            "Chat decision policy:\n"
-            "- If the analyst is greeting you, asking what you can do, asking how you would investigate, or has not provided a concrete IOC/file/email/log artifact yet, answer directly in conversation and ask for the missing input instead of forcing a tool call.\n"
-            "- If the analyst's question can already be answered from the current findings, reason over those findings and answer directly.\n"
-            "- Use tools when the analyst asks for fresh investigation, new evidence collection, or when the current findings are insufficient."
+        return str(
+            self.build_chat_prompt_policy(
+                is_chat_session=is_chat_session,
+                chat_context_restored=chat_context_restored,
+                requires_fresh_evidence=requires_fresh_evidence,
+                restored_memory_scope=restored_memory_scope,
+                restored_memory_is_authoritative=restored_memory_is_authoritative,
+            ).get("chat_decision_block")
+            or ""
         )
-        if chat_context_restored:
-            if requires_fresh_evidence:
-                block += (
-                    "\n- This is a follow-up chat turn with carried-over findings. Continue from that context and gather fresh evidence only for the new pivot the analyst requested."
-                )
-            else:
-                block += (
-                    "\n- This is a follow-up chat turn with carried-over findings. Prefer answering from that restored evidence before starting new tool calls."
-                )
-        return block
 
     def build_fallback_decision_without_llm(
         self,
@@ -868,11 +1203,12 @@ class SessionResponseBuilder:
         state: Any,
         authoritative_outcome: Optional[Dict[str, str]],
         build_evidence_backed_answer: Callable[..., str],
+        include_runtime_notice: bool = True,
     ) -> str:
         return build_evidence_backed_answer(
             state=state,
             authoritative_outcome=authoritative_outcome,
-            include_runtime_notice=True,
+            include_runtime_notice=include_runtime_notice,
         )
 
     def build_fallback_evidence_points(
@@ -1040,7 +1376,7 @@ class SessionResponseBuilder:
         provider_is_currently_unavailable: Callable[[Optional[str]], bool],
         provider_name: Optional[str],
         build_chat_model_unavailable_answer: Callable[[Any], str],
-        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]]], str],
+        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]], bool], str],
     ) -> str:
         findings = getattr(state, "findings", []) or []
         errors = getattr(state, "errors", []) or []
@@ -1065,9 +1401,66 @@ class SessionResponseBuilder:
         except Exception:
             pass
 
+        return self.build_summary_fallback_answer(
+            state=state,
+            authoritative_outcome=authoritative_outcome,
+            is_chat_session=is_chat_session,
+            provider_is_currently_unavailable=provider_is_currently_unavailable,
+            provider_name=provider_name,
+            build_chat_model_unavailable_answer=build_chat_model_unavailable_answer,
+            build_fallback_answer=build_fallback_answer,
+        )
+
+    def build_summary_fallback_answer(
+        self,
+        *,
+        state: Any,
+        authoritative_outcome: Optional[Dict[str, str]],
+        is_chat_session: Callable[[Any], bool],
+        provider_is_currently_unavailable: Callable[[Optional[str]], bool],
+        provider_name: Optional[str],
+        build_chat_model_unavailable_answer: Callable[[Any], str],
+        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]], bool], str],
+    ) -> str:
         if is_chat_session(state) and provider_is_currently_unavailable(provider_name):
             return build_chat_model_unavailable_answer(state)
-        return build_fallback_answer(state, authoritative_outcome)
+        return build_fallback_answer(state, authoritative_outcome, True)
+
+    async def generate_summary_with_runtime_fallback(
+        self,
+        *,
+        state: Any,
+        authoritative_outcome: Optional[Dict[str, str]],
+        prompt: str,
+        call_llm_text: Callable[[str], Any],
+        is_chat_session: Callable[[Any], bool],
+        provider_is_currently_unavailable: Callable[[Optional[str]], bool],
+        provider_name: Optional[str],
+        build_chat_model_unavailable_answer: Callable[[Any], str],
+        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]], bool], str],
+    ) -> str:
+        try:
+            return await self.generate_summary(
+                state=state,
+                authoritative_outcome=authoritative_outcome,
+                prompt=prompt,
+                call_llm_text=call_llm_text,
+                is_chat_session=is_chat_session,
+                provider_is_currently_unavailable=provider_is_currently_unavailable,
+                provider_name=provider_name,
+                build_chat_model_unavailable_answer=build_chat_model_unavailable_answer,
+                build_fallback_answer=build_fallback_answer,
+            )
+        except Exception:
+            return self.build_summary_fallback_answer(
+                state=state,
+                authoritative_outcome=authoritative_outcome,
+                is_chat_session=is_chat_session,
+                provider_is_currently_unavailable=provider_is_currently_unavailable,
+                provider_name=provider_name,
+                build_chat_model_unavailable_answer=build_chat_model_unavailable_answer,
+                build_fallback_answer=build_fallback_answer,
+            )
 
     def summary_from_final_answer(
         self,

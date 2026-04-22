@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
+from .thread_sync_service import ThreadSyncService
+
 
 class SessionContextService:
     """Own follow-up context restoration and thread message persistence helpers."""
@@ -69,45 +71,57 @@ class SessionContextService:
         return not payload_thread_id or payload_thread_id == expected
 
     @staticmethod
-    def _memory_scope_payload(snapshot: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
+    def _memory_scope_payload(snapshot: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str], bool]:
         if not isinstance(snapshot, dict):
-            return {}, None
+            return {}, None, False
 
         memory = snapshot.get("memory", {})
         if isinstance(memory, dict):
             published = memory.get("published", {})
             if isinstance(published, dict) and published:
-                return published, "published"
+                return published, "published", True
             accepted = memory.get("accepted", {})
             if isinstance(accepted, dict) and accepted:
-                return accepted, "accepted"
+                return accepted, "accepted", True
 
-        lifecycle = str(
+        authority_scope = ThreadSyncService.authoritative_memory_scope(
+            snapshot.get("authoritative_memory_scope")
+            or snapshot.get("memory_scope")
+            or snapshot.get("snapshot_lifecycle")
+            or (
+                snapshot.get("snapshot_contract", {}).get("lifecycle")
+                if isinstance(snapshot.get("snapshot_contract"), dict)
+                else ""
+            )
+        )
+        lifecycle = ThreadSyncService.normalize_lifecycle(
             snapshot.get("snapshot_lifecycle")
             or (
                 snapshot.get("snapshot_contract", {}).get("lifecycle")
                 if isinstance(snapshot.get("snapshot_contract"), dict)
                 else ""
             )
-            or ""
-        ).strip().lower()
+        )
+
+        authoritative_memory = snapshot.get("authoritative_memory", {})
+        if authority_scope and isinstance(authoritative_memory, dict) and authoritative_memory:
+            return authoritative_memory, authority_scope, True
 
         accepted_memory = snapshot.get("accepted_memory", {})
         working_memory = snapshot.get("working_memory", {})
 
-        if lifecycle == "published" and isinstance(accepted_memory, dict) and accepted_memory:
-            return accepted_memory, "published"
-        if lifecycle == "accepted" and isinstance(accepted_memory, dict) and accepted_memory:
-            return accepted_memory, "accepted"
+        if authority_scope and isinstance(accepted_memory, dict) and accepted_memory:
+            return accepted_memory, authority_scope, True
         if lifecycle in {"candidate", "working"} and isinstance(working_memory, dict) and working_memory:
-            return working_memory, lifecycle
+            return working_memory, lifecycle, False
 
         if isinstance(accepted_memory, dict) and accepted_memory and snapshot.get("snapshot_state") == "accepted":
-            return accepted_memory, "accepted"
+            return accepted_memory, "accepted", True
         if isinstance(working_memory, dict) and working_memory and snapshot.get("snapshot_state") == "working":
-            return working_memory, "working"
+            return working_memory, "working", False
 
-        return snapshot, None
+        fallback_scope = authority_scope or lifecycle
+        return snapshot, fallback_scope, bool(ThreadSyncService.authoritative_memory_scope(fallback_scope))
 
     @classmethod
     def restore_state_from_snapshot(
@@ -120,7 +134,7 @@ class SessionContextService:
     ) -> Optional[str]:
         if not isinstance(snapshot, dict):
             return None
-        payload, memory_scope = cls._memory_scope_payload(snapshot)
+        payload, memory_scope, authoritative_scope = cls._memory_scope_payload(snapshot)
         if not payload:
             payload = snapshot
         if not cls._scope_matches_case(snapshot, expected_case_id=expected_case_id):
@@ -156,9 +170,36 @@ class SessionContextService:
         state.unresolved_questions = list(payload.get("unresolved_questions") or [])
         state.evidence_quality_summary = copy.deepcopy(payload.get("evidence_quality_summary") or {})
         state.fact_family_schemas = copy.deepcopy(payload.get("fact_family_schemas") or {})
-        state.restored_memory_scope = memory_scope
-        state.chat_context_restored_memory_scope = memory_scope
-        return memory_scope
+        resolved_scope = ThreadSyncService.normalize_lifecycle(memory_scope)
+        state.restored_memory_scope = resolved_scope
+        state.chat_context_restored_memory_scope = resolved_scope
+        setattr(state, "restored_memory_is_authoritative", authoritative_scope)
+        setattr(state, "chat_context_restored_memory_is_authoritative", authoritative_scope)
+        return resolved_scope
+
+    def build_chat_context_flags(self, *, state: Any, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        payload = metadata if isinstance(metadata, dict) else {}
+        restored_memory_scope = str(
+            payload.get("chat_context_restored_memory_scope")
+            or getattr(state, "chat_context_restored_memory_scope", None)
+            or getattr(state, "restored_memory_scope", None)
+            or ""
+        ).strip()
+        return {
+            "chat_context_restored": bool(payload.get("chat_context_restored")),
+            "requires_fresh_evidence": bool(payload.get("chat_follow_up_requires_fresh_evidence")),
+            "restored_memory_scope": restored_memory_scope,
+            "restored_memory_is_authoritative": bool(
+                payload.get("chat_context_restored_memory_is_authoritative")
+                or getattr(state, "chat_context_restored_memory_is_authoritative", False)
+                or getattr(state, "restored_memory_is_authoritative", False)
+            ),
+            "has_context_state": bool(
+                getattr(state, "active_observations", None)
+                or getattr(state, "reasoning_state", None)
+                or getattr(state, "accepted_facts", None)
+            ),
+        }
 
     def resolve_thread_id(
         self,
@@ -255,13 +296,19 @@ class SessionContextService:
         unresolved_questions = list(getattr(state, "unresolved_questions", []) or [])
         reasoning_state = getattr(state, "reasoning_state", {}) or {}
 
+        normalized_scope = ThreadSyncService.normalize_lifecycle(restored_memory_scope)
+        authoritative_scope = ThreadSyncService.authoritative_memory_scope(normalized_scope)
         return {
             "chat_context_restored": restored_any,
             "chat_context_restored_from_session_id": parent_session_id,
             "chat_context_restored_from_thread_id": thread_id or None,
             "chat_context_restored_snapshot_id": snapshot_id,
             "chat_context_restored_source": restored_source,
-            "chat_context_restored_memory_scope": restored_memory_scope,
+            "chat_context_restored_memory_scope": normalized_scope,
+            "chat_context_restored_memory_is_authoritative": authoritative_scope is not None,
+            "chat_context_restored_memory_kind": (
+                "authoritative_case_truth" if authoritative_scope is not None else "working_context"
+            ),
             "chat_context_restored_findings": 0,
             "chat_context_restored_step_offset": state.step_count,
             "chat_context_restored_counts": {
@@ -348,7 +395,7 @@ class SessionContextService:
                 )
                 snapshot_id = str(case_memory_context.get("latest_session_id") or "").strip() or None
                 if not snapshot_id:
-                    boundary_payload, _ = self._memory_scope_payload(memory_snapshot)
+                    boundary_payload, _, _ = self._memory_scope_payload(memory_snapshot)
                     if not boundary_payload:
                         boundary_payload = memory_snapshot if isinstance(memory_snapshot, dict) else {}
                     boundary = boundary_payload.get("memory_boundary", {}) if isinstance(boundary_payload, dict) else {}
