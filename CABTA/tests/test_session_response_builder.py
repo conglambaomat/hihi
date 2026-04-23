@@ -447,6 +447,40 @@ def test_build_chat_model_unavailable_answer_with_runtime_status_reuses_runtime_
     assert "Key evidence: Evidence point" in result
 
 
+
+def test_build_chat_model_unavailable_answer_from_runtime_artifacts_reuses_precomputed_notice():
+    builder = SessionResponseBuilder()
+    state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings", "result": {"verdict": "CLEAN"}}])
+    calls = []
+
+    def _raising_excerpt(**_kwargs):
+        calls.append("recomputed")
+        raise AssertionError("should not recompute runtime excerpt")
+
+    result = builder.build_chat_model_unavailable_answer_from_runtime_artifacts(
+        state=state,
+        runtime_artifacts={
+            "fallback_context": {
+                "provider_name": "openrouter",
+                "active_model_name": "openrouter/model-a",
+                "status": {"provider": "gemini", "available": False, "error": "Gemini HTTP 429: quota exceeded"},
+            },
+            "llm_unavailable_notice": "Precomputed unavailable notice.",
+        },
+        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
+        goal="Summarize the evidence",
+        authoritative_outcome={"label": "CLEAN"},
+        fallback_evidence_points=lambda _state, limit: ["Evidence point"][:limit],
+        build_chat_specific_fallback=lambda _state: "chat-specific",
+        provider_display_name=builder.provider_display_name,
+        provider_runtime_error_excerpt=_raising_excerpt,
+    )
+
+    assert result.startswith("Precomputed unavailable notice.")
+    assert "Evidence-backed outcome: CLEAN." in result
+    assert calls == []
+
+
 def test_build_chat_model_unavailable_answer_from_context_uses_supplied_notice_without_recomputing():
     builder = SessionResponseBuilder()
     state = SimpleNamespace(findings=[{"type": "tool_result", "tool": "correlate_findings", "result": {"verdict": "CLEAN"}}])
@@ -999,6 +1033,11 @@ def test_build_follow_up_goal_mentions_when_fresh_evidence_is_required():
         message="Pivot on registrar-linked infrastructure.",
         intent="new_pivot",
         requires_fresh_evidence=True,
+        memory_scope="accepted",
+        memory_boundary={"case_id": "CASE-1", "thread_id": "thread-1", "publication_scope": "accepted"},
+        memory_kind="authoritative_case_truth",
+        publication_scope="accepted",
+        memory_is_authoritative=True,
     )
 
     assert "Continue the same analyst thread" in result
@@ -1006,6 +1045,8 @@ def test_build_follow_up_goal_mentions_when_fresh_evidence_is_required():
     assert "collect fresh evidence" in result
     assert "accepted case memory" in result
     assert "accepted case truth" in result
+    assert "Restored memory contract: memory_scope=accepted, memory_kind=authoritative_case_truth, publication_scope=accepted, memory_is_authoritative=true" in result
+    assert "memory_boundary={'case_id': 'CASE-1', 'thread_id': 'thread-1', 'publication_scope': 'accepted'}" in result
     assert "Registrar matched known abuse cluster." in result
 
 
@@ -1023,12 +1064,65 @@ def test_build_follow_up_goal_uses_published_memory_scope_language_when_provided
         intent="follow_up_question",
         requires_fresh_evidence=False,
         memory_scope="published",
+        memory_boundary={"case_id": "CASE-42", "thread_id": "case-thread-1", "session_id": "sess-case-memory", "publication_scope": "published"},
+        memory_kind="authoritative_case_truth",
+        publication_scope="published",
+        memory_is_authoritative=True,
     )
 
     assert "published case memory" in result
     assert "Published case memory facts:" in result
     assert "Answer from the published case memory" in result
-    assert "Do not overstate published case truth beyond its lifecycle." in result
+    assert "Restored memory contract: memory_scope=published, memory_kind=authoritative_case_truth, publication_scope=published, memory_is_authoritative=true" in result
+    assert "memory_boundary={'case_id': 'CASE-42', 'thread_id': 'case-thread-1', 'session_id': 'sess-case-memory', 'publication_scope': 'published'}" in result
+    assert "Do not present published case truth as more authoritative than this lifecycle allows." in result
+
+
+def test_build_follow_up_goal_normalizes_working_memory_contract_when_publication_scope_is_carried():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_follow_up_goal(
+        previous_goal="Investigate noisy alert follow-up",
+        thread_summary="Working thread context only.",
+        snapshot={
+            "accepted_facts": [{"summary": "Observed a low-confidence host correlation."}],
+            "unresolved_questions": ["Is the host actually involved?"],
+        },
+        message="Explain what we know so far.",
+        intent="follow_up_question",
+        requires_fresh_evidence=False,
+        memory_scope=None,
+        memory_boundary={"case_id": "CASE-7", "publication_scope": "working"},
+        memory_kind=None,
+        publication_scope="working",
+        memory_is_authoritative=None,
+    )
+
+    assert "working session context" in result
+    assert "Do not present working session context as more authoritative than this lifecycle allows." in result
+    assert "Restored memory contract: memory_scope=working, memory_kind=working_context, publication_scope=working, memory_is_authoritative=false" in result
+
+
+def test_build_follow_up_goal_uses_boundary_publication_scope_when_explicit_scope_is_missing():
+    builder = SessionResponseBuilder()
+
+    result = builder.build_follow_up_goal(
+        previous_goal="Investigate queued follow-up",
+        thread_summary="Boundary-only lifecycle contract.",
+        snapshot={"accepted_facts": [{"summary": "Queued command restored accepted case truth."}]},
+        message="Explain the carried-over truth.",
+        intent="follow_up_question",
+        requires_fresh_evidence=False,
+        memory_scope=None,
+        memory_boundary={"case_id": "CASE-9", "thread_id": "thread-9", "publication_scope": "accepted"},
+        memory_kind=None,
+        publication_scope=None,
+        memory_is_authoritative=None,
+    )
+
+    assert "accepted case memory" in result
+    assert "accepted case truth" in result
+    assert "Restored memory contract: memory_scope=accepted, memory_kind=authoritative_case_truth, publication_scope=accepted, memory_is_authoritative=true" in result
 
 
 def test_build_chat_response_style_block_is_empty_for_non_chat_sessions():
@@ -1105,4 +1199,4 @@ def test_build_chat_decision_block_varies_with_follow_up_fresh_evidence_policy()
 
     assert "gather fresh evidence only for the new pivot" in fresh_result
     assert "restored accepted case truth" in fresh_result
-    assert "Prefer answering from the restored working working context" in restored_result
+    assert "Prefer answering from the restored working context" in restored_result

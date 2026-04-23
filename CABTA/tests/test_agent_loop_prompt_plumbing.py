@@ -245,12 +245,11 @@ def test_think_short_circuits_planned_chat_tool_without_prompt_round_trip():
 @pytest.mark.parametrize(
     ("method_name", "builder_method_name"),
     [
-        ("_runtime_fallback_artifacts", "build_runtime_fallback_artifacts"),
         ("_build_direct_chat_fallback_answer", "build_direct_chat_fallback_answer_with_runtime_status"),
         ("_llm_unavailable_notice", "build_runtime_unavailable_notice"),
     ],
 )
-def test_runtime_fallback_helpers_reuse_shared_builder_kwargs(method_name, builder_method_name):
+def test_runtime_fallback_helpers_delegate_runtime_status_inputs(method_name, builder_method_name):
     loop = _build_agent_loop()
     captured = {}
 
@@ -267,6 +266,34 @@ def test_runtime_fallback_helpers_reuse_shared_builder_kwargs(method_name, build
     assert captured["provider_name"] == loop.provider
     assert captured["normalize_provider"] == loop._normalize_provider
     assert captured["active_model_name"] == loop._active_model_name
+    assert captured["provider_display_name"] == loop.session_response_builder.provider_display_name
+    assert captured["provider_runtime_error_excerpt"] == loop.session_response_builder.provider_runtime_error_excerpt
+
+
+
+def test_build_chat_model_unavailable_answer_delegates_runtime_status_directly():
+    loop = _build_agent_loop()
+    state = _build_state()
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return "delegated-result"
+
+    loop.session_response_builder.build_chat_model_unavailable_answer_with_runtime_status = _capture
+    loop._resolve_authoritative_outcome = MagicMock(return_value={"label": "CLEAN"})
+
+    result = loop._build_chat_model_unavailable_answer(state)
+
+    assert result == "delegated-result"
+    assert captured["state"] is state
+    assert captured["provider_runtime_status"] is loop.provider_runtime_status
+    assert captured["provider_name"] == loop.provider
+    assert captured["normalize_provider"] == loop._normalize_provider
+    assert captured["active_model_name"] == loop._active_model_name
+    assert captured["goal"] == state.goal
+    assert captured["authoritative_outcome"] == {"label": "CLEAN"}
+    assert captured["build_direct_chat_fallback_answer"] == loop._build_direct_chat_fallback_answer
     assert captured["provider_display_name"] == loop.session_response_builder.provider_display_name
     assert captured["provider_runtime_error_excerpt"] == loop.session_response_builder.provider_runtime_error_excerpt
 
@@ -314,3 +341,67 @@ def test_response_builder_approval_helpers_shape_loop_payloads():
         "approval_context": approval_context,
         "execution_guidance": {"lane": "log_identity"},
     }
+
+
+def test_record_tool_observation_refreshes_reasoning_and_notifies_tool_result():
+    loop = _build_agent_loop()
+    state = _build_state()
+    state.step_count = 2
+    state.max_steps = 7
+    state.findings = []
+
+    def add_finding(finding):
+        state.findings.append(finding)
+
+    state.add_finding = add_finding
+
+    loop._refresh_reasoning_outputs = MagicMock()
+    loop._sync_specialist_progress = MagicMock()
+    loop.store.update_session_findings = MagicMock()
+    loop._notify = MagicMock()
+
+    loop._record_tool_observation(
+        session_id="sess-1",
+        state=state,
+        tool_name="osint-tools.whois_lookup",
+        params={"target": "example.com"},
+        result={"result": {"registrar": "Example Registrar"}},
+        duration_ms=321,
+        specialist_progress_reason="Completed specialist action via osint-tools.whois_lookup.",
+    )
+
+    assert state.current_tool is None
+    assert state.step_count == 3
+    assert state.findings[-1] == {
+        "type": "tool_result",
+        "tool": "osint-tools.whois_lookup",
+        "params": {"target": "example.com"},
+        "result": {"result": {"registrar": "Example Registrar"}},
+    }
+    loop._refresh_reasoning_outputs.assert_called_once_with(
+        "sess-1",
+        state,
+        tool_name="osint-tools.whois_lookup",
+        params={"target": "example.com"},
+        result={"result": {"registrar": "Example Registrar"}},
+    )
+    loop._sync_specialist_progress.assert_called_once_with(
+        "sess-1",
+        state,
+        reason="Completed specialist action via osint-tools.whois_lookup.",
+    )
+    loop.store.update_session_findings.assert_called_once_with("sess-1", state.findings)
+    loop._notify.assert_called_once_with(
+        "sess-1",
+        {
+            "type": "tool_result",
+            "step": 2,
+            "max_steps": 7,
+            "tool": "osint-tools.whois_lookup",
+            "tool_source": "mcp",
+            "tool_server": "osint-tools",
+            "duration_ms": 321,
+            "params": {"target": "example.com"},
+            "result": {"result": {"registrar": "Example Registrar"}},
+        },
+    )

@@ -459,7 +459,7 @@ class TestFastAPIEndpoints:
         assert data['optional_runtime']['capability_scope'] == 'optional_infrastructure'
         assert isinstance(data['optional_runtime']['degraded_dependencies'], list)
 
-    def test_workflow_run_uses_playbook_backend(self):
+    def test_workflow_run_blocks_interactive_only_playbook_runtime(self):
         self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
         r = self.client.post('/api/workflows/incident-response/run', json={
             'goal': 'Respond to a malware incident',
@@ -480,15 +480,15 @@ class TestFastAPIEndpoints:
                 ],
             },
         })
-        assert r.status_code == 200
-        data = r.json()
-        assert data['workflow_id'] == 'incident-response'
-        assert data['backend'] == 'playbook'
-        assert data['session_id'] == 'wf-session'
-        assert 'runtime_enforcement' in data
-        assert data['runtime_enforcement']['status'] in ('ready', 'degraded')
+        assert r.status_code == 400
+        data = r.json()['detail']
+        assert data['message'] == 'Workflow runtime contract is not ready'
+        assert data['dependency_status']['status'] in ('ready', 'degraded')
+        assert data['runtime_enforcement']['status'] == 'blocked'
+        assert data['runtime_enforcement']['interactive_runtime_blocked'] is True
         assert data['runtime_enforcement']['evidence_contract']['triage_contract_runtime']['satisfied_count'] == 1
-        assert data['dependency_status'] in ('ready', 'degraded')
+        assert 'interactive_runtime_required' in data['runtime_enforcement']['blocking_reasons']
+        self.app.state.playbook_engine.execute.assert_not_awaited()
 
     def test_workflow_run_accepts_inputs_alias_for_params(self):
         self.app.state.playbook_engine.execute = AsyncMock(return_value='wf-session')
@@ -754,9 +754,16 @@ class TestFastAPIEndpoints:
         assert payload['status'] == 'active'
         assert payload['queued_command_id']
         assert payload['queued_intent'] == 'new_pivot'
+        assert payload['queued_requires_fresh_evidence'] is True
+        assert payload['queued_command_payload'] == {
+            'intent': 'new_pivot',
+            'requires_fresh_evidence': True,
+            'queued_while_active': True,
+        }
         thread = self.app.state.thread_store.get_thread(payload['thread_id'])
         assert thread is not None
         assert thread['pending_commands'][0]['content'] == 'Pivot on the host tied to this session.'
+        assert thread['pending_commands'][0]['payload'] == payload['queued_command_payload']
 
     def test_chat_follow_up_uses_case_memory_when_thread_snapshot_missing(self):
         original_session = self.app.state.agent_store.create_session(
@@ -777,6 +784,9 @@ class TestFastAPIEndpoints:
                 'latest_session_id': 'sess-case-memory',
                 'memory_scope': 'published',
                 'authoritative_memory_scope': 'published',
+                'memory_kind': 'authoritative_case_truth',
+                'memory_is_authoritative': True,
+                'publication_scope': 'published',
                 'memory_boundary': {
                     'case_id': 'CASE-42',
                     'thread_id': 'case-thread-1',
@@ -801,15 +811,6 @@ class TestFastAPIEndpoints:
                     ],
                     'unresolved_questions': ['Which host executed the follow-on process activity?'],
                 },
-                'accepted_snapshot': {
-                    'root_cause_assessment': {
-                        'summary': 'The session is most consistent with credential misuse from an unusual source IP.'
-                    },
-                    'accepted_facts': [
-                        {'summary': 'Alice authenticated from 185.220.101.45.'},
-                    ],
-                    'unresolved_questions': ['Which host executed the follow-on process activity?'],
-                },
             }
         )
         self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
@@ -825,10 +826,18 @@ class TestFastAPIEndpoints:
         assert 'Latest root-cause state:' in args[0]
         assert 'Published case memory facts:' in args[0]
         assert 'Answer from the published case memory' in args[0]
-        assert 'Do not overstate published case truth beyond its lifecycle.' in args[0]
+        assert 'Do not present published case truth as more authoritative than this lifecycle allows.' in args[0]
+        assert 'Restored memory contract: memory_scope=published, memory_kind=authoritative_case_truth, publication_scope=published, memory_is_authoritative=true' in args[0]
+        assert "memory_boundary={'case_id': 'CASE-42', 'thread_id': 'case-thread-1', 'session_id': 'sess-case-memory', 'publication_scope': 'published'}" in args[0]
         assert kwargs['metadata']['thread_id'] == 'case-thread-1'
+        assert kwargs['metadata']['memory_scope'] == 'published'
+        assert kwargs['metadata']['memory_kind'] == 'authoritative_case_truth'
+        assert kwargs['metadata']['memory_is_authoritative'] is True
+        assert kwargs['metadata']['publication_scope'] == 'published'
+        assert kwargs['metadata']['authoritative_memory_scope'] == 'published'
+        assert kwargs['metadata']['memory_boundary']['publication_scope'] == 'published'
         assert kwargs['metadata']['case_memory_context']['latest_session_id'] == 'sess-case-memory'
-        assert kwargs['metadata']['case_memory_context']['authoritative_memory_scope'] == 'published'
+        assert kwargs['metadata']['case_memory_context']['memory_is_authoritative'] is True
         assert kwargs['metadata']['case_memory_context']['authoritative_memory_scope'] == 'published'
         assert kwargs['metadata']['case_memory_context']['memory_boundary']['publication_scope'] == 'published'
 
@@ -847,6 +856,97 @@ class TestFastAPIEndpoints:
         payload = r.json()
         assert payload['chat_user_message'] == 'Pivot on the registrar tied to the domain.'
         assert payload['chat_parent_session_id'] == 'parent-session'
+
+    def test_agent_session_payload_flattens_memory_contract_metadata(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Continue the previous analyst conversation about the security investigation.',
+            metadata={
+                'memory_scope': 'published',
+                'memory_kind': 'authoritative_case_truth',
+                'memory_is_authoritative': True,
+                'publication_scope': 'published',
+                'authoritative_memory_scope': 'published',
+                'memory_boundary': {'publication_scope': 'published'},
+            },
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{session_id}')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['memory_scope'] == 'published'
+        assert payload['memory_kind'] == 'authoritative_case_truth'
+        assert payload['memory_is_authoritative'] is True
+        assert payload['publication_scope'] == 'published'
+        assert payload['authoritative_memory_scope'] == 'published'
+        assert payload['memory_boundary']['publication_scope'] == 'published'
+
+    def test_agent_session_payload_flattens_restored_chat_memory_contract_metadata(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Continue the previous analyst conversation about the security investigation.',
+            metadata={
+                'chat_context_restored': True,
+                'chat_context_restored_from_session_id': 'sess-parent',
+                'chat_context_restored_from_thread_id': 'thread-parent',
+                'chat_context_restored_snapshot_id': 'snap-parent',
+                'chat_context_restored_memory_scope': 'published',
+                'chat_context_restored_authoritative_memory_scope': 'published',
+                'chat_context_restored_publication_scope': 'published',
+                'chat_context_restored_memory_kind': 'authoritative_case_truth',
+                'chat_context_restored_memory_is_authoritative': True,
+                'chat_context_restored_counts': {'accepted_fact_count': 2},
+                'chat_context_restored_reasoning_status': 'supported',
+                'chat_context_restored_source': 'case_memory',
+                'chat_context_restored_fact_family_schemas': {'log': {'version': 'fact-family/log/v1'}},
+            },
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{session_id}')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['chat_context_restored'] is True
+        assert payload['chat_context_restored_from_session_id'] == 'sess-parent'
+        assert payload['chat_context_restored_from_thread_id'] == 'thread-parent'
+        assert payload['chat_context_restored_snapshot_id'] == 'snap-parent'
+        assert payload['chat_context_restored_memory_scope'] == 'published'
+        assert payload['chat_context_restored_authoritative_memory_scope'] == 'published'
+        assert payload['chat_context_restored_publication_scope'] == 'published'
+        assert payload['chat_context_restored_memory_kind'] == 'authoritative_case_truth'
+        assert payload['chat_context_restored_memory_is_authoritative'] is True
+        assert payload['chat_context_restored_counts']['accepted_fact_count'] == 2
+        assert payload['chat_context_restored_reasoning_status'] == 'supported'
+        assert payload['chat_context_restored_source'] == 'case_memory'
+        assert payload['chat_context_restored_fact_family_schemas'] == {'log': {'version': 'fact-family/log/v1'}}
+
+    def test_agent_session_payload_keeps_top_level_memory_contract_when_metadata_is_missing(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Continue the previous analyst conversation about the security investigation.',
+            metadata={},
+        )
+        self.app.state.agent_store.update_session_metadata(
+            session_id,
+            {
+                'memory_scope': 'accepted',
+                'memory_kind': 'authoritative_case_truth',
+                'memory_is_authoritative': True,
+                'publication_scope': 'accepted',
+                'authoritative_memory_scope': 'accepted',
+                'memory_boundary': {'case_id': 'CASE-99', 'publication_scope': 'accepted'},
+            },
+            merge=False,
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{session_id}')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['memory_scope'] == 'accepted'
+        assert payload['memory_kind'] == 'authoritative_case_truth'
+        assert payload['memory_is_authoritative'] is True
+        assert payload['publication_scope'] == 'accepted'
+        assert payload['authoritative_memory_scope'] == 'accepted'
+        assert payload['memory_boundary']['case_id'] == 'CASE-99'
 
     def test_agent_session_payload_includes_prior_chat_thread_messages(self):
         parent_session = self.app.state.agent_store.create_session(
@@ -908,6 +1008,157 @@ class TestFastAPIEndpoints:
         assert r.status_code == 200
         args = self.app.state.agent_loop.investigate.await_args.args
         assert 'Previous investigation goal:\nAnalyze the phishing email at:' in args[0]
+
+    def test_chat_follow_up_normalizes_non_authoritative_case_memory_contract(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate noisy follow-up activity',
+            case_id='CASE-7',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Previous session completed.',
+        )
+        self.app.state.case_memory_service = SimpleNamespace(
+            get_case_memory=lambda _case_id: {
+                'case_id': 'CASE-7',
+                'thread_id': 'thread-noise',
+                'summary': 'Only working thread context exists.',
+                'publication_scope': 'working',
+                'memory_boundary': {
+                    'case_id': 'CASE-7',
+                    'thread_id': 'thread-noise',
+                    'publication_scope': 'working',
+                },
+                'memory_snapshot': {
+                    'accepted_facts': [{'summary': 'Observed a low-confidence host correlation.'}],
+                    'unresolved_questions': ['Is the host actually involved?'],
+                },
+            }
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Explain what we know so far.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert 'Restored memory contract: memory_scope=working, memory_kind=working_context, publication_scope=working, memory_is_authoritative=false' in args[0]
+        assert 'Do not present working session context as more authoritative than this lifecycle allows.' in args[0]
+        assert kwargs['metadata']['memory_scope'] == 'working'
+        assert kwargs['metadata']['memory_kind'] == 'working_context'
+        assert kwargs['metadata']['memory_is_authoritative'] is False
+        assert kwargs['metadata']['publication_scope'] == 'working'
+        assert kwargs['metadata']['authoritative_memory_scope'] is None
+        assert kwargs['metadata']['memory_boundary']['case_id'] == 'CASE-7'
+
+    def test_chat_follow_up_prefers_authoritative_snapshot_over_memory_snapshot_in_restore_path(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious account activity',
+            case_id='CASE-8',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Previous session completed.',
+        )
+        self.app.state.case_memory_service = SimpleNamespace(
+            get_case_memory=lambda _case_id: {
+                'case_id': 'CASE-8',
+                'thread_id': 'thread-authoritative',
+                'summary': 'Published case memory exists alongside older working memory.',
+                'latest_session_id': 'sess-published',
+                'authoritative_memory_scope': 'published',
+                'memory_is_authoritative': True,
+                'publication_scope': 'published',
+                'authoritative_snapshot': {
+                    'case_id': 'CASE-8',
+                    'thread_id': 'thread-authoritative',
+                    'authoritative_memory_scope': 'published',
+                    'publication_scope': 'published',
+                    'accepted_facts': [{'summary': 'Published case truth confirmed the risky account takeover.'}],
+                },
+                'memory_snapshot': {
+                    'case_id': 'CASE-8',
+                    'thread_id': 'thread-authoritative',
+                    'publication_scope': 'working',
+                    'accepted_facts': [{'summary': 'Working memory still contained an older low-confidence lead.'}],
+                },
+            }
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Explain the current case truth.',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert 'Published case truth confirmed the risky account takeover.' in args[0]
+        assert 'Working memory still contained an older low-confidence lead.' not in args[0]
+        assert 'Restored memory contract: memory_scope=published, memory_kind=authoritative_case_truth, publication_scope=published, memory_is_authoritative=true' in args[0]
+        assert kwargs['metadata']['thread_id'] == 'thread-authoritative'
+        assert kwargs['metadata']['memory_scope'] == 'published'
+        assert kwargs['metadata']['authoritative_memory_scope'] == 'published'
+        assert kwargs['metadata']['memory_is_authoritative'] is True
+        assert kwargs['metadata']['case_memory_context']['latest_session_id'] == 'sess-published'
+
+    def test_chat_follow_up_passes_case_memory_boundary_even_when_snapshot_lacks_session_id(self):
+        original_session = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious account activity',
+            case_id='CASE-10',
+            metadata={'agent_profile_id': 'investigator'},
+        )
+        self.app.state.agent_store.update_session_status(
+            original_session,
+            'completed',
+            'Previous session completed.',
+        )
+        self.app.state.case_memory_service = SimpleNamespace(
+            get_case_memory=lambda _case_id: {
+                'case_id': 'CASE-10',
+                'thread_id': 'thread-boundary',
+                'summary': 'Published case memory exists without embedding session id inside the snapshot payload.',
+                'memory_scope': 'published',
+                'authoritative_memory_scope': 'published',
+                'memory_kind': 'authoritative_case_truth',
+                'memory_is_authoritative': True,
+                'publication_scope': 'published',
+                'memory_boundary': {
+                    'case_id': 'CASE-10',
+                    'thread_id': 'thread-boundary',
+                    'session_id': 'sess-boundary-only',
+                    'publication_scope': 'published',
+                },
+                'authoritative_snapshot': {
+                    'case_id': 'CASE-10',
+                    'thread_id': 'thread-boundary',
+                    'authoritative_memory_scope': 'published',
+                    'publication_scope': 'published',
+                    'accepted_facts': [
+                        {'summary': 'Boundary-only published truth confirmed the risky account takeover.'},
+                    ],
+                },
+            }
+        )
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='follow-up-session')
+
+        r = self.client.post('/api/chat', json={
+            'session_id': original_session,
+            'message': 'Explain the current case truth.',
+        })
+
+        assert r.status_code == 200
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert kwargs['metadata']['memory_boundary']['session_id'] == 'sess-boundary-only'
+        assert kwargs['metadata']['case_memory_context']['memory_boundary']['session_id'] == 'sess-boundary-only'
 
     def test_delete_agent_session_endpoint_removes_session_children(self):
         session_id = self.app.state.agent_store.create_session(

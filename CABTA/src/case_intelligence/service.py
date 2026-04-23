@@ -7,6 +7,7 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from src.agent.thread_sync_service import ThreadSyncService
 from src.utils.ioc_extractor import IOCExtractor
 from src.web.normalizer import normalize_job
 
@@ -84,12 +85,14 @@ class CaseIntelligenceService:
 
         latest_root_cause: Dict[str, Any] = {}
         latest_root_cause_session_id: Optional[str] = None
+        latest_root_cause_payload: Dict[str, Any] = {}
         for event in reversed(snapshot["case"].get("events", [])):
             payload = event.get("payload", {}) if isinstance(event.get("payload"), dict) else {}
             candidate = payload.get("root_cause_assessment", {}) if isinstance(payload, dict) else {}
             if isinstance(candidate, dict) and candidate.get("primary_root_cause"):
                 latest_root_cause = candidate
                 latest_root_cause_session_id = payload.get("session_id")
+                latest_root_cause_payload = payload
                 break
 
         selected_workflow = None
@@ -117,11 +120,68 @@ class CaseIntelligenceService:
         if not root_cause_assessment and latest_root_cause:
             root_cause_assessment = latest_root_cause
 
+        reasoning_truth_source = "selected_workflow_metadata"
+        if latest_root_cause and latest_root_cause_session_id and (
+            not selected_workflow or str(selected_workflow.get("session_id") or "") != str(latest_root_cause_session_id)
+        ):
+            reasoning_truth_source = "case_event_root_cause_checkpoint"
+
+        contract_source = dict(latest_meta) if isinstance(latest_meta, dict) else {}
+        selected_session_id = str(selected_workflow.get("session_id") or "") if selected_workflow else ""
+        if latest_root_cause_payload and latest_root_cause_session_id and (
+            reasoning_truth_source == "case_event_root_cause_checkpoint"
+            or selected_session_id == str(latest_root_cause_session_id)
+        ):
+            contract_source.update(latest_root_cause_payload)
+
+        memory_contract = ThreadSyncService.resolve_session_memory_contract(
+            contract_source,
+            snapshot=contract_source,
+            default_publication_scope="working",
+        )
+        if latest_root_cause_payload and memory_contract["memory_scope"] == "working":
+            fallback_thread_id = (
+                memory_contract["memory_boundary"].get("thread_id")
+                or contract_source.get("thread_id")
+                or latest_root_cause_payload.get("thread_id")
+                or latest_root_cause_payload.get("thread_context", {}).get("thread_id")
+                or latest_root_cause_payload.get("memory_boundary", {}).get("thread_id")
+            )
+            memory_contract = ThreadSyncService.resolve_memory_contract(
+                {
+                    "memory_scope": latest_root_cause_payload.get("publication_scope") or latest_root_cause_payload.get("memory_scope"),
+                    "authoritative_memory_scope": latest_root_cause_payload.get("authoritative_memory_scope"),
+                    "publication_scope": latest_root_cause_payload.get("publication_scope"),
+                    "memory_kind": latest_root_cause_payload.get("memory_kind"),
+                    "memory_is_authoritative": latest_root_cause_payload.get("memory_is_authoritative"),
+                    "memory_boundary": {
+                        key: value
+                        for key, value in {
+                            "case_id": snapshot["case"].get("id"),
+                            "thread_id": fallback_thread_id,
+                            "session_id": latest_root_cause_session_id,
+                            **(
+                                latest_root_cause_payload.get("memory_boundary")
+                                if isinstance(latest_root_cause_payload.get("memory_boundary"), dict)
+                                else {}
+                            ),
+                        }.items()
+                        if value is not None and str(value).strip()
+                    },
+                },
+                default_publication_scope="working",
+            )
+
+        resolved_thread_id = (
+            memory_contract["memory_boundary"].get("thread_id")
+            or (latest_meta.get("thread_id") if isinstance(latest_meta, dict) else None)
+        )
+
         return {
             "case_id": case_id,
             "latest_session_id": selected_workflow.get("session_id") if selected_workflow else None,
             "latest_workflow_id": selected_workflow.get("workflow_id") if selected_workflow else None,
-            "thread_id": latest_meta.get("thread_id") if isinstance(latest_meta, dict) else None,
+            "thread_id": resolved_thread_id,
             "investigation_plan": latest_meta.get("investigation_plan", {}) if isinstance(latest_meta, dict) else {},
             "deterministic_decision": latest_meta.get("deterministic_decision", {}) if isinstance(latest_meta, dict) else {},
             "agentic_explanation": latest_meta.get("agentic_explanation", {}) if isinstance(latest_meta, dict) else {},
@@ -132,6 +192,27 @@ class CaseIntelligenceService:
             "accepted_facts": latest_meta.get("accepted_facts", []) if isinstance(latest_meta, dict) else [],
             "unresolved_questions": latest_meta.get("unresolved_questions", []) if isinstance(latest_meta, dict) else [],
             "evidence_quality_summary": latest_meta.get("evidence_quality_summary", {}) if isinstance(latest_meta, dict) else {},
+            "reasoning_truth": {
+                "source": reasoning_truth_source,
+                "selected_session_matches_root_cause_checkpoint": bool(
+                    selected_workflow
+                    and latest_root_cause_session_id
+                    and str(selected_workflow.get("session_id") or "") == str(latest_root_cause_session_id)
+                ),
+                "root_cause_checkpoint_session_id": latest_root_cause_session_id,
+                "memory_scope": memory_contract["memory_scope"],
+                "memory_kind": memory_contract["memory_kind"],
+                "publication_scope": memory_contract["publication_scope"],
+                "authoritative_memory_scope": memory_contract["authoritative_memory_scope"],
+                "memory_is_authoritative": memory_contract["memory_is_authoritative"],
+                "memory_boundary": memory_contract["memory_boundary"],
+            },
+            "memory_kind": memory_contract["memory_kind"],
+            "memory_is_authoritative": memory_contract["memory_is_authoritative"],
+            "publication_scope": memory_contract["publication_scope"],
+            "authoritative_memory_scope": memory_contract["authoritative_memory_scope"],
+            "memory_boundary": memory_contract["memory_boundary"],
+            "memory_scope": memory_contract["memory_scope"],
             "root_cause_assessment": root_cause_assessment,
             "workflow_sessions": workflow_rows,
             "graph_summary": {

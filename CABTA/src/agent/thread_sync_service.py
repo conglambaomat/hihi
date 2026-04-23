@@ -32,6 +32,111 @@ class ThreadSyncService:
         return None
 
     @classmethod
+    def memory_kind(cls, value: Any) -> str:
+        return "authoritative_case_truth" if cls.authoritative_memory_scope(value) is not None else "working_context"
+
+    @classmethod
+    def memory_is_authoritative(cls, value: Any) -> bool:
+        return cls.authoritative_memory_scope(value) is not None
+
+    @classmethod
+    def publication_scope(cls, value: Any, *, default: str = "working") -> str:
+        lifecycle = cls.normalize_lifecycle(value)
+        return cls.authoritative_memory_scope(lifecycle) or lifecycle or default
+
+    @classmethod
+    def resolve_memory_contract(
+        cls,
+        payload: Optional[Dict[str, Any]],
+        *,
+        default_publication_scope: str = "working",
+    ) -> Dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        memory_boundary = payload.get("memory_boundary") if isinstance(payload.get("memory_boundary"), dict) else None
+        normalized_memory_scope = cls.normalize_lifecycle(
+            payload.get("memory_scope")
+            or payload.get("authoritative_memory_scope")
+        )
+        normalized_publication_scope = cls.publication_scope(
+            payload.get("publication_scope")
+            or (memory_boundary or {}).get("publication_scope")
+            or normalized_memory_scope,
+            default=default_publication_scope,
+        )
+        normalized_authoritative_scope = cls.authoritative_memory_scope(
+            payload.get("authoritative_memory_scope")
+            or normalized_memory_scope
+            or normalized_publication_scope
+        )
+        resolved_memory_scope = normalized_memory_scope or normalized_publication_scope
+        memory_is_authoritative = payload.get("memory_is_authoritative")
+        if memory_is_authoritative is None:
+            memory_is_authoritative = cls.memory_is_authoritative(
+                normalized_authoritative_scope or resolved_memory_scope or normalized_publication_scope
+            )
+        memory_kind = payload.get("memory_kind") or cls.memory_kind(
+            normalized_authoritative_scope or resolved_memory_scope or normalized_publication_scope
+        )
+        return {
+            "memory_scope": resolved_memory_scope,
+            "authoritative_memory_scope": normalized_authoritative_scope,
+            "publication_scope": normalized_publication_scope,
+            "memory_kind": str(memory_kind or "").strip().lower() or cls.memory_kind(normalized_publication_scope),
+            "memory_is_authoritative": bool(memory_is_authoritative),
+            "memory_boundary": memory_boundary if isinstance(memory_boundary, dict) else {},
+        }
+
+    @classmethod
+    def resolve_session_memory_contract(
+        cls,
+        payload: Optional[Dict[str, Any]],
+        *,
+        snapshot: Optional[Dict[str, Any]] = None,
+        default_publication_scope: str = "working",
+    ) -> Dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        contract = cls.resolve_memory_contract(
+            payload,
+            default_publication_scope=default_publication_scope,
+        )
+        has_explicit_contract = any(
+            payload.get(key) is not None
+            for key in (
+                "memory_scope",
+                "authoritative_memory_scope",
+                "memory_kind",
+                "memory_is_authoritative",
+            )
+        )
+        if has_explicit_contract:
+            return contract
+        if isinstance(snapshot, dict) and snapshot:
+            return cls.resolve_memory_contract_from_snapshot(
+                snapshot,
+                default_publication_scope=default_publication_scope,
+            )
+        return contract
+
+    @classmethod
+    def resolve_memory_contract_from_snapshot(
+        cls,
+        snapshot: Optional[Dict[str, Any]],
+        *,
+        default_publication_scope: str = "working",
+    ) -> Dict[str, Any]:
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        snapshot_contract = snapshot.get("snapshot_contract", {}) if isinstance(snapshot.get("snapshot_contract"), dict) else {}
+        payload = {
+            "memory_scope": snapshot.get("snapshot_lifecycle") or snapshot_contract.get("lifecycle"),
+            "authoritative_memory_scope": snapshot_contract.get("authoritative_memory_scope"),
+            "publication_scope": snapshot_contract.get("publication_scope"),
+            "memory_kind": snapshot_contract.get("memory_kind"),
+            "memory_is_authoritative": snapshot_contract.get("memory_is_authoritative"),
+            "memory_boundary": snapshot.get("memory_boundary"),
+        }
+        return cls.resolve_memory_contract(payload, default_publication_scope=default_publication_scope)
+
+    @classmethod
     def snapshot_lifecycle_for_state(cls, state: Any) -> str:
         explicit = cls.normalize_lifecycle(getattr(state, "snapshot_lifecycle", ""))
         if explicit:
@@ -39,7 +144,7 @@ class ThreadSyncService:
         if bool(getattr(state, "is_terminal", lambda: False)()):
             if bool(getattr(state, "is_published", False)):
                 return "published"
-            return "accepted"
+            return "candidate"
         return "working"
 
     @classmethod
@@ -115,6 +220,10 @@ class ThreadSyncService:
         fact_family_schemas = getattr(state, "fact_family_schemas", {}) or {}
         case_id = self._normalized_scope_value(getattr(state, "case_id", None))
         thread_id = self._normalized_scope_value(getattr(state, "thread_id", None))
+        publication_scope = self.publication_scope(snapshot_lifecycle)
+        authoritative_memory_scope = self.authoritative_memory_scope(snapshot_lifecycle)
+        memory_kind = self.memory_kind(snapshot_lifecycle)
+        memory_is_authoritative = self.memory_is_authoritative(snapshot_lifecycle)
         return {
             "snapshot_state": snapshot_state,
             "snapshot_lifecycle": snapshot_lifecycle,
@@ -150,6 +259,10 @@ class ThreadSyncService:
                 "working_scope": "mutable_session_context",
                 "accepted_scope": "stable_case_ready_context",
                 "lifecycle": snapshot_lifecycle,
+                "memory_kind": memory_kind,
+                "memory_is_authoritative": memory_is_authoritative,
+                "authoritative_memory_scope": authoritative_memory_scope,
+                "publication_scope": publication_scope,
                 "is_terminal": snapshot_lifecycle in {"accepted", "published"},
                 "publication_ready": snapshot_lifecycle in {"accepted", "published"},
             },
@@ -160,6 +273,10 @@ class ThreadSyncService:
                 "session_id": self._normalized_scope_value(getattr(state, "session_id", None)),
                 "snapshot_state": snapshot_state,
                 "snapshot_lifecycle": snapshot_lifecycle,
+                "publication_scope": publication_scope,
+                "authoritative_memory_scope": authoritative_memory_scope,
+                "memory_kind": memory_kind,
+                "memory_is_authoritative": memory_is_authoritative,
             },
             "case_scope": {
                 "case_id": case_id,
@@ -232,6 +349,8 @@ class ThreadSyncService:
             "pending_thread_command_id": command.get("id"),
             "pending_thread_command_created_at": command.get("created_at"),
             "pending_thread_command_payload": payload,
+            "pending_thread_command_intent": intent or None,
+            "pending_thread_command_requires_fresh_evidence": requires_fresh_evidence,
         }
         if self.store is not None:
             self.store.update_session_metadata(session_id, metadata_update, merge=True)

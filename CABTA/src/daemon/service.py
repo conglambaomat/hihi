@@ -11,6 +11,24 @@ from .queue_store import DaemonQueueStore
 class HeadlessSOCDaemon:
     """A lightweight optional scheduler facade for background workflows."""
 
+    @staticmethod
+    def _headless_execution_eligible(runtime_state: Dict[str, Any], execution_surface: Dict[str, Any]) -> bool:
+        if runtime_state.get("headless_execution_eligible") is not None:
+            return bool(runtime_state.get("headless_execution_eligible"))
+        if execution_surface.get("headless_execution_eligible") is not None:
+            return bool(execution_surface.get("headless_execution_eligible"))
+        return bool(
+            execution_surface.get("supports_headless_execution")
+            and execution_surface.get("headless_ready")
+            and not execution_surface.get("interactive_runtime_required")
+        )
+
+    @staticmethod
+    def _case_truth_ready(runtime_state: Dict[str, Any], dependency_status: Dict[str, Any]) -> bool:
+        if runtime_state.get("case_truth_ready") is not None:
+            return bool(runtime_state.get("case_truth_ready"))
+        return str(dependency_status.get("status") or "").strip().lower() in {"ready", "degraded"}
+
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
@@ -134,16 +152,21 @@ class HeadlessSOCDaemon:
             "schedule_name": schedule.get("name"),
             "schedule_id": schedule.get("id") or schedule.get("name") or workflow_id,
         }
+        built_goal = self.workflow_registry.build_goal(workflow_id, goal=goal, params=params)
         runtime_state = self.workflow_service.evaluate_runtime_readiness(
             app,
             workflow_id,
-            goal=goal,
+            goal=built_goal,
             params=params,
             metadata=metadata,
             include_dependency_status=False,
+            dependency_status_override=dependency_status,
         )
         execution_surface = dict(runtime_state.get("execution_surface") or {})
         interactive_runtime_required = bool(execution_surface.get("interactive_runtime_required"))
+        runtime_truth_contract = dict(runtime_state.get("runtime_truth_contract") or {})
+        headless_execution_eligible = self._headless_execution_eligible(runtime_state, execution_surface)
+        case_truth_ready = self._case_truth_ready(runtime_state, dependency_status)
         if dependency_status.get("status") == "blocked" or runtime_state.get("status") == "blocked":
             return {
                 "status": "blocked",
@@ -151,6 +174,11 @@ class HeadlessSOCDaemon:
                 "backend": workflow.get("execution_backend"),
                 "dependency_status": dependency_status,
                 "runtime_enforcement": runtime_state,
+                "runtime_truth_contract": runtime_truth_contract,
+                "execution_surface": execution_surface,
+                "runtime_truth": "workflow_runtime_enforcement",
+                "headless_execution_eligible": headless_execution_eligible,
+                "case_truth_ready": case_truth_ready,
             }
         if interactive_runtime_required:
             return {
@@ -159,6 +187,11 @@ class HeadlessSOCDaemon:
                 "backend": workflow.get("execution_backend"),
                 "dependency_status": dependency_status,
                 "runtime_enforcement": runtime_state,
+                "runtime_truth_contract": runtime_truth_contract,
+                "execution_surface": execution_surface,
+                "runtime_truth": "workflow_runtime_enforcement",
+                "headless_execution_eligible": headless_execution_eligible,
+                "case_truth_ready": case_truth_ready,
                 "reason": "Workflow requires interactive analyst runtime and cannot run headless.",
             }
 
@@ -188,7 +221,6 @@ class HeadlessSOCDaemon:
                     "backend": "agent",
                     "reason": "Agent loop not initialized",
                 }
-            built_goal = self.workflow_registry.build_goal(workflow_id, goal=goal, params=params)
             session_id = await agent_loop.investigate(
                 goal=built_goal,
                 case_id=case_id,
@@ -211,7 +243,11 @@ class HeadlessSOCDaemon:
             "case_id": case_id,
             "dependency_status": dependency_status,
             "runtime_enforcement": runtime_state,
+            "runtime_truth_contract": runtime_truth_contract,
             "execution_surface": execution_surface,
+            "runtime_truth": "workflow_runtime_enforcement",
+            "headless_execution_eligible": headless_execution_eligible,
+            "case_truth_ready": case_truth_ready,
         }
 
     def worker_states(self) -> List[Dict[str, Any]]:

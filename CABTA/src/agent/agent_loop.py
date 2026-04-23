@@ -915,8 +915,11 @@ class AgentLoop:
         )
         self._persist_reasoning_metadata(session_id, state)
 
+    def _normalize_terminal_snapshot_publication(self, state: AgentState) -> str:
+        return self.thread_sync_service.finalize_lifecycle_for_state(state)
+
     def _persist_reasoning_metadata(self, session_id: str, state: AgentState) -> None:
-        self.thread_sync_service.finalize_lifecycle_for_state(state)
+        self._normalize_terminal_snapshot_publication(state)
         snapshot_id = self._sync_thread_snapshot(session_id, state)
         if snapshot_id:
             state.session_snapshot_id = snapshot_id
@@ -1432,38 +1435,15 @@ class AgentLoop:
 
                 # ---- OBSERVE ----
                 state.transition(AgentPhase.OBSERVING)
-                state.current_tool = None
-                state.add_finding({
-                    "type": "tool_result",
-                    "tool": tool_name,
-                    "params": decision.get('params', {}),
-                    "result": result,
-                })
-                self._refresh_reasoning_outputs(
-                    session_id,
-                    state,
+                self._record_tool_observation(
+                    session_id=session_id,
+                    state=state,
                     tool_name=tool_name,
                     params=decision.get('params', {}),
                     result=result,
+                    duration_ms=_act_dur,
+                    specialist_progress_reason=f"Completed specialist action via {tool_name}.",
                 )
-                state.step_count += 1
-                self._sync_specialist_progress(session_id, state, reason=f"Completed specialist action via {tool_name}.")
-
-                # Persist findings snapshot
-                self.store.update_session_findings(session_id, state.findings)
-
-                # Notify WS with tool result for live display
-                self._notify(session_id, {
-                    "type": "tool_result",
-                    "step": state.step_count - 1,
-                    "max_steps": state.max_steps,
-                    "tool": tool_name,
-                    "tool_source": "mcp" if is_mcp else "local",
-                    "tool_server": tool_name.split('.')[0] if is_mcp else None,
-                    "duration_ms": _act_dur,
-                    "params": decision.get('params', {}),
-                    "result": result,
-                })
 
                 # ---- AUTO-ENRICH with MCP tools ----
                 # After first local tool, automatically run relevant MCP tools
@@ -1519,37 +1499,15 @@ class AgentLoop:
                                 }
                             _mcp_dur = int((_time.time() - _mcp_start) * 1000)
                             state.phase = AgentPhase.OBSERVING
-                            state.current_tool = None
-                            state.add_finding({
-                                "type": "tool_result",
-                                "tool": mcp_tool,
-                                "params": mcp_params,
-                                "result": mcp_result,
-                            })
-                            self._refresh_reasoning_outputs(
-                                session_id,
-                                state,
+                            self._record_tool_observation(
+                                session_id=session_id,
+                                state=state,
                                 tool_name=mcp_tool,
                                 params=mcp_params,
                                 result=mcp_result,
+                                duration_ms=_mcp_dur,
+                                specialist_progress_reason=f"Auto-enrichment completed via {mcp_tool}.",
                             )
-                            state.step_count += 1
-                            self._sync_specialist_progress(session_id, state, reason=f"Auto-enrichment completed via {mcp_tool}.")
-                            self.store.update_session_findings(
-                                session_id, state.findings,
-                            )
-                            # Notify WS with MCP tool result
-                            self._notify(session_id, {
-                                "type": "tool_result",
-                                "step": state.step_count - 1,
-                                "max_steps": state.max_steps,
-                                "tool": mcp_tool,
-                                "tool_source": "mcp",
-                                "tool_server": mcp_server,
-                                "duration_ms": _mcp_dur,
-                                "params": mcp_params,
-                                "result": mcp_result,
-                            })
                             logger.warning(
                                 "[AGENT] Auto-enrich: %s done (%dms)", mcp_tool, _mcp_dur,
                             )
@@ -1619,6 +1577,47 @@ class AgentLoop:
         finally:
             # Clean up
             self._approval_events.pop(session_id, None)
+
+    def _record_tool_observation(
+        self,
+        *,
+        session_id: str,
+        state: AgentState,
+        tool_name: str,
+        params: Dict[str, Any],
+        result: Dict[str, Any],
+        duration_ms: int,
+        specialist_progress_reason: str,
+    ) -> None:
+        state.current_tool = None
+        state.add_finding({
+            "type": "tool_result",
+            "tool": tool_name,
+            "params": params,
+            "result": result,
+        })
+        self._refresh_reasoning_outputs(
+            session_id,
+            state,
+            tool_name=tool_name,
+            params=params,
+            result=result,
+        )
+        state.step_count += 1
+        self._sync_specialist_progress(session_id, state, reason=specialist_progress_reason)
+        self.store.update_session_findings(session_id, state.findings)
+        is_mcp = '.' in tool_name
+        self._notify(session_id, {
+            "type": "tool_result",
+            "step": state.step_count - 1,
+            "max_steps": state.max_steps,
+            "tool": tool_name,
+            "tool_source": "mcp" if is_mcp else "local",
+            "tool_server": tool_name.split('.')[0] if is_mcp else None,
+            "duration_ms": duration_ms,
+            "params": params,
+            "result": result,
+        })
 
     # ================================================================== #
     #  THINK - ask LLM for next action
@@ -2576,35 +2575,30 @@ class AgentLoop:
     def _build_chat_decision_block(self, state: AgentState) -> str:
         return str(self._chat_prompt_policy(state).get("chat_decision_block") or "")
 
-    def _runtime_fallback_builder_kwargs(self) -> Dict[str, Any]:
-        return {
-            "provider_runtime_status": self.provider_runtime_status,
-            "provider_name": self.provider,
-            "normalize_provider": self._normalize_provider,
-            "active_model_name": self._active_model_name,
-            "provider_display_name": self.session_response_builder.provider_display_name,
-            "provider_runtime_error_excerpt": self.session_response_builder.provider_runtime_error_excerpt,
-        }
-
-    def _runtime_fallback_artifacts(self) -> Dict[str, Any]:
-        return self.session_response_builder.build_runtime_fallback_artifacts(
-            **self._runtime_fallback_builder_kwargs(),
-        )
-
     def _build_direct_chat_fallback_answer(self, goal: str) -> str:
         return self.session_response_builder.build_direct_chat_fallback_answer_with_runtime_status(
-            **self._runtime_fallback_builder_kwargs(),
+            provider_runtime_status=self.provider_runtime_status,
+            provider_name=self.provider,
+            normalize_provider=self._normalize_provider,
+            active_model_name=self._active_model_name,
+            provider_display_name=self.session_response_builder.provider_display_name,
+            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
         )
 
     def _build_chat_model_unavailable_answer(self, state: AgentState) -> str:
         return self.session_response_builder.build_chat_model_unavailable_answer_with_runtime_status(
             state=state,
+            provider_runtime_status=self.provider_runtime_status,
+            provider_name=self.provider,
+            normalize_provider=self._normalize_provider,
+            active_model_name=self._active_model_name,
             build_direct_chat_fallback_answer=self._build_direct_chat_fallback_answer,
             goal=state.goal,
             authoritative_outcome=self._resolve_authoritative_outcome(state),
             fallback_evidence_points=lambda current_state, limit: self._fallback_evidence_points(current_state, limit=limit),
             build_chat_specific_fallback=self._build_chat_specific_fallback,
-            **self._runtime_fallback_builder_kwargs(),
+            provider_display_name=self.session_response_builder.provider_display_name,
+            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
         )
 
     def _build_tools_block(self) -> str:
@@ -3019,7 +3013,12 @@ class AgentLoop:
 
     def _llm_unavailable_notice(self) -> str:
         return self.session_response_builder.build_runtime_unavailable_notice(
-            **self._runtime_fallback_builder_kwargs(),
+            provider_runtime_status=self.provider_runtime_status,
+            provider_name=self.provider,
+            normalize_provider=self._normalize_provider,
+            active_model_name=self._active_model_name,
+            provider_display_name=self.session_response_builder.provider_display_name,
+            provider_runtime_error_excerpt=self.session_response_builder.provider_runtime_error_excerpt,
         )
 
     def _fallback_evidence_points(self, state: AgentState, limit: int = 3) -> List[str]:

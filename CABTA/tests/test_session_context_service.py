@@ -124,6 +124,37 @@ def test_build_chat_context_flags_prefers_metadata_and_restored_state(sample_sta
         "chat_context_restored": True,
         "requires_fresh_evidence": False,
         "restored_memory_scope": "accepted",
+        "restored_authoritative_memory_scope": "accepted",
+        "restored_publication_scope": "accepted",
+        "restored_memory_kind": "authoritative_case_truth",
+        "restored_memory_is_authoritative": False,
+        "has_context_state": True,
+    }
+
+
+def test_build_chat_context_flags_infers_contract_from_state_when_metadata_omits_it(sample_state):
+    service = SessionContextService(store=None, thread_store=None)
+    sample_state.accepted_facts = [{"summary": "accepted"}]
+    sample_state.chat_context_restored_memory_scope = "accepted"
+    sample_state.chat_context_restored_publication_scope = "accepted"
+    sample_state.chat_context_restored_memory_kind = "authoritative_case_truth"
+    sample_state.chat_context_restored_memory_is_authoritative = True
+
+    result = service.build_chat_context_flags(
+        state=sample_state,
+        metadata={
+            "chat_context_restored": True,
+            "chat_follow_up_requires_fresh_evidence": True,
+        },
+    )
+
+    assert result == {
+        "chat_context_restored": True,
+        "requires_fresh_evidence": True,
+        "restored_memory_scope": "accepted",
+        "restored_authoritative_memory_scope": "accepted",
+        "restored_publication_scope": "accepted",
+        "restored_memory_kind": "authoritative_case_truth",
         "restored_memory_is_authoritative": True,
         "has_context_state": True,
     }
@@ -196,7 +227,7 @@ def test_restore_follow_up_context_uses_thread_snapshot(sample_state):
             "thread_id": "thread-1",
         }
     }
-    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
     thread_store.get_latest_snapshot.return_value = {
         "snapshot_id": "snap-1",
         "snapshot": {
@@ -215,7 +246,7 @@ def test_restore_follow_up_context_uses_thread_snapshot(sample_state):
     assert restored is True
     assert sample_state.reasoning_state["status"] == "restored"
     assert sample_state.session_snapshot_id == "snap-1"
-    thread_store.get_latest_accepted_snapshot.assert_called_once_with("thread-1")
+    thread_store.get_latest_authoritative_snapshot.assert_called_once_with("thread-1")
     thread_store.get_latest_snapshot.assert_called_once_with("thread-1")
     store.update_session_metadata.assert_called_once()
     args = store.update_session_metadata.call_args.args
@@ -232,7 +263,7 @@ def test_restore_follow_up_context_prefers_lifecycle_accepted_thread_truth(sampl
             "thread_id": "thread-1",
         }
     }
-    thread_store.get_latest_accepted_snapshot.return_value = {
+    thread_store.get_latest_authoritative_snapshot.return_value = {
         "snapshot_id": "snap-accepted",
         "snapshot": {
             "snapshot_lifecycle": "published",
@@ -266,10 +297,12 @@ def test_restore_follow_up_context_prefers_lifecycle_accepted_thread_truth(sampl
     assert sample_state.reasoning_state["status"] == "published-thread-memory"
     assert sample_state.accepted_facts[0]["summary"] == "published thread fact"
     assert sample_state.session_snapshot_id == "snap-accepted"
-    thread_store.get_latest_accepted_snapshot.assert_called_once_with("thread-1")
+    thread_store.get_latest_authoritative_snapshot.assert_called_once_with("thread-1")
     thread_store.get_latest_snapshot.assert_not_called()
     args = store.update_session_metadata.call_args.args
     assert args[1]["chat_context_restored_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_authoritative_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_publication_scope"] == "published"
     assert args[1]["chat_context_restored_memory_is_authoritative"] is True
     assert args[1]["chat_context_restored_memory_kind"] == "authoritative_case_truth"
     assert args[1]["chat_context_restored_source"] == "thread_snapshot"
@@ -279,7 +312,7 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
     store = MagicMock()
     thread_store = MagicMock()
     store.get_session.return_value = {"metadata": {}}
-    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
     thread_store.get_latest_snapshot.return_value = {}
     service = SessionContextService(store=store, thread_store=thread_store)
 
@@ -292,16 +325,17 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "authoritative_memory_scope": "published",
+                "memory_kind": "authoritative_case_truth",
+                "publication_scope": "published",
                 "memory_snapshot": {
                     "case_id": "case-1",
                     "thread_id": "thread-1",
                     "authoritative_memory_scope": "published",
-                    "memory": {
-                        "published": {
-                            "reasoning_state": {"status": "published-memory"},
-                            "accepted_facts": [{"summary": "published memory fact"}],
-                        }
-                    }
+                    "publication_scope": "published",
+                    "authoritative_memory": {
+                        "reasoning_state": {"status": "published-memory"},
+                        "accepted_facts": [{"summary": "published memory fact"}],
+                    },
                 },
             },
         },
@@ -313,6 +347,8 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
     kwargs = store.update_session_metadata.call_args.kwargs
     assert kwargs["merge"] is True
     assert args[1]["chat_context_restored_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_authoritative_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_publication_scope"] == "published"
     assert args[1]["chat_context_restored_memory_is_authoritative"] is True
     assert args[1]["chat_context_restored_memory_kind"] == "authoritative_case_truth"
     assert args[1]["chat_context_restored_source"] == "case_memory"
@@ -320,15 +356,68 @@ def test_restore_follow_up_context_records_memory_scope_from_case_memory(sample_
     assert args[1]["chat_context_restored_reasoning_status"] == "published-memory"
     assert sample_state.restored_memory_scope == "published"
     assert sample_state.chat_context_restored_memory_scope == "published"
+    assert sample_state.restored_authoritative_memory_scope == "published"
+    assert sample_state.chat_context_restored_authoritative_memory_scope == "published"
+    assert sample_state.restored_publication_scope == "published"
+    assert sample_state.chat_context_restored_publication_scope == "published"
+    assert sample_state.restored_memory_kind == "authoritative_case_truth"
+    assert sample_state.chat_context_restored_memory_kind == "authoritative_case_truth"
     assert sample_state.restored_memory_is_authoritative is True
     assert sample_state.chat_context_restored_memory_is_authoritative is True
+
+
+def test_restore_follow_up_context_prefers_authoritative_case_memory_snapshot_over_working_memory_snapshot(sample_state):
+    store = MagicMock()
+    thread_store = MagicMock()
+    store.get_session.return_value = {"metadata": {}}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
+    thread_store.get_latest_snapshot.return_value = {}
+    service = SessionContextService(store=store, thread_store=thread_store)
+
+    restored = service.restore_follow_up_context(
+        session_id="sess-2",
+        state=sample_state,
+        metadata={
+            "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
+            "case_memory_context": {
+                "latest_session_id": "sess-prev",
+                "authoritative_memory_scope": "published",
+                "publication_scope": "published",
+                "authoritative_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
+                    "authoritative_memory_scope": "published",
+                    "publication_scope": "published",
+                    "reasoning_state": {"status": "published-memory"},
+                    "accepted_facts": [{"summary": "published memory fact"}],
+                },
+                "memory_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
+                    "publication_scope": "working",
+                    "reasoning_state": {"status": "working-memory"},
+                    "accepted_facts": [{"summary": "working memory fact"}],
+                },
+            },
+        },
+    )
+
+    assert restored is True
+    assert sample_state.reasoning_state["status"] == "published-memory"
+    assert sample_state.accepted_facts == [{"summary": "published memory fact"}]
+    args = store.update_session_metadata.call_args.args
+    assert args[1]["chat_context_restored_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_authoritative_memory_scope"] == "published"
+    assert args[1]["chat_context_restored_publication_scope"] == "published"
+    assert args[1]["chat_context_restored_memory_is_authoritative"] is True
 
 
 def test_restore_follow_up_context_uses_memory_boundary_session_id_when_case_memory_session_missing(sample_state):
     store = MagicMock()
     thread_store = MagicMock()
     store.get_session.return_value = {"metadata": {}}
-    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
     thread_store.get_latest_snapshot.return_value = {}
     service = SessionContextService(store=store, thread_store=thread_store)
 
@@ -340,21 +429,21 @@ def test_restore_follow_up_context_uses_memory_boundary_session_id_when_case_mem
             "case_id": "case-1",
             "case_memory_context": {
                 "authoritative_memory_scope": "published",
+                "publication_scope": "published",
                 "memory_snapshot": {
                     "case_id": "case-1",
                     "thread_id": "thread-1",
                     "authoritative_memory_scope": "published",
-                    "memory": {
-                        "published": {
-                            "memory_boundary": {
-                                "case_id": "case-1",
-                                "thread_id": "thread-1",
-                                "session_id": "sess-boundary",
-                                "publication_scope": "published",
-                            },
-                            "reasoning_state": {"status": "published-memory"},
-                            "accepted_facts": [{"summary": "published memory fact"}],
-                        }
+                    "publication_scope": "published",
+                    "authoritative_memory": {
+                        "memory_boundary": {
+                            "case_id": "case-1",
+                            "thread_id": "thread-1",
+                            "session_id": "sess-boundary",
+                            "publication_scope": "published",
+                        },
+                        "reasoning_state": {"status": "published-memory"},
+                        "accepted_facts": [{"summary": "published memory fact"}],
                     },
                 },
             },
@@ -367,11 +456,51 @@ def test_restore_follow_up_context_uses_memory_boundary_session_id_when_case_mem
     assert args[1]["chat_context_restored_snapshot_id"] == "sess-boundary"
 
 
+def test_restore_follow_up_context_uses_case_memory_boundary_session_id_when_snapshot_has_no_boundary(sample_state):
+    store = MagicMock()
+    thread_store = MagicMock()
+    store.get_session.return_value = {"metadata": {}}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
+    thread_store.get_latest_snapshot.return_value = {}
+    service = SessionContextService(store=store, thread_store=thread_store)
+
+    restored = service.restore_follow_up_context(
+        session_id="sess-2",
+        state=sample_state,
+        metadata={
+            "chat_parent_session_id": "parent-1",
+            "case_id": "case-1",
+            "case_memory_context": {
+                "memory_boundary": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
+                    "session_id": "sess-case-boundary",
+                    "publication_scope": "published",
+                },
+                "authoritative_snapshot": {
+                    "case_id": "case-1",
+                    "thread_id": "thread-1",
+                    "authoritative_memory_scope": "published",
+                    "publication_scope": "published",
+                    "reasoning_state": {"status": "published-memory"},
+                    "accepted_facts": [{"summary": "published memory fact"}],
+                },
+            },
+        },
+    )
+
+    assert restored is True
+    assert sample_state.session_snapshot_id == "sess-case-boundary"
+    args = store.update_session_metadata.call_args.args
+    assert args[1]["chat_context_restored_snapshot_id"] == "sess-case-boundary"
+    assert args[1]["chat_context_restored_source"] == "case_memory"
+
+
 def test_restore_follow_up_context_falls_back_to_case_memory(sample_state):
     store = MagicMock()
     thread_store = MagicMock()
     store.get_session.return_value = {"metadata": {}}
-    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
     thread_store.get_latest_snapshot.return_value = {}
     service = SessionContextService(store=store, thread_store=thread_store)
 
@@ -384,10 +513,13 @@ def test_restore_follow_up_context_falls_back_to_case_memory(sample_state):
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "authoritative_memory_scope": "accepted",
-                "accepted_snapshot": {
+                "memory_kind": "authoritative_case_truth",
+                "publication_scope": "accepted",
+                "authoritative_snapshot": {
                     "case_id": "case-1",
                     "thread_id": "thread-1",
                     "authoritative_memory_scope": "accepted",
+                    "publication_scope": "accepted",
                     "reasoning_state": {"status": "case_memory"},
                     "accepted_facts": [{"summary": "accepted"}],
                 },
@@ -399,10 +531,15 @@ def test_restore_follow_up_context_falls_back_to_case_memory(sample_state):
     assert sample_state.reasoning_state["status"] == "case_memory"
     assert sample_state.session_snapshot_id == "sess-prev"
     assert sample_state.restored_memory_scope == "accepted"
+    assert sample_state.restored_authoritative_memory_scope == "accepted"
+    assert sample_state.restored_publication_scope == "accepted"
+    assert sample_state.restored_memory_kind == "authoritative_case_truth"
     assert sample_state.restored_memory_is_authoritative is True
     args = store.update_session_metadata.call_args.args
     assert args[1]["chat_context_restored_source"] == "case_memory"
     assert args[1]["chat_context_restored_memory_scope"] == "accepted"
+    assert args[1]["chat_context_restored_authoritative_memory_scope"] == "accepted"
+    assert args[1]["chat_context_restored_publication_scope"] == "accepted"
     assert args[1]["chat_context_restored_memory_is_authoritative"] is True
     assert args[1]["chat_context_restored_counts"]["accepted_fact_count"] == 1
 
@@ -411,7 +548,7 @@ def test_restore_follow_up_context_counts_accepted_facts_only_as_restored_contex
     store = MagicMock()
     thread_store = MagicMock()
     store.get_session.return_value = {"metadata": {}}
-    thread_store.get_latest_accepted_snapshot.return_value = {}
+    thread_store.get_latest_authoritative_snapshot.return_value = {}
     thread_store.get_latest_snapshot.return_value = {}
     service = SessionContextService(store=store, thread_store=thread_store)
 
@@ -424,10 +561,13 @@ def test_restore_follow_up_context_counts_accepted_facts_only_as_restored_contex
             "case_memory_context": {
                 "latest_session_id": "sess-prev",
                 "authoritative_memory_scope": "accepted",
-                "accepted_snapshot": {
+                "memory_kind": "authoritative_case_truth",
+                "publication_scope": "accepted",
+                "authoritative_snapshot": {
                     "case_id": "case-1",
                     "thread_id": "thread-1",
                     "authoritative_memory_scope": "accepted",
+                    "publication_scope": "accepted",
                     "accepted_facts": [{"summary": "accepted-only fact"}],
                 },
             },
@@ -441,6 +581,8 @@ def test_restore_follow_up_context_counts_accepted_facts_only_as_restored_contex
     args = store.update_session_metadata.call_args.args
     assert args[1]["chat_context_restored"] is True
     assert args[1]["chat_context_restored_memory_scope"] == "accepted"
+    assert args[1]["chat_context_restored_authoritative_memory_scope"] == "accepted"
+    assert args[1]["chat_context_restored_publication_scope"] == "accepted"
     assert args[1]["chat_context_restored_memory_is_authoritative"] is True
     assert args[1]["chat_context_restored_counts"]["accepted_fact_count"] == 1
     assert args[1]["chat_context_restored_source"] == "case_memory"
@@ -456,7 +598,7 @@ def test_restore_follow_up_context_rejects_thread_snapshot_from_other_case(sampl
             "thread_id": "thread-1",
         }
     }
-    thread_store.get_latest_accepted_snapshot.return_value = {
+    thread_store.get_latest_authoritative_snapshot.return_value = {
         "snapshot_id": "snap-foreign",
         "snapshot": {
             "case_id": "case-other",

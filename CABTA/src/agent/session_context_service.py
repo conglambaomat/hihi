@@ -84,18 +84,24 @@ class SessionContextService:
             if isinstance(accepted, dict) and accepted:
                 return accepted, "accepted", True
 
-        authority_scope = ThreadSyncService.authoritative_memory_scope(
-            snapshot.get("authoritative_memory_scope")
+        publication_scope = ThreadSyncService.normalize_lifecycle(
+            snapshot.get("publication_scope")
+            or snapshot.get("memory_boundary", {}).get("publication_scope")
             or snapshot.get("memory_scope")
             or snapshot.get("snapshot_lifecycle")
             or (
-                snapshot.get("snapshot_contract", {}).get("lifecycle")
+                snapshot.get("snapshot_contract", {}).get("publication_scope")
                 if isinstance(snapshot.get("snapshot_contract"), dict)
                 else ""
             )
         )
+        authority_scope = ThreadSyncService.authoritative_memory_scope(
+            snapshot.get("authoritative_memory_scope")
+            or publication_scope
+        )
         lifecycle = ThreadSyncService.normalize_lifecycle(
             snapshot.get("snapshot_lifecycle")
+            or publication_scope
             or (
                 snapshot.get("snapshot_contract", {}).get("lifecycle")
                 if isinstance(snapshot.get("snapshot_contract"), dict)
@@ -120,7 +126,7 @@ class SessionContextService:
         if isinstance(working_memory, dict) and working_memory and snapshot.get("snapshot_state") == "working":
             return working_memory, "working", False
 
-        fallback_scope = authority_scope or lifecycle
+        fallback_scope = authority_scope or publication_scope or lifecycle
         return snapshot, fallback_scope, bool(ThreadSyncService.authoritative_memory_scope(fallback_scope))
 
     @classmethod
@@ -171,29 +177,65 @@ class SessionContextService:
         state.evidence_quality_summary = copy.deepcopy(payload.get("evidence_quality_summary") or {})
         state.fact_family_schemas = copy.deepcopy(payload.get("fact_family_schemas") or {})
         resolved_scope = ThreadSyncService.normalize_lifecycle(memory_scope)
+        authoritative_memory_scope = ThreadSyncService.authoritative_memory_scope(resolved_scope)
+        publication_scope = ThreadSyncService.publication_scope(resolved_scope)
+        memory_kind = ThreadSyncService.memory_kind(resolved_scope)
         state.restored_memory_scope = resolved_scope
         state.chat_context_restored_memory_scope = resolved_scope
-        setattr(state, "restored_memory_is_authoritative", authoritative_scope)
-        setattr(state, "chat_context_restored_memory_is_authoritative", authoritative_scope)
+        setattr(state, "restored_authoritative_memory_scope", authoritative_memory_scope)
+        setattr(state, "chat_context_restored_authoritative_memory_scope", authoritative_memory_scope)
+        setattr(state, "restored_publication_scope", publication_scope)
+        setattr(state, "chat_context_restored_publication_scope", publication_scope)
+        setattr(state, "restored_memory_kind", memory_kind)
+        setattr(state, "chat_context_restored_memory_kind", memory_kind)
+        is_authoritative = ThreadSyncService.memory_is_authoritative(resolved_scope)
+        setattr(state, "restored_memory_is_authoritative", is_authoritative)
+        setattr(state, "chat_context_restored_memory_is_authoritative", is_authoritative)
         return resolved_scope
 
     def build_chat_context_flags(self, *, state: Any, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         payload = metadata if isinstance(metadata, dict) else {}
-        restored_memory_scope = str(
-            payload.get("chat_context_restored_memory_scope")
-            or getattr(state, "chat_context_restored_memory_scope", None)
-            or getattr(state, "restored_memory_scope", None)
-            or ""
-        ).strip()
+        contract = ThreadSyncService.resolve_memory_contract(
+            {
+                "memory_scope": (
+                    payload.get("chat_context_restored_memory_scope")
+                    or getattr(state, "chat_context_restored_memory_scope", None)
+                    or getattr(state, "restored_memory_scope", None)
+                ),
+                "authoritative_memory_scope": (
+                    payload.get("chat_context_restored_authoritative_memory_scope")
+                    or getattr(state, "chat_context_restored_authoritative_memory_scope", None)
+                    or getattr(state, "restored_authoritative_memory_scope", None)
+                ),
+                "publication_scope": (
+                    payload.get("chat_context_restored_publication_scope")
+                    or getattr(state, "chat_context_restored_publication_scope", None)
+                    or getattr(state, "restored_publication_scope", None)
+                ),
+                "memory_kind": (
+                    payload.get("chat_context_restored_memory_kind")
+                    or getattr(state, "chat_context_restored_memory_kind", None)
+                    or getattr(state, "restored_memory_kind", None)
+                ),
+                "memory_is_authoritative": (
+                    payload.get("chat_context_restored_memory_is_authoritative")
+                    if payload.get("chat_context_restored_memory_is_authoritative") is not None
+                    else getattr(
+                        state,
+                        "chat_context_restored_memory_is_authoritative",
+                        getattr(state, "restored_memory_is_authoritative", None),
+                    )
+                ),
+            }
+        )
         return {
             "chat_context_restored": bool(payload.get("chat_context_restored")),
             "requires_fresh_evidence": bool(payload.get("chat_follow_up_requires_fresh_evidence")),
-            "restored_memory_scope": restored_memory_scope,
-            "restored_memory_is_authoritative": bool(
-                payload.get("chat_context_restored_memory_is_authoritative")
-                or getattr(state, "chat_context_restored_memory_is_authoritative", False)
-                or getattr(state, "restored_memory_is_authoritative", False)
-            ),
+            "restored_memory_scope": contract["memory_scope"] or "",
+            "restored_authoritative_memory_scope": contract["authoritative_memory_scope"],
+            "restored_publication_scope": contract["publication_scope"],
+            "restored_memory_kind": contract["memory_kind"],
+            "restored_memory_is_authoritative": contract["memory_is_authoritative"],
             "has_context_state": bool(
                 getattr(state, "active_observations", None)
                 or getattr(state, "reasoning_state", None)
@@ -297,7 +339,8 @@ class SessionContextService:
         reasoning_state = getattr(state, "reasoning_state", {}) or {}
 
         normalized_scope = ThreadSyncService.normalize_lifecycle(restored_memory_scope)
-        authoritative_scope = ThreadSyncService.authoritative_memory_scope(normalized_scope)
+        authoritative_memory_scope = ThreadSyncService.authoritative_memory_scope(normalized_scope)
+        publication_scope = ThreadSyncService.publication_scope(normalized_scope, default="working")
         return {
             "chat_context_restored": restored_any,
             "chat_context_restored_from_session_id": parent_session_id,
@@ -305,10 +348,10 @@ class SessionContextService:
             "chat_context_restored_snapshot_id": snapshot_id,
             "chat_context_restored_source": restored_source,
             "chat_context_restored_memory_scope": normalized_scope,
-            "chat_context_restored_memory_is_authoritative": authoritative_scope is not None,
-            "chat_context_restored_memory_kind": (
-                "authoritative_case_truth" if authoritative_scope is not None else "working_context"
-            ),
+            "chat_context_restored_authoritative_memory_scope": authoritative_memory_scope,
+            "chat_context_restored_publication_scope": publication_scope,
+            "chat_context_restored_memory_is_authoritative": ThreadSyncService.memory_is_authoritative(normalized_scope),
+            "chat_context_restored_memory_kind": ThreadSyncService.memory_kind(normalized_scope),
             "chat_context_restored_findings": 0,
             "chat_context_restored_step_offset": state.step_count,
             "chat_context_restored_counts": {
@@ -351,9 +394,13 @@ class SessionContextService:
         expected_case_id = self._normalized_case_id((metadata or {}).get("case_id") or parent_session.get("case_id")) or None
         if thread_id and self.thread_store is not None:
             authoritative_snapshot = {}
-            get_latest_accepted_snapshot = getattr(self.thread_store, "get_latest_accepted_snapshot", None)
-            if callable(get_latest_accepted_snapshot):
-                authoritative_snapshot = get_latest_accepted_snapshot(thread_id) or {}
+            get_latest_authoritative_snapshot = getattr(self.thread_store, "get_latest_authoritative_snapshot", None)
+            if callable(get_latest_authoritative_snapshot):
+                authoritative_snapshot = get_latest_authoritative_snapshot(thread_id) or {}
+            else:
+                get_latest_accepted_snapshot = getattr(self.thread_store, "get_latest_accepted_snapshot", None)
+                if callable(get_latest_accepted_snapshot):
+                    authoritative_snapshot = get_latest_accepted_snapshot(thread_id) or {}
 
             latest_snapshot = authoritative_snapshot or (self.thread_store.get_latest_snapshot(thread_id) or {})
             snapshot = latest_snapshot.get("snapshot", {}) if isinstance(latest_snapshot, dict) else {}
@@ -379,13 +426,16 @@ class SessionContextService:
         if not restored:
             case_memory_context = (metadata or {}).get("case_memory_context")
             memory_snapshot = {}
+            case_memory_boundary = {}
             if isinstance(case_memory_context, dict):
                 memory_snapshot = (
-                    case_memory_context.get("memory_snapshot")
-                    or case_memory_context.get("authoritative_snapshot")
-                    or case_memory_context.get("accepted_snapshot")
+                    case_memory_context.get("authoritative_snapshot")
+                    or case_memory_context.get("memory_snapshot")
                     or {}
                 )
+                raw_case_boundary = case_memory_context.get("memory_boundary")
+                if isinstance(raw_case_boundary, dict):
+                    case_memory_boundary = raw_case_boundary
             if isinstance(memory_snapshot, dict) and memory_snapshot:
                 restored_memory_scope = self.restore_state_from_snapshot(
                     state,
@@ -401,6 +451,8 @@ class SessionContextService:
                     boundary = boundary_payload.get("memory_boundary", {}) if isinstance(boundary_payload, dict) else {}
                     if isinstance(boundary, dict):
                         snapshot_id = str(boundary.get("session_id") or "").strip() or None
+                if not snapshot_id and case_memory_boundary:
+                    snapshot_id = str(case_memory_boundary.get("session_id") or "").strip() or None
                 restored = restored_memory_scope is not None or bool(
                     state.reasoning_state
                     or state.entity_state

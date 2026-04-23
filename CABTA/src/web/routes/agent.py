@@ -50,58 +50,58 @@ def _decorate_session_payload(session: Dict) -> Dict:
         metadata = {}
 
     payload['session_id'] = payload.get('session_id') or payload.get('id')
-    if payload.get('max_steps') is None and metadata.get('max_steps') is not None:
-        payload['max_steps'] = metadata.get('max_steps')
-    if payload.get('current_step') is None and metadata.get('current_step') is not None:
-        payload['current_step'] = metadata.get('current_step')
-    if payload.get('execution_mode') is None and metadata.get('execution_mode') is not None:
-        payload['execution_mode'] = metadata.get('execution_mode')
-    if payload.get('pending_approval') is None and metadata.get('pending_approval') is not None:
-        payload['pending_approval'] = metadata.get('pending_approval')
-    if payload.get('active_specialist') is None and metadata.get('active_specialist') is not None:
-        payload['active_specialist'] = metadata.get('active_specialist')
-    if payload.get('specialist_team') is None and metadata.get('specialist_team') is not None:
-        payload['specialist_team'] = metadata.get('specialist_team')
-    if payload.get('specialist_handoffs') is None and metadata.get('specialist_handoffs') is not None:
-        payload['specialist_handoffs'] = metadata.get('specialist_handoffs')
-    if payload.get('collaboration_mode') is None and metadata.get('collaboration_mode') is not None:
-        payload['collaboration_mode'] = metadata.get('collaboration_mode')
-    if payload.get('lead_agent_profile_id') is None and metadata.get('lead_agent_profile_id') is not None:
-        payload['lead_agent_profile_id'] = metadata.get('lead_agent_profile_id')
-    if payload.get('chat_user_message') is None and metadata.get('chat_user_message') is not None:
-        payload['chat_user_message'] = metadata.get('chat_user_message')
-    if payload.get('chat_parent_session_id') is None and metadata.get('chat_parent_session_id') is not None:
-        payload['chat_parent_session_id'] = metadata.get('chat_parent_session_id')
-    if payload.get('thread_id') is None and metadata.get('thread_id') is not None:
-        payload['thread_id'] = metadata.get('thread_id')
-    if payload.get('session_snapshot_id') is None and metadata.get('session_snapshot_id') is not None:
-        payload['session_snapshot_id'] = metadata.get('session_snapshot_id')
-    if payload.get('investigation_plan') is None and metadata.get('investigation_plan') is not None:
-        payload['investigation_plan'] = metadata.get('investigation_plan')
-    if payload.get('active_observations') is None and metadata.get('active_observations') is not None:
-        payload['active_observations'] = metadata.get('active_observations')
-    if payload.get('accepted_facts') is None and metadata.get('accepted_facts') is not None:
-        payload['accepted_facts'] = metadata.get('accepted_facts')
-    if payload.get('unresolved_questions') is None and metadata.get('unresolved_questions') is not None:
-        payload['unresolved_questions'] = metadata.get('unresolved_questions')
-    if payload.get('evidence_quality_summary') is None and metadata.get('evidence_quality_summary') is not None:
-        payload['evidence_quality_summary'] = metadata.get('evidence_quality_summary')
-    if payload.get('reasoning_state') is None and metadata.get('reasoning_state') is not None:
-        payload['reasoning_state'] = metadata.get('reasoning_state')
-    if payload.get('entity_state') is None and metadata.get('entity_state') is not None:
-        payload['entity_state'] = metadata.get('entity_state')
-    if payload.get('evidence_state') is None and metadata.get('evidence_state') is not None:
-        payload['evidence_state'] = metadata.get('evidence_state')
-    if payload.get('deterministic_decision') is None and metadata.get('deterministic_decision') is not None:
-        payload['deterministic_decision'] = metadata.get('deterministic_decision')
-    if payload.get('deterministic_decision_output') is None and metadata.get('deterministic_decision_output') is not None:
-        payload['deterministic_decision_output'] = metadata.get('deterministic_decision_output')
-    if payload.get('agentic_explanation') is None and metadata.get('agentic_explanation') is not None:
-        payload['agentic_explanation'] = metadata.get('agentic_explanation')
-    if payload.get('agentic_explanation_output') is None and metadata.get('agentic_explanation_output') is not None:
-        payload['agentic_explanation_output'] = metadata.get('agentic_explanation_output')
-    if payload.get('root_cause_assessment') is None and metadata.get('root_cause_assessment') is not None:
-        payload['root_cause_assessment'] = metadata.get('root_cause_assessment')
+    for field in (
+        'max_steps',
+        'current_step',
+        'execution_mode',
+        'pending_approval',
+        'active_specialist',
+        'specialist_team',
+        'specialist_handoffs',
+        'collaboration_mode',
+        'lead_agent_profile_id',
+        'chat_user_message',
+        'chat_parent_session_id',
+        'thread_id',
+        'session_snapshot_id',
+        'investigation_plan',
+        'active_observations',
+        'accepted_facts',
+        'unresolved_questions',
+        'memory_scope',
+        'memory_kind',
+        'memory_is_authoritative',
+        'publication_scope',
+        'authoritative_memory_scope',
+        'memory_boundary',
+        'chat_context_restored',
+        'chat_context_restored_from_session_id',
+        'chat_context_restored_from_thread_id',
+        'chat_context_restored_snapshot_id',
+        'chat_context_restored_memory_scope',
+        'chat_context_restored_authoritative_memory_scope',
+        'chat_context_restored_publication_scope',
+        'chat_context_restored_memory_kind',
+        'chat_context_restored_memory_is_authoritative',
+        'chat_context_restored_counts',
+        'chat_context_restored_reasoning_status',
+        'chat_context_restored_source',
+        'chat_context_restored_fact_family_schemas',
+        'evidence_quality_summary',
+        'reasoning_state',
+        'entity_state',
+        'evidence_state',
+        'deterministic_decision',
+        'deterministic_decision_output',
+        'agentic_explanation',
+        'agentic_explanation_output',
+        'root_cause_assessment',
+    ):
+        if payload.get(field) is None:
+            if metadata.get(field) is not None:
+                payload[field] = metadata.get(field)
+            elif session.get(field) is not None:
+                payload[field] = session.get(field)
     return payload
 
 

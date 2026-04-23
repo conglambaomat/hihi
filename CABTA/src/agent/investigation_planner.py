@@ -743,7 +743,7 @@ class InvestigationPlanner:
             )
 
         if metadata.get("chat_parent_session_id"):
-            gaps.insert(0, "Need to determine whether the follow-up can be answered from accepted context or requires fresh evidence.")
+            gaps.insert(0, "Need to determine whether the follow-up can be answered from restored authoritative case truth or still requires fresh evidence.")
         if observable_summary:
             gaps.insert(0, f"Need to validate the primary observable set: {', '.join(observable_summary[:3])}.")
         return self._dedupe(gaps)[:6]
@@ -771,8 +771,8 @@ class InvestigationPlanner:
                 "Correlate explicit auth, process, and network observations before concluding.",
             ],
             "case_follow_up": [
-                "Load the last accepted thread snapshot.",
-                "Answer from existing evidence unless the analyst explicitly asks for a fresh pivot.",
+                "Load the last authoritative thread snapshot for the current publication scope.",
+                "Answer from restored case evidence unless the analyst explicitly asks for a fresh pivot.",
                 "If new evidence is needed, start from pinned entities and unresolved questions.",
             ],
         }.get(
@@ -1121,12 +1121,12 @@ class InvestigationPlanner:
         if lane == "case_follow_up":
             conditions.insert(
                 0,
-                "Stop immediately if the analyst only asked for explanation or recap and the snapshot already answers it.",
+                "Stop immediately if the analyst only asked for explanation or recap and the restored authoritative snapshot already answers it.",
             )
         if any(token in typed_fact_text for token in ("recap", "explain", "summary", "follow-up", "follow up")):
             conditions.insert(
                 0,
-                "Stop as soon as the requested explanation can be answered from accepted context without requiring a fresh pivot.",
+                "Stop as soon as the requested explanation can be answered from restored case truth without requiring a fresh pivot.",
             )
         if any(token in typed_fact_text for token in ("delivery", "attachment", "sender", "recipient")) and lane == "email":
             conditions.append("Stop when sender, recipient, and delivery evidence are linked clearly enough to explain the email path.")

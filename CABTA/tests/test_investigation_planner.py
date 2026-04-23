@@ -221,6 +221,24 @@ def test_build_plan_derives_stopping_conditions_from_typed_evidence_gaps():
     assert any("primary observable set" in item.lower() for item in plan["stopping_conditions"])
 
 
+def test_build_plan_uses_authoritative_case_truth_wording_for_follow_up_lane():
+    planner = InvestigationPlanner()
+
+    plan = planner.build_plan(
+        "Explain whether the prior case evidence already answers this follow-up.",
+        metadata={
+            "chat_parent_session_id": "sess-parent",
+            "typed_fact_hints": ["follow-up recap requested from existing case memory"],
+            "observables": ["account-securecheck.com"],
+        },
+    )
+
+    assert plan["lane"] == "case_follow_up"
+    assert any("restored authoritative case truth" in item.lower() for item in plan["evidence_gaps"])
+    assert any("authoritative thread snapshot" in item.lower() for item in plan["first_pivots"])
+    assert any("restored case truth" in item.lower() for item in plan["stopping_conditions"])
+
+
 def test_build_plan_derives_escalation_conditions_from_high_risk_typed_facts():
     planner = InvestigationPlanner()
 

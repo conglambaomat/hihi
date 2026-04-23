@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from .thread_sync_service import ThreadSyncService
+
 
 class SpecialistRouter:
     """Own specialist team resolution and evidence-driven routing decisions."""
@@ -134,11 +136,34 @@ class SpecialistRouter:
             for item in getattr(state, "accepted_facts", [])[-6:]
             if isinstance(item, dict)
         ).lower()
-        memory_scope = str(
-            getattr(state, "chat_context_restored_memory_scope", None)
-            or getattr(state, "restored_memory_scope", None)
-            or ""
-        ).lower()
+        memory_contract = ThreadSyncService.resolve_memory_contract(
+            {
+                "memory_scope": (
+                    getattr(state, "chat_context_restored_memory_scope", None)
+                    or getattr(state, "restored_memory_scope", None)
+                ),
+                "memory_kind": (
+                    getattr(state, "chat_context_restored_memory_kind", None)
+                    or getattr(state, "restored_memory_kind", None)
+                ),
+                "publication_scope": (
+                    getattr(state, "chat_context_restored_publication_scope", None)
+                    or getattr(state, "restored_publication_scope", None)
+                ),
+                "authoritative_memory_scope": (
+                    getattr(state, "chat_context_restored_authoritative_memory_scope", None)
+                    or getattr(state, "restored_authoritative_memory_scope", None)
+                ),
+                "memory_is_authoritative": getattr(
+                    state,
+                    "chat_context_restored_memory_is_authoritative",
+                    getattr(state, "restored_memory_is_authoritative", None),
+                ),
+            }
+        )
+        memory_scope = str(memory_contract.get("memory_scope") or "").lower()
+        memory_kind = str(memory_contract.get("memory_kind") or "").lower()
+        publication_scope = str(memory_contract.get("publication_scope") or memory_scope or "").lower()
         ranked_hypotheses = [
             item for item in (reasoning_state.get("hypotheses", []) or [])
             if isinstance(item, dict)
@@ -195,6 +220,8 @@ class SpecialistRouter:
             "co_observed_only": co_observed_only,
             "top_gap": top_gap,
             "memory_scope": memory_scope,
+            "memory_kind": memory_kind,
+            "publication_scope": publication_scope,
             "root_cause_status": str(root_cause.get("status") or "").lower(),
             "active_hypothesis_status": str(active_hypothesis.get("status") or "").lower(),
             "active_hypothesis_topics": sorted(active_hypothesis_topics),
@@ -320,8 +347,8 @@ class SpecialistRouter:
 
         if co_observed_only:
             _score(["investigator", "triage"], 2, "co_observed_only")
-        if memory_scope == "accepted":
-            _score(["investigator", "correl"], 1, "accepted_memory_scope_bias")
+        if memory_kind == "authoritative_case_truth" and publication_scope in {"accepted", "published"}:
+            _score(["investigator", "correl"], 1, f"authoritative_{publication_scope}_context")
 
         if not scores:
             current_index = getattr(state, "specialist_index", None)

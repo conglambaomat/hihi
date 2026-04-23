@@ -92,6 +92,7 @@ class RootCauseEngine:
         )
         competition_level = str(competition.get("competition_level") or "")
         lead_margin = float(competition.get("lead_margin", score_margin) or score_margin)
+        support_margin = float(competition.get("support_margin", 0.0) or 0.0)
         support_refs = list(top.get("supporting_evidence_refs", []) or [])
         contradiction_refs = list(top.get("contradicting_evidence_refs", []) or [])
         evidence_score = float(top.get("evidence_score", 0.0) or 0.0)
@@ -103,6 +104,9 @@ class RootCauseEngine:
         typed_evidence_ratio = typed_profile["ratio"]
         typed_support_count = typed_profile["typed_count"]
         narrative_support_ratio = self._narrative_support_ratio(active_observations, support_refs)
+        weighted_narrative_ratio = self._weighted_narrative_support_ratio(active_observations, support_refs)
+        typed_support_weight = self._typed_support_weight(support_refs)
+        contradiction_typed_weight = self._typed_contradiction_weight(contradiction_refs)
         relation_profile = self._relation_profile(entity_state)
         relation_quality = relation_profile["quality"]
         explicit_relation_ratio = relation_profile["explicit_ratio"]
@@ -115,10 +119,21 @@ class RootCauseEngine:
             entity_state=entity_state,
             active_observations=active_observations or [],
         )
+        effective_support_margin = max(
+            support_margin,
+            self._effective_support_margin(
+                evidence_score=evidence_score,
+                contradiction_score=contradiction_score,
+                typed_support_weight=typed_support_weight,
+                contradiction_typed_weight=contradiction_typed_weight,
+                weighted_narrative_ratio=weighted_narrative_ratio,
+            ),
+        )
         support_balance = self._support_balance(
             top_conf=top_conf,
             second_conf=second_conf,
             score_margin=score_margin,
+            support_margin=effective_support_margin,
             evidence_score=evidence_score,
             contradiction_score=contradiction_score,
             quality=quality,
@@ -135,7 +150,9 @@ class RootCauseEngine:
             contradiction_refs=contradiction_refs,
             second_conf=second_conf,
             score_margin=score_margin,
+            support_margin=effective_support_margin,
             support_balance=support_balance,
+            weighted_narrative_ratio=weighted_narrative_ratio,
         )
         best_explanation = str(top.get("statement") or "Likely root cause candidate.").strip() or "Likely root cause candidate."
 
@@ -146,6 +163,7 @@ class RootCauseEngine:
                 evidence_score=evidence_score,
                 contradiction_score=contradiction_score,
                 contradiction_refs=contradiction_refs,
+                support_margin=effective_support_margin,
                 support_balance=support_balance,
                 score_margin=score_margin,
             )
@@ -153,7 +171,13 @@ class RootCauseEngine:
             status = "unsupported_hypothesis"
         elif not support_refs or ((quality < lane_thresholds["minimum_observation_quality"] and relation_quality < lane_thresholds["minimum_relation_quality"]) and evidence_score < lane_thresholds["minimum_evidence_score"]):
             status = "insufficient_evidence"
-        elif narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"]:
+        elif weighted_narrative_ratio > lane_thresholds["maximum_weighted_narrative_support_ratio"]:
+            missing = self._dedupe([
+                *missing,
+                self._narrative_dependence_gap_message(lane),
+            ])[:8]
+            status = "insufficient_evidence"
+        elif narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"] and typed_support_count < lane_thresholds["minimum_typed_support_count"]:
             missing = self._dedupe([
                 *missing,
                 self._narrative_dependence_gap_message(lane),
@@ -196,7 +220,7 @@ class RootCauseEngine:
                 self._contradiction_gap_message(lane),
             ])[:8]
             status = "inconclusive"
-        elif competition_level == "tight" and lead_margin < 0.08:
+        elif competition_level == "tight" and (lead_margin < lane_thresholds["tight_lead_margin_floor"] or effective_support_margin < lane_thresholds["tight_support_margin_floor"]):
             missing = self._dedupe([
                 *missing,
                 "Separate the two strongest competing hypotheses with one more decisive observation before closing the case.",
@@ -207,6 +231,7 @@ class RootCauseEngine:
             top_conf=top_conf,
             top_rank_score=top_rank_score,
             score_margin=score_margin,
+            support_margin=effective_support_margin,
             evidence_score=evidence_score,
             contradiction_score=contradiction_score,
             typed_evidence_ratio=typed_evidence_ratio,
@@ -219,6 +244,8 @@ class RootCauseEngine:
             contradiction_pressure=contradiction_pressure,
             lane_thresholds=lane_thresholds,
             narrative_support_ratio=narrative_support_ratio,
+            weighted_narrative_ratio=weighted_narrative_ratio,
+            typed_support_count=typed_support_count,
         ):
             status = "supported"
         else:
@@ -318,8 +345,8 @@ class RootCauseEngine:
         for ref in refs[:4]:
             observation_id = str(ref.get("observation_id") or "").strip()
             observation = observation_lookup.get(observation_id, {}) if observation_id else {}
-            typed_fact = observation.get("typed_fact", {}) if isinstance(observation, dict) and isinstance(observation.get("typed_fact"), dict) else {}
-            provenance = observation.get("provenance", {}) if isinstance(observation, dict) and isinstance(observation.get("provenance"), dict) else {}
+            typed_fact = self._typed_fact_for_ref(ref, observation)
+            provenance = self._provenance_for_ref(ref, observation)
             if observation:
                 summary = str(
                     typed_fact.get("summary")
@@ -460,14 +487,19 @@ class RootCauseEngine:
             "minimum_relation_quality": 0.5,
             "minimum_evidence_score": 0.25,
             "required_typed_ratio": 0.5,
+            "minimum_typed_support_count": 1.0,
             "explicit_relation_quality_floor": 0.9,
             "supported_chain_floor": 0.78,
             "high_gap_pressure": 0.85,
             "contradiction_inconclusive_floor": 0.72,
             "maximum_narrative_support_ratio": 0.74,
+            "maximum_weighted_narrative_support_ratio": 0.62,
             "supported_confidence_floor": 0.66,
             "supported_rank_floor": 0.88,
             "supported_margin_floor": 0.12,
+            "supported_support_margin_floor": 0.09,
+            "tight_lead_margin_floor": 0.08,
+            "tight_support_margin_floor": 0.05,
             "supported_balance_floor": 0.55,
             "supported_relation_floor": 0.76,
             "supported_chain_accept_floor": 0.62,
@@ -478,10 +510,14 @@ class RootCauseEngine:
             thresholds.update(
                 {
                     "required_typed_ratio": 0.55,
+                    "minimum_typed_support_count": 1.0,
                     "maximum_narrative_support_ratio": 0.45,
+                    "maximum_weighted_narrative_support_ratio": 0.4,
                     "supported_confidence_floor": 0.62,
                     "supported_rank_floor": 0.82,
                     "supported_margin_floor": 0.08,
+                    "supported_support_margin_floor": 0.07,
+                    "tight_support_margin_floor": 0.04,
                     "supported_balance_floor": 0.5,
                     "supported_structure_floor": 0.72,
                     "supported_contradiction_ceiling": 0.34,
@@ -491,8 +527,12 @@ class RootCauseEngine:
             thresholds.update(
                 {
                     "required_typed_ratio": 0.0,
+                    "minimum_typed_support_count": 1.0,
                     "supported_balance_floor": 0.48,
+                    "supported_support_margin_floor": 0.06,
+                    "tight_support_margin_floor": 0.035,
                     "maximum_narrative_support_ratio": 0.58,
+                    "maximum_weighted_narrative_support_ratio": 0.52,
                 }
             )
         elif lane in {"email", "file", "vulnerability"}:
@@ -500,9 +540,34 @@ class RootCauseEngine:
                 {
                     "minimum_observation_quality": 0.5,
                     "required_typed_ratio": 0.5,
+                    "minimum_typed_support_count": 2.0,
                     "supported_margin_floor": 0.16,
                     "supported_balance_floor": 0.58,
+                    "supported_support_margin_floor": 0.11,
+                    "tight_support_margin_floor": 0.06,
                     "maximum_narrative_support_ratio": 0.34,
+                    "maximum_weighted_narrative_support_ratio": 0.22,
+                }
+            )
+        if lane == "email":
+            thresholds.update(
+                {
+                    "supported_margin_floor": 0.18,
+                    "supported_support_margin_floor": 0.13,
+                    "tight_support_margin_floor": 0.07,
+                    "maximum_narrative_support_ratio": 0.28,
+                    "maximum_weighted_narrative_support_ratio": 0.18,
+                }
+            )
+        elif lane == "file":
+            thresholds.update(
+                {
+                    "supported_margin_floor": 0.19,
+                    "supported_support_margin_floor": 0.14,
+                    "tight_support_margin_floor": 0.075,
+                    "maximum_narrative_support_ratio": 0.26,
+                    "maximum_weighted_narrative_support_ratio": 0.16,
+                    "supported_balance_floor": 0.6,
                 }
             )
         return thresholds
@@ -513,6 +578,7 @@ class RootCauseEngine:
         top_conf: float,
         second_conf: float,
         score_margin: float,
+        support_margin: float,
         evidence_score: float,
         contradiction_score: float,
         quality: float,
@@ -527,12 +593,13 @@ class RootCauseEngine:
         structure_strength = max(relation_quality, timeline_quality, graph_support, chain_quality)
         return min(
             1.0,
-            (advantage * 0.2)
-            + (max(0.0, score_margin) * 0.24)
-            + (evidence_advantage * 0.2)
-            + (quality * 0.1)
-            + (typed_evidence_ratio * 0.12)
-            + (structure_strength * 0.14),
+            (advantage * 0.14)
+            + (max(0.0, score_margin) * 0.15)
+            + (max(0.0, support_margin) * 0.28)
+            + (evidence_advantage * 0.17)
+            + (quality * 0.06)
+            + (typed_evidence_ratio * 0.1)
+            + (structure_strength * 0.1),
         )
 
     @staticmethod
@@ -542,6 +609,7 @@ class RootCauseEngine:
         top_conf: float,
         top_rank_score: float,
         score_margin: float,
+        support_margin: float,
         evidence_score: float,
         contradiction_score: float,
         typed_evidence_ratio: float,
@@ -554,18 +622,24 @@ class RootCauseEngine:
         contradiction_pressure: float,
         lane_thresholds: Dict[str, float],
         narrative_support_ratio: float,
+        weighted_narrative_ratio: float,
+        typed_support_count: float,
     ) -> bool:
         if evidence_score <= contradiction_score or contradiction_pressure >= 0.5:
             return False
-        if narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"]:
+        if weighted_narrative_ratio > lane_thresholds["maximum_weighted_narrative_support_ratio"]:
+            return False
+        if narrative_support_ratio > lane_thresholds["maximum_narrative_support_ratio"] and typed_support_count < lane_thresholds["minimum_typed_support_count"]:
             return False
         if lane == "ioc":
             return (
                 top_conf >= lane_thresholds["supported_confidence_floor"]
                 and top_rank_score >= lane_thresholds["supported_rank_floor"]
                 and score_margin >= lane_thresholds["supported_margin_floor"]
+                and support_margin >= lane_thresholds["supported_support_margin_floor"]
                 and support_balance >= lane_thresholds["supported_balance_floor"]
                 and typed_evidence_ratio >= lane_thresholds["required_typed_ratio"]
+                and typed_support_count >= lane_thresholds["minimum_typed_support_count"]
                 and contradiction_pressure <= lane_thresholds["supported_contradiction_ceiling"]
                 and max(relation_quality, timeline_quality, graph_support, chain_quality) >= lane_thresholds["supported_structure_floor"]
             )
@@ -579,8 +653,10 @@ class RootCauseEngine:
             top_conf >= lane_thresholds["supported_confidence_floor"]
             and top_rank_score >= lane_thresholds["supported_rank_floor"]
             and score_margin >= required_score_margin
+            and support_margin >= lane_thresholds["supported_support_margin_floor"]
             and support_balance >= required_support_balance
             and typed_evidence_ratio >= required_typed_ratio
+            and typed_support_count >= lane_thresholds["minimum_typed_support_count"]
             and relation_quality >= lane_thresholds["supported_relation_floor"]
             and explicit_relation_ratio >= required_explicit_ratio
             and chain_quality >= lane_thresholds["supported_chain_accept_floor"]
@@ -684,7 +760,7 @@ class RootCauseEngine:
             total += 1
             observation_id = str(ref.get("observation_id") or "").strip()
             observation = lookup.get(observation_id, {}) if observation_id else {}
-            typed_fact = observation.get("typed_fact", {}) if isinstance(observation, dict) and isinstance(observation.get("typed_fact"), dict) else {}
+            typed_fact = RootCauseEngine._typed_fact_for_ref(ref, observation)
             if typed_fact.get("family") or typed_fact.get("type"):
                 typed += 1
         if not total:
@@ -707,6 +783,33 @@ class RootCauseEngine:
         total = max(profile["total_count"], 1.0)
         narrative_count = max(0.0, total - profile["typed_count"])
         return narrative_count / total
+
+    @staticmethod
+    def _weighted_narrative_support_ratio(active_observations: Optional[List[Dict[str, Any]]], refs: List[Dict[str, Any]]) -> float:
+        if not refs:
+            return 1.0
+        lookup = {
+            str(item.get("observation_id") or ""): item
+            for item in (active_observations or [])
+            if isinstance(item, dict) and item.get("observation_id")
+        }
+        narrative_weight = 0.0
+        total_weight = 0.0
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            observation_id = str(ref.get("observation_id") or "").strip()
+            observation = lookup.get(observation_id, {}) if observation_id else {}
+            typed_fact = RootCauseEngine._typed_fact_for_ref(ref, observation)
+            weighted_support = float(ref.get("weighted_support", ref.get("confidence", 0.0)) or 0.0)
+            confidence = float(ref.get("confidence", 0.0) or 0.0)
+            weight = max(weighted_support, confidence, 0.01)
+            total_weight += weight
+            if not (typed_fact.get("family") or typed_fact.get("type")):
+                narrative_weight += weight
+        if total_weight <= 0.0:
+            return 1.0
+        return narrative_weight / total_weight
 
     @staticmethod
     def _typed_evidence_required(*, lane: str, relation_quality: float) -> bool:
@@ -856,6 +959,7 @@ class RootCauseEngine:
         evidence_score: float,
         contradiction_score: float,
         contradiction_refs: List[Dict[str, Any]],
+        support_margin: float,
         support_balance: float,
         score_margin: float,
     ) -> bool:
@@ -865,7 +969,11 @@ class RootCauseEngine:
             return False
         if contradiction_score >= evidence_score * 0.92:
             return True
+        if support_margin <= 0.025 and contradiction_score >= evidence_score * 0.7:
+            return True
         if lane in {"email", "file", "vulnerability"} and contradiction_score >= evidence_score * 0.82 and score_margin < 0.12:
+            return True
+        if lane in {"email", "file"} and contradiction_score >= evidence_score * 0.72 and support_margin < 0.08:
             return True
         return support_balance < 0.34 and contradiction_score >= 0.2
 
@@ -878,19 +986,102 @@ class RootCauseEngine:
         contradiction_refs: List[Dict[str, Any]],
         second_conf: float,
         score_margin: float,
+        support_margin: float,
         support_balance: float,
+        weighted_narrative_ratio: float,
     ) -> float:
         if contradiction_score <= 0.0 and not contradiction_refs:
             return 0.0
         contradiction_ratio = contradiction_score / max(evidence_score, 0.01)
-        pressure = min(1.0, contradiction_ratio * 0.45)
+        pressure = min(1.0, contradiction_ratio * 0.4)
         pressure += min(0.25, len(contradiction_refs) * 0.08)
-        pressure += max(0.0, 0.12 - score_margin) * 1.2
-        pressure += max(0.0, second_conf - 0.35) * 0.2
-        pressure += max(0.0, 0.52 - support_balance) * 0.35
+        pressure += max(0.0, 0.12 - score_margin) * 0.8
+        pressure += max(0.0, 0.08 - support_margin) * 1.6
+        pressure += max(0.0, second_conf - 0.35) * 0.16
+        pressure += max(0.0, 0.52 - support_balance) * 0.28
+        pressure += max(0.0, weighted_narrative_ratio - 0.45) * 0.18
         if lane in {"email", "file", "vulnerability"}:
             pressure += 0.06
+        if lane in {"email", "file"}:
+            pressure += max(0.0, 0.07 - support_margin) * 0.7
         return min(1.0, pressure)
+
+    @staticmethod
+    def _effective_support_margin(
+        *,
+        evidence_score: float,
+        contradiction_score: float,
+        typed_support_weight: float,
+        contradiction_typed_weight: float,
+        weighted_narrative_ratio: float,
+    ) -> float:
+        return max(
+            0.0,
+            (evidence_score - contradiction_score)
+            + (typed_support_weight * 0.28)
+            - (contradiction_typed_weight * 0.24)
+            - (max(0.0, weighted_narrative_ratio - 0.3) * 0.24),
+        )
+
+    @staticmethod
+    def _typed_support_weight(refs: List[Dict[str, Any]]) -> float:
+        return sum(
+            max(
+                0.0,
+                float(item.get("weighted_support", item.get("confidence", 0.0)) or 0.0)
+                * max(0.0, float(item.get("typed_signal_strength", 0.0) or 0.0) - (float(item.get("heuristic_dependence", 0.0) or 0.0) * 0.35)),
+            )
+            for item in refs
+            if isinstance(item, dict)
+        )
+    @staticmethod
+    def _typed_fact_for_ref(ref: Dict[str, Any], observation: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if isinstance(observation, dict) and isinstance(observation.get("typed_fact"), dict):
+            typed_fact = observation.get("typed_fact") or {}
+            if typed_fact.get("family") or typed_fact.get("type"):
+                return typed_fact
+        typed_fact: Dict[str, Any] = {}
+        if float(ref.get("typed_signal_strength", 0.0) or 0.0) >= 0.5:
+            typed_fact["type"] = str(ref.get("observation_type") or ref.get("type") or "typed_support")
+        source_kind = str(ref.get("source_kind") or "").strip().lower()
+        tool_name = str(ref.get("tool_name") or "").strip().lower()
+        if source_kind in {"log_row", "event", "alert"} or tool_name == "search_logs":
+            typed_fact.setdefault("family", "log")
+        elif tool_name == "analyze_email":
+            typed_fact.setdefault("family", "email")
+        elif tool_name == "analyze_malware":
+            typed_fact.setdefault("family", "file")
+        elif tool_name == "investigate_ioc":
+            typed_fact.setdefault("family", "ioc")
+        return typed_fact
+
+    @staticmethod
+    def _provenance_for_ref(ref: Dict[str, Any], observation: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if isinstance(observation, dict) and isinstance(observation.get("provenance"), dict):
+            provenance = dict(observation.get("provenance") or {})
+        else:
+            provenance = {}
+        if not provenance.get("source_paths"):
+            source_path = str(ref.get("source_path") or "").strip()
+            if source_path:
+                provenance["source_paths"] = [source_path]
+        if not provenance.get("extraction_method"):
+            extraction_method = str(ref.get("extraction_method") or "").strip()
+            if extraction_method:
+                provenance["extraction_method"] = extraction_method
+        return provenance
+
+    @staticmethod
+    def _typed_contradiction_weight(refs: List[Dict[str, Any]]) -> float:
+        return sum(
+            max(
+                0.0,
+                float(item.get("weighted_contradiction", item.get("confidence", item.get("weighted_support", 0.0))) or 0.0)
+                * max(0.0, float(item.get("typed_signal_strength", 0.0) or 0.0) - (float(item.get("heuristic_dependence", 0.0) or 0.0) * 0.2)),
+            )
+            for item in refs
+            if isinstance(item, dict)
+        )
 
     @staticmethod
     def _has_structural_conflict(

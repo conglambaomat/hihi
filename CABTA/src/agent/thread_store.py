@@ -346,6 +346,14 @@ class ThreadStore:
         """
         return self.get_latest_authoritative_snapshot(thread_id)
 
+    def get_latest_memory_snapshot(self, thread_id: str) -> Dict[str, Any]:
+        """Neutral alias for callers that want latest thread memory without accepted wording."""
+        return self.get_latest_snapshot(thread_id)
+
+    def get_latest_authoritative_memory_snapshot(self, thread_id: str) -> Dict[str, Any]:
+        """Neutral alias for callers that want authoritative thread truth without accepted wording."""
+        return self.get_latest_authoritative_snapshot(thread_id)
+
     def _init_db(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()

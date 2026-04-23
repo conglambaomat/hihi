@@ -31,9 +31,13 @@ class StubWorkflowService:
         return {"workflow_id": workflow_id, "status": "ready"}
 
     def evaluate_runtime_readiness(self, app, workflow_id, **kwargs):
+        dependency_status = dict(kwargs.get("dependency_status_override") or {"status": "unknown"})
         return {
             "workflow_id": workflow_id,
             "status": "ready",
+            "runtime_truth_contract": {
+                "dependency_status": dependency_status.get("status", "unknown"),
+            },
             "execution_surface": {
                 "headless_ready": True,
                 "supports_headless_execution": True,
@@ -126,9 +130,14 @@ async def test_run_cycle_adds_runtime_metadata_and_completes_running_jobs(tmp_pa
     assert result["status"] == "running"
     assert result["worker_id"] == "worker-z"
     assert result["runtime_mode"] == "thread_per_session"
+    assert result["runtime_truth"] == "workflow_runtime_enforcement"
+    assert result["runtime_truth_contract"] == {"dependency_status": "ready"}
+    assert result["headless_execution_eligible"] is True
+    assert result["case_truth_ready"] is True
     assert result["resume_token"]
     assert result["lease_expires_at"] is not None
     assert result["execution_surface"]["supports_headless_execution"] is True
+    assert result["runtime_enforcement"]["runtime_truth_contract"]["dependency_status"] == "ready"
 
     job = queue_store.get_job(result["queue_job_id"])
     assert job is not None
@@ -182,6 +191,10 @@ async def test_run_cycle_respects_cycle_limit_and_marks_blocked_jobs_retryable(t
     assert len(results) == 1
     result = results[0]
     assert result["status"] == "blocked"
+    assert result["runtime_truth"] == "workflow_runtime_enforcement"
+    assert result["runtime_truth_contract"] == {}
+    assert result["headless_execution_eligible"] is True
+    assert result["case_truth_ready"] is False
     assert result["queue_retry"]["status"] == "retry_scheduled"
     assert result["queue_retry"]["retry_in_seconds"] == 15
 
@@ -226,7 +239,12 @@ async def test_dispatch_schedule_blocks_interactive_only_workflows_in_headless_r
     result = await daemon.dispatch_schedule(app, {"id": "sched-analyst", "workflow_id": "wf-analyst", "goal": "hunt"})
 
     assert result["status"] == "blocked"
+    assert result["runtime_truth"] == "workflow_runtime_enforcement"
+    assert result["runtime_truth_contract"] == {}
+    assert result["headless_execution_eligible"] is False
+    assert result["case_truth_ready"] is True
     assert result["reason"] == "Workflow requires interactive analyst runtime and cannot run headless."
+    assert result["runtime_enforcement"]["status"] == "degraded"
     assert result["runtime_enforcement"]["execution_surface"]["interactive_runtime_required"] is True
     assert result["runtime_enforcement"]["execution_surface"]["headless_blockers"] == [
         "approval_checkpoints_require_interactive_runtime"

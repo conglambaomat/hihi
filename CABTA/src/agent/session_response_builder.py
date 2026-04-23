@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
+from src.agent.thread_sync_service import ThreadSyncService
+
 
 class SessionResponseBuilder:
     """Build compact prompts and evidence-backed responses for CABTA sessions."""
@@ -247,6 +249,10 @@ class SessionResponseBuilder:
         intent: str,
         requires_fresh_evidence: bool,
         memory_scope: Optional[str] = None,
+        memory_boundary: Optional[Dict[str, Any]] = None,
+        memory_kind: Optional[str] = None,
+        publication_scope: Optional[str] = None,
+        memory_is_authoritative: Optional[bool] = None,
     ) -> str:
         blocks: List[str] = ["Continue the same analyst thread for the ongoing CABTA investigation."]
         clean_goal = str(previous_goal or "").strip()
@@ -255,21 +261,20 @@ class SessionResponseBuilder:
         if thread_summary:
             blocks.append(f"Thread summary:\n{thread_summary}")
 
-        scope = str(memory_scope or "").strip().lower()
-        if scope not in {"working", "candidate", "accepted", "published"}:
-            scope = "accepted"
-        snapshot_label = {
-            "working": "working session context",
-            "candidate": "candidate session context",
-            "accepted": "accepted case memory",
-            "published": "published case memory",
-        }[scope]
-        scope_noun = {
-            "working": "context",
-            "candidate": "candidate context",
-            "accepted": "accepted case truth",
-            "published": "published case truth",
-        }[scope]
+        contract = ThreadSyncService.resolve_memory_contract(
+            {
+                "memory_scope": memory_scope,
+                "memory_boundary": memory_boundary,
+                "memory_kind": memory_kind,
+                "publication_scope": publication_scope,
+                "memory_is_authoritative": memory_is_authoritative,
+            }
+        )
+        scope = contract["memory_scope"] or "working"
+        normalized_publication_scope = contract["publication_scope"]
+        normalized_memory_kind = contract["memory_kind"]
+        authoritative = contract["memory_is_authoritative"]
+        snapshot_label, truth_label = self._follow_up_memory_labels(scope)
 
         root_cause = snapshot.get("root_cause_assessment", {}) if isinstance(snapshot, dict) else {}
         if isinstance(root_cause, dict) and root_cause.get("summary"):
@@ -293,15 +298,42 @@ class SessionResponseBuilder:
                 blocks.append("Unresolved questions:\n" + "\n".join(unresolved_lines))
 
         blocks.append(f"Follow-up analyst request ({intent}):\n{str(message or '').strip()}")
+        contract_parts = [f"memory_scope={scope}"]
+        if normalized_memory_kind:
+            contract_parts.append(f"memory_kind={normalized_memory_kind}")
+        contract_parts.append(f"publication_scope={normalized_publication_scope}")
+        contract_parts.append(f"memory_is_authoritative={str(authoritative).lower()}")
+        if isinstance(memory_boundary, dict) and memory_boundary:
+            contract_parts.append(f"memory_boundary={memory_boundary}")
+        blocks.append("Restored memory contract: " + ", ".join(contract_parts) + ".")
         if requires_fresh_evidence:
+            bounded_label = truth_label if authoritative else snapshot_label
             blocks.append(
-                f"Use the {snapshot_label} as bounded {scope_noun}, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
+                f"Use the {snapshot_label} as bounded {bounded_label}, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
             )
         else:
+            lifecycle_label = truth_label if authoritative else snapshot_label
             blocks.append(
-                f"Answer from the {snapshot_label} and structured reasoning state unless the available evidence is clearly insufficient. Do not overstate {scope_noun} beyond its lifecycle."
+                f"Answer from the {snapshot_label} and structured reasoning state unless the available evidence is clearly insufficient. Do not present {lifecycle_label} as more authoritative than this lifecycle allows."
             )
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _follow_up_memory_labels(scope: str) -> tuple[str, str]:
+        normalized_scope = ThreadSyncService.normalize_lifecycle(scope) or "working"
+        snapshot_label = {
+            "working": "working session context",
+            "candidate": "candidate session context",
+            "accepted": "accepted case memory",
+            "published": "published case memory",
+        }[normalized_scope]
+        truth_label = {
+            "working": "working context",
+            "candidate": "candidate context",
+            "accepted": "accepted case truth",
+            "published": "published case truth",
+        }[normalized_scope]
+        return snapshot_label, truth_label
 
     def build_evidence_backed_answer(
         self,
@@ -726,9 +758,9 @@ class SessionResponseBuilder:
             provider_display_name=provider_display_name,
             provider_runtime_error_excerpt=provider_runtime_error_excerpt,
         )
-        return self.build_chat_model_unavailable_answer_from_context(
+        return self.build_chat_model_unavailable_answer_from_runtime_artifacts(
             state=state,
-            fallback_context=dict(artifacts.get("fallback_context") or {}),
+            runtime_artifacts=artifacts,
             build_direct_chat_fallback_answer=build_direct_chat_fallback_answer,
             goal=goal,
             authoritative_outcome=authoritative_outcome,
@@ -736,7 +768,32 @@ class SessionResponseBuilder:
             build_chat_specific_fallback=build_chat_specific_fallback,
             provider_display_name=provider_display_name,
             provider_runtime_error_excerpt=provider_runtime_error_excerpt,
-            llm_unavailable_notice=str(artifacts.get("llm_unavailable_notice") or ""),
+        )
+
+    def build_chat_model_unavailable_answer_from_runtime_artifacts(
+        self,
+        *,
+        state: Any,
+        runtime_artifacts: Dict[str, Any],
+        build_direct_chat_fallback_answer: Callable[[str], str],
+        goal: str,
+        authoritative_outcome: Optional[Dict[str, str]],
+        fallback_evidence_points: Callable[[Any, int], List[str]],
+        build_chat_specific_fallback: Callable[[Any], str],
+        provider_display_name: Callable[[Optional[str]], str],
+        provider_runtime_error_excerpt: Callable[..., str],
+    ) -> str:
+        return self.build_chat_model_unavailable_answer_from_context(
+            state=state,
+            fallback_context=dict(runtime_artifacts.get("fallback_context") or {}),
+            build_direct_chat_fallback_answer=build_direct_chat_fallback_answer,
+            goal=goal,
+            authoritative_outcome=authoritative_outcome,
+            fallback_evidence_points=fallback_evidence_points,
+            build_chat_specific_fallback=build_chat_specific_fallback,
+            provider_display_name=provider_display_name,
+            provider_runtime_error_excerpt=provider_runtime_error_excerpt,
+            llm_unavailable_notice=str(runtime_artifacts.get("llm_unavailable_notice") or ""),
         )
 
     def build_provider_timeout_runtime_status(
@@ -1078,7 +1135,11 @@ class SessionResponseBuilder:
             if restored_memory_is_authoritative:
                 scope_phrase = f"the restored {scope_phrase_label} case truth"
             else:
-                scope_phrase = f"the restored {scope_phrase_label} working context"
+                scope_phrase = (
+                    f"the restored working context"
+                    if scope_phrase_label == "working"
+                    else f"the restored {scope_phrase_label} working context"
+                )
             if requires_fresh_evidence:
                 chat_decision_block += (
                     f"\n- This is a follow-up chat turn with carried-over findings. Continue from {scope_phrase} and gather fresh evidence only for the new pivot the analyst requested."

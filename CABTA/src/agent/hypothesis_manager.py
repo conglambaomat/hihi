@@ -465,7 +465,7 @@ class HypothesisManager:
         quality = min(1.0, max(quality, relation_signal * 0.72, timeline_signal * 0.68) + provenance_signal)
         entity_coverage = min(1.0, max(entity_coverage, relation_signal))
         causal_relevance = self._causal_relevance(obs_type, facts) * (1.0 if relation_signal < 0.7 else 1.08)
-        if typed_fact.get("family") in {"log", "ioc", "email", "file"}:
+        if typed_fact.get("family") in {"log", "ioc", "email", "file", "identity", "network"}:
             causal_relevance += 0.04
         causal_relevance = min(1.0, causal_relevance)
         typed_signal_strength = self._typed_signal_strength(
@@ -482,17 +482,20 @@ class HypothesisManager:
             relation_signal=relation_signal,
             entity_coverage=entity_coverage,
         )
+        tags = self._observation_tags(observation, lane)
+        relevance = self._topic_relevance(hypothesis, obs_type, fact_family, tags)
+        malicious_signal = self._is_supportive_signal(observation)
+        benign_signal = self._is_benign_signal(observation)
+        statement = hypothesis.statement.lower()
+        if obs_type in {"ioc_enrichment", "network_event"} and relevance < 0.22 and "benign" not in statement:
+            typed_signal_strength *= 0.28
+            heuristic_dependence = min(1.0, heuristic_dependence + 0.16)
         threshold_profile = self._observation_threshold_profile(
             lane=lane,
             statement=hypothesis.statement,
             typed_signal_strength=typed_signal_strength,
             heuristic_dependence=heuristic_dependence,
         )
-        tags = self._observation_tags(observation, lane)
-        relevance = self._topic_relevance(hypothesis, obs_type, fact_family, tags)
-        malicious_signal = self._is_supportive_signal(observation)
-        benign_signal = self._is_benign_signal(observation)
-        statement = hypothesis.statement.lower()
         stance = "neutral"
 
         support_relevance_floor = threshold_profile["support_relevance_floor"]
@@ -502,19 +505,25 @@ class HypothesisManager:
         relation_only_support_floor = threshold_profile["relation_only_support_floor"]
 
         if "benign" in statement or "noisy" in statement or "insufficient" in statement:
-            if benign_signal and (relevance >= contradiction_relevance_floor or typed_signal_strength >= typed_contradiction_floor):
+            if benign_signal and (
+                typed_signal_strength >= typed_contradiction_floor
+                or relevance >= contradiction_relevance_floor
+            ):
                 stance = "supports"
-            elif malicious_signal and (relevance >= support_relevance_floor or typed_signal_strength >= typed_support_floor):
+            elif malicious_signal and (
+                typed_signal_strength >= typed_support_floor
+                or relevance >= support_relevance_floor
+            ):
                 stance = "contradicts"
         else:
             if malicious_signal and (
-                relevance >= support_relevance_floor
-                or typed_signal_strength >= typed_support_floor
+                (typed_signal_strength >= typed_support_floor and relevance >= max(0.16, support_relevance_floor - 0.08))
+                or (relevance >= support_relevance_floor and typed_signal_strength >= max(0.18, typed_support_floor - 0.2))
             ):
                 stance = "supports"
             elif benign_signal and (
-                relevance >= contradiction_relevance_floor
-                or typed_signal_strength >= typed_contradiction_floor
+                typed_signal_strength >= typed_contradiction_floor
+                or relevance >= contradiction_relevance_floor
             ):
                 stance = "contradicts"
             elif (
@@ -558,18 +567,13 @@ class HypothesisManager:
 
     def _apply_support(self, hypothesis: Hypothesis, evidence: Dict[str, Any], assessment: ObservationAssessment) -> None:
         support_gain = self._support_gain(assessment)
-        evidence = {
-            **evidence,
-            "stance": "supports",
-            "confidence": round(assessment.evidence_strength, 3),
-            "weighted_support": round(support_gain, 3),
-            "entity_coverage": round(float(assessment.entity_coverage), 3),
-            "evidence_quality": round(float(assessment.evidence_quality), 3),
-            "tool_reliability": round(float(assessment.tool_reliability), 3),
-            "causal_relevance": round(float(assessment.causal_relevance), 3),
-            "typed_signal_strength": round(float(assessment.typed_signal_strength), 3),
-            "heuristic_dependence": round(float(assessment.heuristic_dependence), 3),
-        }
+        evidence = self._scored_evidence_ref(
+            evidence,
+            assessment=assessment,
+            stance="supports",
+            weighted_key="weighted_support",
+            weighted_value=support_gain,
+        )
         hypothesis.supporting_evidence_refs.append(evidence)
         hypothesis.confidence = min(0.99, hypothesis.confidence + support_gain * (1 - hypothesis.confidence))
         hypothesis.evidence_score += support_gain
@@ -579,11 +583,34 @@ class HypothesisManager:
 
     def _apply_contradiction(self, hypothesis: Hypothesis, evidence: Dict[str, Any], assessment: ObservationAssessment) -> None:
         contradiction_loss = self._contradiction_loss(assessment)
-        evidence = {
+        evidence = self._scored_evidence_ref(
+            evidence,
+            assessment=assessment,
+            stance="contradicts",
+            weighted_key="weighted_contradiction",
+            weighted_value=contradiction_loss,
+        )
+        hypothesis.contradicting_evidence_refs.append(evidence)
+        hypothesis.confidence = max(0.01, hypothesis.confidence - contradiction_loss * hypothesis.confidence)
+        hypothesis.contradiction_score += contradiction_loss
+        hypothesis.priority = self._priority_score(hypothesis)
+        hypothesis.updated_at = _now_iso()
+        hypothesis.last_updated_at = hypothesis.updated_at
+
+    def _scored_evidence_ref(
+        self,
+        evidence: Dict[str, Any],
+        *,
+        assessment: ObservationAssessment,
+        stance: str,
+        weighted_key: str,
+        weighted_value: float,
+    ) -> Dict[str, Any]:
+        return {
             **evidence,
-            "stance": "contradicts",
+            "stance": stance,
             "confidence": round(assessment.evidence_strength, 3),
-            "weighted_contradiction": round(contradiction_loss, 3),
+            weighted_key: round(weighted_value, 3),
             "entity_coverage": round(float(assessment.entity_coverage), 3),
             "evidence_quality": round(float(assessment.evidence_quality), 3),
             "tool_reliability": round(float(assessment.tool_reliability), 3),
@@ -591,12 +618,6 @@ class HypothesisManager:
             "typed_signal_strength": round(float(assessment.typed_signal_strength), 3),
             "heuristic_dependence": round(float(assessment.heuristic_dependence), 3),
         }
-        hypothesis.contradicting_evidence_refs.append(evidence)
-        hypothesis.confidence = max(0.01, hypothesis.confidence - contradiction_loss * hypothesis.confidence)
-        hypothesis.contradiction_score += contradiction_loss
-        hypothesis.priority = self._priority_score(hypothesis)
-        hypothesis.updated_at = _now_iso()
-        hypothesis.last_updated_at = hypothesis.updated_at
 
     def _refresh_hypothesis_status(self, hypothesis: Hypothesis) -> None:
         support_count = len(hypothesis.supporting_evidence_refs)
@@ -791,8 +812,9 @@ class HypothesisManager:
             ranked,
             key=lambda item: (
                 item.ranking_score,
+                self._support_margin(item),
                 item.confidence,
-                item.evidence_score - item.contradiction_score,
+                self._typed_support_mass(item),
                 len(item.supporting_evidence_refs) - len(item.contradicting_evidence_refs),
             ),
             reverse=True,
@@ -809,17 +831,19 @@ class HypothesisManager:
             return {
                 "lead_hypothesis_id": None,
                 "lead_margin": 0.0,
+                "support_margin": 0.0,
                 "competition_level": "none",
                 "top_hypotheses": [],
             }
         lead = ranked[0]
         runner_up = ranked[1] if len(ranked) > 1 else None
         lead_margin = max(0.0, float(lead.ranking_score) - float(runner_up.ranking_score if runner_up else 0.0))
+        support_margin = max(0.0, self._support_margin(lead) - (self._support_margin(runner_up) if runner_up else 0.0))
         if runner_up is None:
             competition_level = "clear_lead"
-        elif lead_margin < 0.08:
+        elif lead_margin < 0.07 or support_margin < 0.045:
             competition_level = "tight"
-        elif lead_margin < 0.18:
+        elif lead_margin < 0.16 or support_margin < 0.09:
             competition_level = "contested"
         else:
             competition_level = "clear_lead"
@@ -827,6 +851,7 @@ class HypothesisManager:
             "lead_hypothesis_id": lead.id,
             "runner_up_hypothesis_id": runner_up.id if runner_up else None,
             "lead_margin": round(lead_margin, 3),
+            "support_margin": round(support_margin, 3),
             "competition_level": competition_level,
             "top_hypotheses": [
                 {
@@ -836,6 +861,7 @@ class HypothesisManager:
                     "ranking_score": round(float(item.ranking_score), 3),
                     "competition_score": round(float(item.competition_score), 3),
                     "confidence": round(float(item.confidence), 3),
+                    "support_margin": round(float(self._support_margin(item)), 3),
                 }
                 for item in ranked[:3]
             ],
@@ -848,32 +874,110 @@ class HypothesisManager:
             if isinstance(item, dict)
         )
         contradiction_quality = sum(
-            float(item.get("weighted_contradiction", item.get("confidence", 0.0)) or 0.0)
+            float(item.get("weighted_contradiction", item.get("confidence", item.get("weighted_support", 0.0))) or 0.0)
             for item in hypothesis.contradicting_evidence_refs
             if isinstance(item, dict)
         )
         support_count = len(hypothesis.supporting_evidence_refs)
         contradiction_count = len(hypothesis.contradicting_evidence_refs)
-        typed_support_bonus = min(
-            0.14,
-            sum(
-                0.035
-                for item in hypothesis.supporting_evidence_refs
-                if isinstance(item, dict)
-                and float(item.get("evidence_quality", 0.0) or 0.0) >= 0.62
-                and float(item.get("causal_relevance", 0.0) or 0.0) >= 0.72
-            ),
-        )
-        contradiction_penalty = min(0.18, contradiction_quality * 0.45)
+        typed_support_bonus = min(0.24, self._typed_support_mass(hypothesis) * 0.34)
+        narrative_support_penalty = min(0.2, self._narrative_support_mass(hypothesis) * 0.26)
+        support_margin = self._support_margin(hypothesis)
+        contradiction_penalty = min(0.28, contradiction_quality * 0.58)
         return (
-            float(hypothesis.confidence) * 0.55
-            + float(hypothesis.evidence_score) * 1.0
-            + support_quality * 0.35
+            float(hypothesis.confidence) * 0.38
+            + support_margin * 1.48
+            + float(hypothesis.evidence_score) * 0.92
+            + support_quality * 0.18
             + typed_support_bonus
-            - float(hypothesis.contradiction_score) * 0.95
+            - narrative_support_penalty
+            - float(hypothesis.contradiction_score) * 0.96
             - contradiction_penalty
-            + min(0.08, support_count * 0.015)
-            - min(0.1, contradiction_count * 0.02)
+            + min(0.05, support_count * 0.01)
+            - min(0.14, contradiction_count * 0.03)
+        )
+
+    def _support_margin(self, hypothesis: Optional[Hypothesis]) -> float:
+        if not isinstance(hypothesis, Hypothesis):
+            return 0.0
+        support_quality = sum(
+            float(item.get("weighted_support", item.get("confidence", 0.0)) or 0.0)
+            for item in hypothesis.supporting_evidence_refs
+            if isinstance(item, dict)
+        )
+        contradiction_quality = sum(
+            float(item.get("weighted_contradiction", item.get("confidence", item.get("weighted_support", 0.0))) or 0.0)
+            for item in hypothesis.contradicting_evidence_refs
+            if isinstance(item, dict)
+        )
+        typed_support_mass = self._typed_support_mass(hypothesis)
+        narrative_support_mass = self._narrative_support_mass(hypothesis)
+        contradiction_typed_mass = self._typed_contradiction_mass(hypothesis)
+        return max(
+            0.0,
+            support_quality
+            + (typed_support_mass * 0.72)
+            - (narrative_support_mass * 0.38)
+            - contradiction_quality
+            - (contradiction_typed_mass * 0.42),
+        )
+
+    def _typed_support_mass(self, hypothesis: Optional[Hypothesis]) -> float:
+        if not isinstance(hypothesis, Hypothesis):
+            return 0.0
+        return sum(
+            max(
+                0.0,
+                float(item.get("weighted_support", item.get("confidence", 0.0)) or 0.0)
+                * max(0.0, float(item.get("typed_signal_strength", 0.0) or 0.0) - (float(item.get("heuristic_dependence", 0.0) or 0.0) * 0.35)),
+            )
+            for item in hypothesis.supporting_evidence_refs
+            if isinstance(item, dict)
+        )
+
+    def _narrative_support_mass(self, hypothesis: Optional[Hypothesis]) -> float:
+        if not isinstance(hypothesis, Hypothesis):
+            return 0.0
+        return sum(
+            max(
+                0.0,
+                float(item.get("weighted_support", item.get("confidence", 0.0)) or 0.0)
+                * max(0.0, float(item.get("heuristic_dependence", 0.0) or 0.0) - float(item.get("typed_signal_strength", 0.0) or 0.0)),
+            )
+            for item in hypothesis.supporting_evidence_refs
+            if isinstance(item, dict)
+        )
+
+    def _typed_contradiction_mass(self, hypothesis: Optional[Hypothesis]) -> float:
+        if not isinstance(hypothesis, Hypothesis):
+            return 0.0
+        return sum(
+            max(
+                0.0,
+                float(item.get("weighted_contradiction", item.get("confidence", item.get("weighted_support", 0.0))) or 0.0)
+                * max(0.0, float(item.get("typed_signal_strength", 0.0) or 0.0) - (float(item.get("heuristic_dependence", 0.0) or 0.0) * 0.2)),
+            )
+            for item in hypothesis.contradicting_evidence_refs
+            if isinstance(item, dict)
+        )
+    @staticmethod
+    def _is_high_value_typed_evidence(evidence: Dict[str, Any]) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+        return (
+            float(evidence.get("typed_signal_strength", 0.0) or 0.0) >= 0.64
+            and float(evidence.get("evidence_quality", 0.0) or 0.0) >= 0.62
+            and float(evidence.get("causal_relevance", 0.0) or 0.0) >= 0.72
+            and float(evidence.get("heuristic_dependence", 1.0) or 0.0) <= 0.5
+        )
+
+    @staticmethod
+    def _is_narrative_only_evidence(evidence: Dict[str, Any]) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+        return (
+            float(evidence.get("typed_signal_strength", 0.0) or 0.0) < 0.5
+            and float(evidence.get("heuristic_dependence", 0.0) or 0.0) >= 0.58
         )
 
     def _priority_score(self, hypothesis: Hypothesis) -> float:
@@ -897,6 +1001,16 @@ class HypothesisManager:
         typed_factor = max(0.3, assessment.typed_signal_strength)
         heuristic_penalty = max(0.45, 1.0 - (assessment.heuristic_dependence * 0.45))
         chain_bonus = 1.08 if assessment.entity_coverage >= 0.75 and assessment.causal_relevance >= 0.75 else 1.0
+        typed_bonus = 1.0
+        if assessment.typed_signal_strength >= 0.82 and assessment.heuristic_dependence <= 0.34:
+            typed_bonus = 1.12
+        elif assessment.typed_signal_strength >= 0.72 and assessment.heuristic_dependence <= 0.4:
+            typed_bonus = 1.06
+        narrative_penalty = 1.0
+        if assessment.typed_signal_strength <= 0.34 and assessment.heuristic_dependence >= 0.72:
+            narrative_penalty = 0.62
+        elif assessment.typed_signal_strength <= 0.44 and assessment.heuristic_dependence >= 0.64:
+            narrative_penalty = 0.76
         gain = (
             0.34
             * assessment.evidence_strength
@@ -907,9 +1021,13 @@ class HypothesisManager:
             * typed_factor
             * heuristic_penalty
             * chain_bonus
+            * typed_bonus
+            * narrative_penalty
         )
         if assessment.evidence_quality >= 0.55 and assessment.tool_reliability >= 0.8 and assessment.typed_signal_strength >= 0.58:
             gain = max(gain, 0.018)
+        if assessment.typed_signal_strength < 0.58 and assessment.heuristic_dependence >= 0.62:
+            gain = min(gain, 0.012)
         return gain
 
     def _contradiction_loss(self, assessment: ObservationAssessment) -> float:
@@ -920,6 +1038,11 @@ class HypothesisManager:
         typed_factor = max(0.35, assessment.typed_signal_strength)
         severity_bonus = 1.12 if assessment.evidence_quality >= 0.8 and assessment.causal_relevance >= 0.72 else 1.0
         heuristic_penalty = max(0.55, 1.0 - (assessment.heuristic_dependence * 0.28))
+        contradiction_bonus = 1.0
+        if assessment.typed_signal_strength >= 0.78 and assessment.heuristic_dependence <= 0.36:
+            contradiction_bonus = 1.1
+        elif assessment.typed_signal_strength >= 0.68 and assessment.heuristic_dependence <= 0.42:
+            contradiction_bonus = 1.04
         return (
             0.29
             * assessment.evidence_strength
@@ -930,6 +1053,7 @@ class HypothesisManager:
             * typed_factor
             * heuristic_penalty
             * severity_bonus
+            * contradiction_bonus
         )
 
     def _observation_evidence_strength(
@@ -943,9 +1067,12 @@ class HypothesisManager:
         heuristic_dependence: float,
     ) -> float:
         structural_strength = quality * reliability * causal_relevance
-        typed_floor = typed_signal_strength * 0.38
+        typed_floor = typed_signal_strength * 0.34
         heuristic_penalty = heuristic_dependence * 0.24
-        return max(0.0, min(1.0, (relevance * structural_strength) + typed_floor - heuristic_penalty))
+        narrative_guardrail = 0.0
+        if typed_signal_strength < 0.58 and heuristic_dependence >= 0.58:
+            narrative_guardrail = min(0.14, (0.58 - typed_signal_strength) * 0.3 + (heuristic_dependence - 0.58) * 0.24)
+        return max(0.0, min(1.0, (relevance * structural_strength) + typed_floor - heuristic_penalty - narrative_guardrail))
 
     def _typed_signal_strength(
         self,
@@ -959,21 +1086,36 @@ class HypothesisManager:
     ) -> float:
         typed_fact = observation.get("typed_fact", {}) if isinstance(observation.get("typed_fact"), dict) else {}
         typed_presence = 0.0
+        normalized_obs_type = str(obs_type or "").strip().lower()
+        normalized_fact_family = str(fact_family or "").strip().lower()
         has_typed_fact = bool(typed_fact.get("type") or typed_fact.get("family"))
         if typed_fact.get("type"):
             typed_presence += 0.42
         if typed_fact.get("family"):
             typed_presence += 0.22
-        if str(obs_type or "").strip().lower() != "correlation_observation" and has_typed_fact:
-            typed_presence += 0.1
-        if str(fact_family or "").strip().lower() not in {"", "generic", "correlation"} and has_typed_fact:
-            typed_presence += 0.08
+        if normalized_obs_type and normalized_obs_type != "correlation_observation":
+            typed_presence += 0.28 if has_typed_fact else 0.46
+        if normalized_fact_family not in {"", "generic", "correlation"}:
+            typed_presence += 0.08 if has_typed_fact else 0.08
         if has_typed_fact:
             typed_presence += min(0.1, quality * 0.1)
             typed_presence += min(0.05, relation_signal * 0.05)
             typed_presence += min(0.03, entity_coverage * 0.03)
         else:
-            typed_presence += min(0.02, relation_signal * 0.02)
+            typed_presence += min(0.06, relation_signal * 0.06)
+            typed_presence += min(0.04, entity_coverage * 0.04)
+            # Legacy tool results still carry deterministic value when verdict-bearing facts exist.
+            verdict = str((observation.get("facts", {}) or {}).get("verdict") or "").strip().upper()
+            severity = str((observation.get("facts", {}) or {}).get("severity") or "").strip().upper()
+            score = (observation.get("facts", {}) or {}).get("threat_score", (observation.get("facts", {}) or {}).get("score"))
+            if verdict in {"MALICIOUS", "SUSPICIOUS", "BENIGN", "CLEAN"}:
+                typed_presence += 0.3 if normalized_obs_type == "correlation_observation" else 0.18
+            elif severity in {"HIGH", "CRITICAL", "LOW", "INFO"}:
+                typed_presence += 0.18 if normalized_obs_type == "correlation_observation" else 0.1
+            elif isinstance(score, (int, float)):
+                numeric_score = float(score)
+                if numeric_score >= 70 or numeric_score <= 20:
+                    typed_presence += 0.14 if normalized_obs_type == "correlation_observation" else 0.08
         return max(0.0, min(1.0, typed_presence))
 
     def _heuristic_dependence(
@@ -1026,11 +1168,20 @@ class HypothesisManager:
             support_relevance_floor = 0.34
             contradiction_relevance_floor = 0.24
             typed_support_floor = 0.7
+            typed_contradiction_floor = max(typed_contradiction_floor, 0.62)
             minimum_strength_for_stance = 0.095
+        if lane in {"email", "file"} and heuristic_dependence >= 0.64 and typed_signal_strength <= 0.46:
+            support_relevance_floor += 0.05
+            typed_support_floor = max(typed_support_floor, 0.78)
+            minimum_strength_for_stance += 0.02
         if heuristic_dependence >= 0.58:
             support_relevance_floor += 0.08
             contradiction_relevance_floor += 0.04
             minimum_strength_for_stance += 0.015
+        if lane == "ioc":
+            typed_support_floor = min(typed_support_floor, 0.56)
+            typed_contradiction_floor = min(typed_contradiction_floor, 0.42)
+            minimum_strength_for_stance = min(minimum_strength_for_stance, 0.06)
         if typed_signal_strength >= 0.78:
             support_relevance_floor = max(0.22, support_relevance_floor - 0.06)
             contradiction_relevance_floor = max(0.16, contradiction_relevance_floor - 0.04)
@@ -1063,9 +1214,17 @@ class HypothesisManager:
 
     def _expand_hypothesis_topics(self, topics: set[str]) -> set[str]:
         expanded = set(topics)
+        lane_aliases = {
+            "email": {"email", "email_delivery", "phishing", "sender", "recipient", "attachment", "url"},
+            "file": {"file", "file_execution", "process_event", "sandbox_behavior", "malware", "execution", "hash"},
+            "log_identity": {"log_identity", "auth_event", "identity", "session", "credential", "user", "host"},
+            "ioc": {"ioc", "ioc_enrichment", "network_event", "ip", "domain", "url", "hash"},
+            "vulnerability": {"vulnerability", "vulnerability_exposure", "asset", "cve", "exploit"},
+        }
         for topic in list(topics):
             expanded.update(self._typed_topics_for_observation(topic, ""))
             expanded.update(self._typed_topics_for_observation("", topic))
+            expanded.update(lane_aliases.get(topic, set()))
         return {topic for topic in expanded if str(topic).strip()}
 
     def _topic_relevance(self, hypothesis: Hypothesis, obs_type: str, fact_family: str, tags: List[str]) -> float:
@@ -1118,12 +1277,20 @@ class HypothesisManager:
             # Typed observations should outrank narrative similarity when they point to a different lane.
             return 0.46 if typed_signal_present else 0.64
 
+        lane_topics = {topic for topic in raw_topics if topic in {"email", "file", "log_identity", "ioc", "vulnerability"}}
+        cross_lane_typed = bool(typed_signal_present and lane_topics and not lane_topics.intersection(typed_topics))
         tag_overlap = raw_topics.intersection(tags_lower)
         if tag_overlap:
+            if cross_lane_typed:
+                return 0.18
             return 0.4 if typed_signal_present else 0.56
         expanded_tag_overlap = hypothesis_topics.intersection(tags_lower)
         if expanded_tag_overlap:
+            if cross_lane_typed:
+                return 0.16
             return 0.36 if typed_signal_present else 0.52
+        if cross_lane_typed:
+            return 0.12
         return 0.28
 
     def _typed_topics_for_observation(self, obs_type: str, fact_family: str) -> set[str]:
@@ -1178,17 +1345,29 @@ class HypothesisManager:
         return False
 
     def _relation_signal(self, observation: Dict[str, Any], entity_state: Optional[Dict[str, Any]]) -> float:
-        if not isinstance(entity_state, dict):
-            return 0.0
+        facts = observation.get("facts", {}) if isinstance(observation.get("facts"), dict) else {}
         observation_entity_ids = {
             f"{item.get('type')}:{item.get('value')}".lower()
             for item in observation.get("entities", [])
             if isinstance(item, dict) and item.get("type") and item.get("value")
         }
+        if facts.get("user"):
+            observation_entity_ids.add(f"user:{facts.get('user')}`".lower().replace("`", ""))
+        if facts.get("host"):
+            observation_entity_ids.add(f"host:{facts.get('host')}`".lower().replace("`", ""))
+        if facts.get("session_id"):
+            observation_entity_ids.add(f"session:{facts.get('session_id')}`".lower().replace("`", ""))
+        if facts.get("source_ip"):
+            observation_entity_ids.add(f"ip:{facts.get('source_ip')}`".lower().replace("`", ""))
+        if facts.get("dest_ip"):
+            observation_entity_ids.add(f"ip:{facts.get('dest_ip')}`".lower().replace("`", ""))
+        if not isinstance(entity_state, dict):
+            return 0.18 if len(observation_entity_ids) >= 2 else 0.0
         if not observation_entity_ids:
             return 0.0
         relationships = entity_state.get("relationships", []) if isinstance(entity_state.get("relationships"), list) else []
         best = 0.0
+        matched_relationships = 0
         for relationship in relationships:
             if not isinstance(relationship, dict):
                 continue
@@ -1196,6 +1375,7 @@ class HypothesisManager:
             target = str(relationship.get("target") or "").lower()
             if source not in observation_entity_ids and target not in observation_entity_ids:
                 continue
+            matched_relationships += 1
             relation_strength = str(relationship.get("relation_strength") or "")
             if relation_strength == "explicit":
                 best = max(best, 0.95)
@@ -1203,7 +1383,15 @@ class HypothesisManager:
                 best = max(best, 0.76)
             elif relation_strength == "co_observed":
                 best = max(best, 0.45)
-        return best
+        if best > 0.0:
+            if matched_relationships >= 2:
+                best = min(1.0, best + 0.04)
+            return best
+        if len(observation_entity_ids) >= 3:
+            return 0.38
+        if len(observation_entity_ids) >= 2:
+            return 0.24
+        return 0.0
 
     def _timeline_signal(self, evidence_state: Optional[Dict[str, Any]]) -> float:
         if not isinstance(evidence_state, dict):
@@ -1362,15 +1550,31 @@ class HypothesisManager:
     def _legacy_observation(self, tool_name: str, params: Dict[str, Any], result: Any, session_id: str, step_number: int) -> Dict[str, Any]:
         payload = result.get("result") if isinstance(result, dict) and isinstance(result.get("result"), dict) else result
         facts = payload if isinstance(payload, dict) else {"value": str(payload)}
+        obs_type = "correlation_observation"
+        typed_fact: Dict[str, Any] = {}
+        lowered_tool = str(tool_name or "").lower()
+        if lowered_tool == "investigate_ioc":
+            obs_type = "ioc_enrichment"
+            typed_fact = {"type": "ioc_enrichment", "family": "ioc"}
+        elif lowered_tool == "search_logs":
+            obs_type = "auth_event" if any(key in facts for key in ("user", "session_id", "host")) else "network_event"
+            typed_fact = {"type": obs_type, "family": "identity" if obs_type == "auth_event" else "log"}
+        elif lowered_tool == "analyze_email":
+            obs_type = "email_delivery"
+            typed_fact = {"type": "email_delivery", "family": "email"}
+        elif lowered_tool == "analyze_malware":
+            obs_type = "sandbox_behavior"
+            typed_fact = {"type": "sandbox_behavior", "family": "file"}
         return {
             "observation_id": f"obs:{session_id}:{step_number}:0:{tool_name}:legacy".lower(),
-            "observation_type": "correlation_observation",
+            "observation_type": obs_type,
             "summary": self._legacy_summary(tool_name, facts, params),
             "quality": 0.55 if isinstance(facts, dict) and any(key in facts for key in ("verdict", "severity", "results_count")) else 0.35,
             "source_kind": "legacy",
             "source_paths": ["result"],
-            "entities": [],
+            "entities": self._legacy_entities(facts, params),
             "facts": facts,
+            "typed_fact": typed_fact,
         }
 
     def _legacy_summary(self, tool_name: str, facts: Dict[str, Any], params: Dict[str, Any]) -> str:
@@ -1382,6 +1586,26 @@ class HypothesisManager:
             if facts.get(key) or params.get(key):
                 return f"{tool_name} observed {key}={facts.get(key) or params.get(key)}."
         return f"{tool_name} returned additional evidence."
+
+    def _legacy_entities(self, facts: Dict[str, Any], params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        entities: List[Dict[str, Any]] = []
+        for entity_type, keys in (
+            ("ip", ("ip", "source_ip", "dest_ip", "ioc")),
+            ("domain", ("domain",)),
+            ("url", ("url",)),
+            ("hash", ("hash", "sha256", "md5")),
+            ("user", ("user",)),
+            ("host", ("host",)),
+            ("session", ("session_id",)),
+            ("sender", ("sender",)),
+            ("recipient", ("recipient",)),
+        ):
+            for key in keys:
+                value = facts.get(key) or params.get(key)
+                if value:
+                    entities.append({"type": entity_type, "value": str(value)})
+                    break
+        return entities
 
     def _new_hypothesis_id(self) -> str:
         return f"hyp-{uuid.uuid4().hex[:8]}"

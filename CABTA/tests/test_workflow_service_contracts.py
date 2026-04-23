@@ -223,6 +223,14 @@ def test_describe_workflow_runtime_merges_contract_dependencies_and_runs():
     assert payload["run_contract"]["fact_contract"]["governance_hooks"]["decision_logging_supported"] is True
     assert payload["run_contract"]["governance_hooks"]["contract_version"] == "governance-contract/v2"
     assert payload["runtime_enforcement"]["status"] == "blocked"
+    assert payload["runtime_truth_contract"] == {
+        "contract_version": "workflow-runtime-contract/v2",
+        "deterministic_verdict_owner": "CABTA deterministic core",
+        "dependency_status": "degraded",
+        "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+        "governance_contract_version": "governance-contract/v2",
+    }
+    assert payload["runtime_enforcement"]["runtime_truth_contract"] == payload["runtime_truth_contract"]
     assert "missing_plan_signals" in payload["runtime_enforcement"]["blocking_reasons"]
     assert "missing_triage_contract_evidence" in payload["runtime_enforcement"]["blocking_reasons"]
     assert payload["runtime_enforcement"]["fallback_contract"]["declared"] is True
@@ -238,7 +246,12 @@ def test_describe_workflow_runtime_merges_contract_dependencies_and_runs():
         "optional_runtime_degraded": True,
         "optional_runtime_blockers": ["virustotal"],
         "dependency_status": "degraded",
+        "runtime_status": "blocked",
+        "case_truth_ready": True,
+        "headless_execution_eligible": False,
         "capability_scope": "workflow_runtime_contract",
+        "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+        "contract_version": "workflow-runtime-contract/v2",
     }
     assert payload["run_contract"]["fallback_paths"][0].startswith("Continue with governed manual log pivots")
     assert "Stop when required dependencies are blocked." in payload["run_contract"]["stop_conditions"]
@@ -267,6 +280,12 @@ def test_get_run_and_list_runs_expose_runtime_fields():
     assert detailed["typed_fact_contract"]["plan_has_next_action_signals"] is True
     assert detailed["typed_fact_contract"]["plan_has_resume_signals"] is True
     assert detailed["typed_fact_contract"]["governance_contract_version"] == "governance-contract/v2"
+    assert detailed["runtime_contract"]["runtime_truth"] == "workflow_registry_plus_session_metadata"
+    assert detailed["runtime_contract"]["contract_version"] == "workflow-runtime-contract/v2"
+    assert detailed["runtime_contract"]["supports_headless_execution"] is False
+    assert detailed["runtime_contract"]["interactive_runtime_required"] is True
+    assert detailed["runtime_contract"]["headless_blockers"] == ["approval_checkpoints_require_interactive_runtime"]
+    assert detailed["runtime_contract"]["case_truth_ready"] is False
 
     completed = service.get_run("sess-1")
     assert completed is not None
@@ -276,6 +295,10 @@ def test_get_run_and_list_runs_expose_runtime_fields():
     assert detailed["runtime_contract"]["plan_signal_count"] == 2
     assert detailed["runtime_contract"]["triage_contract_count"] == 1
     assert detailed["runtime_contract"]["governed"] is True
+    assert completed["runtime_contract"]["supports_headless_execution"] is False
+    assert completed["runtime_contract"]["interactive_runtime_required"] is True
+    assert completed["runtime_contract"]["headless_blockers"] == ["approval_checkpoints_require_interactive_runtime"]
+    assert completed["runtime_contract"]["case_truth_ready"] is True
 
 
 def test_evaluate_runtime_readiness_requires_plan_evidence_and_governance_contracts():
@@ -321,15 +344,23 @@ def test_evaluate_runtime_readiness_requires_plan_evidence_and_governance_contra
         metadata={},
     )
 
-    assert ready["status"] == "degraded"
-    assert ready["ready"] is True
+    assert ready["status"] == "blocked"
+    assert ready["ready"] is False
+    assert ready["case_truth_ready"] is True
     assert ready["plan_contract"]["signal_count"] == 1
     assert ready["evidence_contract"]["typed_observation_count"] == 1
     assert ready["evidence_contract"]["triage_contract_runtime"]["satisfied_count"] == 1
     assert ready["fallback_contract"]["declared"] is True
     assert ready["fallback_contract"]["active"] is True
     assert ready["stop_condition_contract"]["declared"] is True
-    assert ready["stop_condition_contract"]["triggered"] == []
+    assert ready["stop_condition_contract"]["triggered"] == ["interactive_runtime_required"]
+    assert ready["runtime_truth_contract"] == {
+        "contract_version": "workflow-runtime-contract/v2",
+        "deterministic_verdict_owner": "CABTA deterministic core",
+        "dependency_status": "degraded",
+        "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+        "governance_contract_version": "governance-contract/v2",
+    }
     assert ready["execution_surface"] == {
         "headless_declared": True,
         "headless_ready": True,
@@ -340,8 +371,14 @@ def test_evaluate_runtime_readiness_requires_plan_evidence_and_governance_contra
         "optional_runtime_degraded": True,
         "optional_runtime_blockers": ["virustotal"],
         "dependency_status": "degraded",
+        "runtime_status": "blocked",
+        "case_truth_ready": True,
+        "headless_execution_eligible": False,
         "capability_scope": "workflow_runtime_contract",
+        "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+        "contract_version": "workflow-runtime-contract/v2",
     }
+    assert ready["interactive_runtime_blocked"] is True
     dependency_status = service.validate_dependencies(build_app(), "wf-1")
     assert dependency_status["optional_runtime"] == {
         "degraded": True,

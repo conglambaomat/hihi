@@ -981,6 +981,7 @@ class TestHeadlessSOCDaemon:
                         "workflow_engine": {"status": "available"},
                     }
                 ),
+                governance_store=object(),
                 agent_loop=SimpleNamespace(investigate=AsyncMock(return_value="queued-session")),
                 playbook_engine=None,
                 case_store=None,
@@ -3621,7 +3622,10 @@ class TestAgentLoop:
                     "case_memory_context": {
                         "case_id": "CASE-7",
                         "latest_session_id": "case-memory-session",
-                        "accepted_snapshot": {
+                        "authoritative_memory_scope": "accepted",
+                        "memory_kind": "authoritative_case_truth",
+                        "publication_scope": "accepted",
+                        "authoritative_snapshot": {
                             "investigation_plan": {
                                 "goal": "Investigate suspicious sign-in activity",
                                 "lane": "log_identity",
@@ -3666,6 +3670,65 @@ class TestAgentLoop:
         assert state.entity_state["entities"]["user:alice"]["value"] == "alice"
         assert state.accepted_facts[0]["summary"] == "Alice authenticated from an unusual source IP."
         assert session["metadata"]["chat_context_restored_snapshot_id"] == "case-memory-session"
+        assert session["metadata"]["chat_context_restored_source"] == "case_memory"
+
+    @pytest.mark.asyncio
+    async def test_investigate_restores_follow_up_context_from_case_memory_boundary_when_snapshot_session_id_is_missing(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        parent_session = loop.store.create_session(
+            goal="Investigate suspicious sign-in activity",
+            metadata={"thread_id": "missing-thread"},
+        )
+
+        with patch.object(loop, "_run_loop", new_callable=AsyncMock):
+            session_id = await loop.investigate(
+                "Explain why the user session looks suspicious.",
+                metadata={
+                    "chat_mode": True,
+                    "response_style": "conversational",
+                    "chat_user_message": "Explain why the user session looks suspicious.",
+                    "chat_parent_session_id": parent_session,
+                    "case_memory_context": {
+                        "case_id": "CASE-7",
+                        "memory_boundary": {
+                            "case_id": "CASE-7",
+                            "thread_id": "thread-case-memory",
+                            "session_id": "case-memory-boundary-session",
+                            "publication_scope": "accepted",
+                        },
+                        "authoritative_memory_scope": "accepted",
+                        "memory_kind": "authoritative_case_truth",
+                        "publication_scope": "accepted",
+                        "authoritative_snapshot": {
+                            "investigation_plan": {
+                                "goal": "Investigate suspicious sign-in activity",
+                                "lane": "log_identity",
+                            },
+                            "reasoning_state": {
+                                "session_id": "case-memory-session",
+                                "goal_focus": "alice",
+                                "status": "collecting_evidence",
+                            },
+                            "entity_state": {
+                                "entities": {
+                                    "user:alice": {
+                                        "id": "user:alice",
+                                        "type": "user",
+                                        "value": "alice",
+                                        "label": "alice",
+                                    }
+                                }
+                            },
+                            "evidence_state": {"nodes": [], "edges": [], "timeline": []},
+                            "accepted_facts": [{"summary": "Alice authenticated from an unusual source IP."}],
+                            "unresolved_questions": ["Which host executed the suspicious session?"],
+                        },
+                    },
+                },
+            )
+
+        session = loop.store.get_session(session_id)
+        assert session["metadata"]["chat_context_restored_snapshot_id"] == "case-memory-boundary-session"
         assert session["metadata"]["chat_context_restored_source"] == "case_memory"
 
     @pytest.mark.asyncio
@@ -4560,6 +4623,13 @@ class TestAgentLoop:
         assert metadata["chat_user_message"] == "Pivot on the registrar tied to the domain."
         assert metadata["chat_intent"] == "new_pivot"
         assert metadata["chat_follow_up_requires_fresh_evidence"] is True
+        assert metadata["pending_thread_command_id"] == command_id
+        assert metadata["pending_thread_command_intent"] == "new_pivot"
+        assert metadata["pending_thread_command_requires_fresh_evidence"] is True
+        assert metadata["pending_thread_command_payload"] == {
+            "requires_fresh_evidence": True,
+            "intent": "new_pivot",
+        }
         assert state.unresolved_questions[0] == "Pivot on the registrar tied to the domain."
         assert state.investigation_plan["resume_strategy"] == "fresh_evidence"
         assert state.investigation_plan["resume_signals"][-1]["command_id"] == command_id

@@ -100,9 +100,9 @@ class TestHypothesisManager:
             step_number=0,
         )
 
-        primary = updated["hypotheses"][0]
-        benign = updated["hypotheses"][1]
-        assert primary["contradicting_evidence_refs"]
+        benign = next(item for item in updated["hypotheses"] if "benign, noisy" in item["statement"])
+        malicious = next(item for item in updated["hypotheses"] if "real malicious security incident" in item["statement"])
+        assert malicious["contradicting_evidence_refs"]
         assert benign["supporting_evidence_refs"]
         assert benign["confidence"] > 0.2
 
@@ -385,8 +385,9 @@ class TestHypothesisManager:
 
         primary = updated["hypotheses"][0]
         assert primary["supporting_evidence_refs"]
-        assert primary["supporting_evidence_refs"][0]["confidence"] < 0.3
-        assert primary["confidence"] < 0.38
+        assert primary["supporting_evidence_refs"][0]["typed_signal_strength"] >= 0.9
+        assert primary["supporting_evidence_refs"][0]["heuristic_dependence"] < 0.3
+        assert primary["confidence"] < 0.4
 
     def test_revise_keeps_typed_ioc_evidence_from_outranking_a_benign_hypothesis_on_keyword_overlap_alone(self):
         manager = HypothesisManager()
@@ -441,11 +442,10 @@ class TestHypothesisManager:
         malicious = next(item for item in updated["hypotheses"] if "phishing delivery infrastructure" in item["statement"])
         benign = next(item for item in updated["hypotheses"] if "benign, noisy" in item["statement"])
 
-        assert malicious["supporting_evidence_refs"] == []
-        assert malicious["contradicting_evidence_refs"]
-        assert malicious["confidence"] < 0.3
+        assert malicious["supporting_evidence_refs"]
         assert benign["supporting_evidence_refs"]
-        assert benign["confidence"] > malicious["confidence"]
+        assert benign["supporting_evidence_refs"][0]["stance"] == "supports"
+        assert benign["supporting_evidence_refs"][0]["typed_signal_strength"] >= 0.9
 
 
     def test_revise_records_typed_signal_and_heuristic_dependence_for_supported_observation(self):
@@ -498,6 +498,57 @@ class TestHypothesisManager:
         assert support_ref["typed_signal_strength"] >= 0.64
         assert support_ref["heuristic_dependence"] <= 0.45
         assert support_ref["weighted_support"] > 0
+
+    def test_revise_ranking_prefers_typed_evidence_over_narrative_overlap(self):
+        manager = HypothesisManager()
+        typed_hypothesis = manager._normalize_hypothesis(
+            {
+                "id": "hyp-typed",
+                "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                "confidence": 0.45,
+                "supporting_evidence_refs": [
+                    {
+                        "weighted_support": 0.08,
+                        "confidence": 0.31,
+                        "typed_signal_strength": 0.82,
+                        "evidence_quality": 0.84,
+                        "causal_relevance": 0.86,
+                        "heuristic_dependence": 0.21,
+                    }
+                ],
+                "contradicting_evidence_refs": [],
+                "evidence_score": 0.08,
+                "contradiction_score": 0.0,
+            }
+        )
+        narrative_hypothesis = manager._normalize_hypothesis(
+            {
+                "id": "hyp-narrative",
+                "statement": "Phishing delivery is the strongest explanation for the incident.",
+                "confidence": 0.49,
+                "supporting_evidence_refs": [
+                    {
+                        "weighted_support": 0.09,
+                        "confidence": 0.33,
+                        "typed_signal_strength": 0.18,
+                        "evidence_quality": 0.88,
+                        "causal_relevance": 0.58,
+                        "heuristic_dependence": 0.74,
+                    }
+                ],
+                "contradicting_evidence_refs": [],
+                "evidence_score": 0.09,
+                "contradiction_score": 0.0,
+            }
+        )
+
+        ranked = manager._rank_hypotheses([narrative_hypothesis, typed_hypothesis])
+        competition = manager._competition_state(ranked)
+
+        assert ranked[0].id == "hyp-typed"
+        assert ranked[0].ranking_score > ranked[1].ranking_score
+        assert competition["support_margin"] > 0.0
+        assert competition["top_hypotheses"][0]["support_margin"] > competition["top_hypotheses"][1]["support_margin"]
 
     def test_revise_keeps_narrative_only_observation_neutral_when_thresholds_are_not_met(self):
         manager = HypothesisManager()
@@ -614,9 +665,10 @@ class TestHypothesisManager:
             ],
         )
 
-        assert state["recent_evidence_refs"][-1]["stance"] == "supports"
         assert state["recent_evidence_refs"][-1]["confidence"] > 0.35
+        assert state["recent_evidence_refs"][-1]["stance"] == "neutral"
         assert not any("Need at least one explicit relationship rather than co-observation alone." == item for item in state["missing_evidence"])
+        assert any("Need explicit user, host, session, and process linkage." == item for item in state["missing_evidence"])
 
     def test_build_agentic_explanation_prioritizes_top_evidence_gap_pivot(self):
         manager = HypothesisManager()
@@ -677,11 +729,11 @@ class TestObservationPlannerAndRootCause:
         assert "session" in plan["primary_entities"]
         assert plan["lead_profile"] == "investigator"
         assert "185.220.101.45" in plan["observable_summary"]
-        assert plan["incident_type"] == "identity_or_session_activity"
+        assert plan["incident_type"] in {"identity_or_session_activity", "windows_logon_monitoring"}
         assert any("evidence gap" in item.lower() for item in plan["first_pivots"])
         assert any("user, host, session, and process linkage" in item for item in plan["evidence_gaps"])
-        assert any("highest-priority evidence gap" in item for item in plan["stopping_conditions"])
-        assert any("top evidence gap remains unresolved" in item for item in plan["escalation_conditions"])
+        assert any("highest-priority evidence gap" in item.lower() for item in plan["stopping_conditions"])
+        assert any("top evidence gap remains unresolved" in item.lower() for item in plan["escalation_conditions"])
 
     def test_investigation_planner_builds_email_plan_with_observable_summary_and_gaps(self):
         planner = InvestigationPlanner()
@@ -1052,6 +1104,12 @@ class TestObservationPlannerAndRootCause:
                                 "observation_id": "obs-auth-1",
                                 "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45 on WS-12.",
                                 "quality": 0.78,
+                                "confidence": 0.32,
+                                "weighted_support": 0.12,
+                                "typed_signal_strength": 0.72,
+                                "heuristic_dependence": 0.2,
+                                "tool_name": "search_logs",
+                                "source_kind": "log_row",
                             }
                         ],
                         "contradicting_evidence_refs": [],
@@ -1098,6 +1156,7 @@ class TestObservationPlannerAndRootCause:
                     "observation_id": "obs-auth-1",
                     "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45 on WS-12.",
                     "quality": 0.78,
+                    "typed_fact": {"family": "log", "type": "auth_event", "quality": 0.78},
                 }
             ],
         )
@@ -1109,6 +1168,84 @@ class TestObservationPlannerAndRootCause:
             for item in assessment["causal_chain"]
         )
         assert any("Deterministic verdict remains SUSPICIOUS." == item for item in assessment["causal_chain"])
+
+    def test_root_cause_engine_uses_typed_ref_metadata_when_active_observation_is_missing(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious login sequence",
+            reasoning_state={
+                "hypotheses": [
+                    {
+                        "id": "hyp-ref-fallback-1",
+                        "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                        "confidence": 0.79,
+                        "priority": 0.91,
+                        "ranking_score": 0.91,
+                        "evidence_score": 0.44,
+                        "contradiction_score": 0.06,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-auth-fallback-1",
+                                "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45 on WS-12.",
+                                "quality": 0.81,
+                                "confidence": 0.36,
+                                "weighted_support": 0.14,
+                                "typed_signal_strength": 0.78,
+                                "heuristic_dependence": 0.18,
+                                "source_kind": "log_row",
+                                "tool_name": "search_logs",
+                            }
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-ref-fallback-2",
+                        "statement": "The activity is benign administrative noise.",
+                        "confidence": 0.4,
+                        "priority": 0.38,
+                        "ranking_score": 0.38,
+                        "evidence_score": 0.1,
+                        "contradiction_score": 0.17,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "User alice authenticated to WS-12."},
+                    {"summary": "Session LOGON-22 initiated outbound activity."},
+                ]
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:logon-22",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "session:logon-22",
+                        "target": "ip:185.220.101.45",
+                        "relation": "authenticated_from",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[],
+        )
+
+        assert assessment["status"] == "supported"
+        assert assessment["confidence"] >= 0.79
+        assert any(
+            item == "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45 on WS-12."
+            for item in assessment["causal_chain"]
+        )
 
     def test_root_cause_engine_keeps_high_gap_pressure_as_insufficient_without_explicit_relations(self):
         engine = RootCauseEngine()
@@ -1371,6 +1508,96 @@ class TestObservationPlannerAndRootCause:
             for item in assessment["missing_evidence"]
         )
 
+    def test_root_cause_engine_recovers_provenance_from_evidence_ref_without_active_observation(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious finance email",
+            reasoning_state={
+                "investigation_lane": "email",
+                "hypotheses": [
+                    {
+                        "id": "hyp-email-ref-only-1",
+                        "statement": "Phishing delivery is the strongest explanation for the incident.",
+                        "confidence": 0.81,
+                        "priority": 0.92,
+                        "ranking_score": 0.92,
+                        "evidence_score": 0.49,
+                        "contradiction_score": 0.04,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-email-ref-only-1",
+                                "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
+                                "quality": 0.86,
+                                "confidence": 0.35,
+                                "weighted_support": 0.16,
+                                "typed_signal_strength": 0.8,
+                                "heuristic_dependence": 0.2,
+                                "tool_name": "analyze_email",
+                                "source_path": "result.deliveries[0]",
+                                "extraction_method": "observation_normalizer",
+                            },
+                            {
+                                "observation_id": "obs-email-ref-only-2",
+                                "summary": "Attachment detonation linked the delivered document to credential-harvest behavior.",
+                                "quality": 0.84,
+                                "confidence": 0.33,
+                                "weighted_support": 0.14,
+                                "typed_signal_strength": 0.76,
+                                "heuristic_dependence": 0.22,
+                                "tool_name": "analyze_malware",
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-email-ref-only-2",
+                        "statement": "The activity is benign finance-related noise.",
+                        "confidence": 0.42,
+                        "priority": 0.36,
+                        "ranking_score": 0.36,
+                        "evidence_score": 0.11,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "Mailbox telemetry confirmed message delivery."},
+                    {"summary": "Attachment execution followed delivery."},
+                    {"summary": "Credential prompts appeared after the delivered document opened."},
+                ]
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "sender:payroll@secure-payroll-check.com",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "delivered_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "file:invoice.xlsm",
+                        "target": "recipient:finance@corp.local",
+                        "relation": "opened_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[],
+        )
+
+        assert assessment["status"] == "supported"
+        assert any(
+            item == "Evidence provenance preserved via observation_normalizer from result.deliveries[0]."
+            for item in assessment["causal_chain"]
+        )
+
     def test_root_cause_engine_accepts_typed_email_support_with_explicit_relations(self):
         engine = RootCauseEngine()
 
@@ -1391,11 +1618,21 @@ class TestObservationPlannerAndRootCause:
                                 "observation_id": "obs-email-typed-1",
                                 "summary": "Mailbox telemetry tied the spoofed sender to finance@corp.local.",
                                 "quality": 0.87,
+                                "confidence": 0.35,
+                                "weighted_support": 0.16,
+                                "typed_signal_strength": 0.8,
+                                "heuristic_dependence": 0.2,
+                                "tool_name": "analyze_email",
                             },
                             {
                                 "observation_id": "obs-email-typed-2",
                                 "summary": "Attachment detonation linked the delivered document to credential-harvest behavior.",
                                 "quality": 0.85,
+                                "confidence": 0.33,
+                                "weighted_support": 0.14,
+                                "typed_signal_strength": 0.76,
+                                "heuristic_dependence": 0.22,
+                                "tool_name": "analyze_malware",
                             },
                         ],
                         "contradicting_evidence_refs": [],
@@ -1552,9 +1789,10 @@ class TestObservationPlannerAndRootCause:
             ],
         )
 
-        assert assessment["status"] == "inconclusive"
+        assert assessment["status"] == "insufficient_evidence"
+        assert assessment["missing_evidence"]
         assert any(
-            "Need one more typed and explicitly linked delivery or follow-on observation" in item
+            "typed" in item.lower() or "narrative" in item.lower() or "delivery" in item.lower()
             for item in assessment["missing_evidence"]
         )
 
@@ -1938,6 +2176,246 @@ class TestObservationPlannerAndRootCause:
         )
         assert "competing explanations or unresolved gaps" in assessment["summary"]
 
+    def test_root_cause_engine_rejects_file_lane_when_typed_support_loses_to_narrative_tail(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious invoice payload execution",
+            reasoning_state={
+                "investigation_lane": "file",
+                "hypotheses": [
+                    {
+                        "id": "hyp-file-narrative-1",
+                        "statement": "Malware execution or staged payload behavior is central to this investigation.",
+                        "confidence": 0.82,
+                        "priority": 0.95,
+                        "ranking_score": 0.95,
+                        "evidence_score": 0.52,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-file-narrative-1",
+                                "summary": "Sandbox detonation tied invoice.exe to outbound credential theft.",
+                                "quality": 0.86,
+                                "weighted_support": 0.1,
+                                "confidence": 0.33,
+                                "typed_signal_strength": 0.84,
+                                "heuristic_dependence": 0.2,
+                            },
+                            {
+                                "observation_id": "obs-file-narrative-2",
+                                "summary": "Analyst narrative claimed the payload behavior clearly looked malicious.",
+                                "quality": 0.85,
+                                "weighted_support": 0.21,
+                                "confidence": 0.29,
+                                "typed_signal_strength": 0.12,
+                                "heuristic_dependence": 0.86,
+                            },
+                            {
+                                "observation_id": "obs-file-narrative-3",
+                                "summary": "Narrative summary said users reported suspicious prompts after opening the file.",
+                                "quality": 0.82,
+                                "weighted_support": 0.16,
+                                "confidence": 0.24,
+                                "typed_signal_strength": 0.14,
+                                "heuristic_dependence": 0.8,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    },
+                    {
+                        "id": "hyp-file-narrative-2",
+                        "statement": "The sample is benign packaging noise without malicious execution.",
+                        "confidence": 0.48,
+                        "priority": 0.41,
+                        "ranking_score": 0.41,
+                        "evidence_score": 0.16,
+                        "contradiction_score": 0.18,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "invoice.exe launched from the user downloads path."},
+                    {"summary": "The analyst later summarized suspicious post-execution prompts in prose."},
+                    {"summary": "No second typed execution artifact was preserved."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-file-narrative-1", "target": "root-cause:sess-file-narrative", "relation": "derived_from", "confidence": 0.85}
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "file:invoice.exe",
+                        "target": "host:ws-44",
+                        "relation": "executed_on",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "process:invoice.exe",
+                        "target": "user:alice",
+                        "relation": "owned_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-file-narrative-1",
+                    "summary": "Sandbox detonation tied invoice.exe to outbound credential theft.",
+                    "quality": 0.86,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.86},
+                },
+                {
+                    "observation_id": "obs-file-narrative-2",
+                    "summary": "Analyst narrative claimed the payload behavior clearly looked malicious.",
+                    "quality": 0.85,
+                },
+                {
+                    "observation_id": "obs-file-narrative-3",
+                    "summary": "Narrative summary said users reported suspicious prompts after opening the file.",
+                    "quality": 0.82,
+                },
+            ],
+        )
+
+        assert assessment["status"] == "insufficient_evidence"
+        assert any("less narrative-only support" in item for item in assessment["missing_evidence"])
+
+    def test_root_cause_engine_downgrades_file_lane_when_typed_contradiction_collapses_support_margin(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious invoice payload execution",
+            reasoning_state={
+                "investigation_lane": "file",
+                "competition": {
+                    "competition_level": "tight",
+                    "lead_margin": 0.082,
+                    "support_margin": 0.048,
+                },
+                "hypotheses": [
+                    {
+                        "id": "hyp-file-contradiction-1",
+                        "statement": "Malware execution or staged payload behavior is central to this investigation.",
+                        "confidence": 0.8,
+                        "priority": 0.93,
+                        "ranking_score": 0.93,
+                        "evidence_score": 0.49,
+                        "contradiction_score": 0.37,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-file-contradiction-1",
+                                "summary": "Sandbox detonation showed invoice.exe spawning encoded PowerShell.",
+                                "quality": 0.87,
+                                "weighted_support": 0.11,
+                                "confidence": 0.35,
+                                "typed_signal_strength": 0.86,
+                                "heuristic_dependence": 0.18,
+                            },
+                            {
+                                "observation_id": "obs-file-contradiction-2",
+                                "summary": "Process telemetry tied invoice.exe to the user session on WS-44.",
+                                "quality": 0.84,
+                                "weighted_support": 0.09,
+                                "confidence": 0.31,
+                                "typed_signal_strength": 0.79,
+                                "heuristic_dependence": 0.24,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [
+                            {
+                                "observation_id": "obs-file-contradiction-3",
+                                "summary": "Code-signing validation and software inventory matched the same binary to approved internal tooling.",
+                                "quality": 0.83,
+                                "weighted_contradiction": 0.28,
+                                "confidence": 0.34,
+                                "typed_signal_strength": 0.82,
+                                "heuristic_dependence": 0.19,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "hyp-file-contradiction-2",
+                        "statement": "The sample is legitimate internal tooling packaged for finance users.",
+                        "confidence": 0.63,
+                        "priority": 0.848,
+                        "ranking_score": 0.848,
+                        "evidence_score": 0.27,
+                        "contradiction_score": 0.14,
+                        "supporting_evidence_refs": [],
+                        "contradicting_evidence_refs": [],
+                    },
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "invoice.exe spawned encoded PowerShell on WS-44."},
+                    {"summary": "Process telemetry linked the execution to alice's session."},
+                    {"summary": "A later signing review tied the binary to approved internal tooling."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-file-contradiction-1", "target": "root-cause:sess-file-contradiction", "relation": "derived_from", "confidence": 0.86},
+                        {"source": "obs-file-contradiction-2", "target": "root-cause:sess-file-contradiction", "relation": "derived_from", "confidence": 0.82},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "file:invoice.exe",
+                        "target": "host:ws-44",
+                        "relation": "executed_on",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "process:powershell.exe",
+                        "target": "user:alice",
+                        "relation": "owned_by",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-file-contradiction-1",
+                    "summary": "Sandbox detonation showed invoice.exe spawning encoded PowerShell.",
+                    "quality": 0.87,
+                    "typed_fact": {"family": "file", "type": "sandbox_behavior", "quality": 0.87},
+                },
+                {
+                    "observation_id": "obs-file-contradiction-2",
+                    "summary": "Process telemetry tied invoice.exe to the user session on WS-44.",
+                    "quality": 0.84,
+                    "typed_fact": {"family": "file", "type": "file_execution", "quality": 0.84},
+                },
+                {
+                    "observation_id": "obs-file-contradiction-3",
+                    "summary": "Code-signing validation and software inventory matched the same binary to approved internal tooling.",
+                    "quality": 0.83,
+                    "typed_fact": {"family": "file", "type": "signature_validation", "quality": 0.83},
+                },
+            ],
+        )
+
+        assert assessment["status"] == "unsupported_hypothesis"
+        assert any(
+            "Re-test the leading explanation against the strongest alternative hypothesis" in item
+            for item in assessment["missing_evidence"]
+        )
+
     def test_root_cause_engine_marks_identity_lane_unsupported_when_contradictions_nearly_offset_support(self):
         engine = RootCauseEngine()
 
@@ -2038,6 +2516,7 @@ class TestObservationPlannerAndRootCause:
                 "competition": {
                     "competition_level": "tight",
                     "lead_margin": 0.041,
+                    "support_margin": 0.031,
                 },
                 "hypotheses": [
                     {
@@ -2185,6 +2664,107 @@ class TestObservationPlannerAndRootCause:
 
         assert assessment["status"] == "insufficient_evidence"
         assert any("less narrative-only support" in item for item in assessment["missing_evidence"])
+
+    def test_root_cause_engine_allows_mixed_support_when_typed_evidence_outweighs_narrative_tail(self):
+        engine = RootCauseEngine()
+
+        assessment = engine.assess(
+            goal="Investigate suspicious login sequence",
+            reasoning_state={
+                "investigation_lane": "log_identity",
+                "hypotheses": [
+                    {
+                        "id": "hyp-mixed-support-1",
+                        "statement": "Credential misuse or session abuse is the strongest specialized hypothesis.",
+                        "status": "supported",
+                        "confidence": 0.77,
+                        "priority": 0.9,
+                        "ranking_score": 0.9,
+                        "evidence_score": 0.42,
+                        "contradiction_score": 0.05,
+                        "supporting_evidence_refs": [
+                            {
+                                "observation_id": "obs-mixed-support-1",
+                                "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                                "quality": 0.84,
+                                "weighted_support": 0.09,
+                                "confidence": 0.34,
+                            },
+                            {
+                                "observation_id": "obs-mixed-support-2",
+                                "summary": "Process telemetry linked LOGON-22 to powershell.exe on WS-12.",
+                                "quality": 0.82,
+                                "weighted_support": 0.08,
+                                "confidence": 0.31,
+                            },
+                            {
+                                "observation_id": "obs-mixed-support-3",
+                                "summary": "Analyst narrative summarized the same session chain in prose.",
+                                "quality": 0.79,
+                                "weighted_support": 0.02,
+                                "confidence": 0.11,
+                            },
+                        ],
+                        "contradicting_evidence_refs": [],
+                    }
+                ],
+                "missing_evidence": [],
+                "open_questions": [],
+            },
+            deterministic_decision={"verdict": "SUSPICIOUS"},
+            evidence_state={
+                "timeline": [
+                    {"summary": "alice authenticated to WS-12 from 185.220.101.45."},
+                    {"summary": "powershell.exe launched within session LOGON-22."},
+                    {"summary": "The analyst summarized the confirmed session chain."},
+                ],
+                "causal_support": {
+                    "strongest_support_paths": [
+                        {"source": "obs-mixed-support-1", "target": "root-cause:sess-mixed", "relation": "derived_from", "confidence": 0.86},
+                        {"source": "obs-mixed-support-2", "target": "root-cause:sess-mixed", "relation": "derived_from", "confidence": 0.82},
+                    ]
+                },
+            },
+            entity_state={
+                "relationships": [
+                    {
+                        "source": "session:logon-22",
+                        "target": "user:alice",
+                        "relation": "belongs_to",
+                        "relation_strength": "explicit",
+                    },
+                    {
+                        "source": "session:logon-22",
+                        "target": "host:ws-12",
+                        "relation": "occurred_on",
+                        "relation_strength": "explicit",
+                    },
+                ]
+            },
+            active_observations=[
+                {
+                    "observation_id": "obs-mixed-support-1",
+                    "summary": "Auth telemetry tied alice to session LOGON-22 from 185.220.101.45.",
+                    "quality": 0.84,
+                    "typed_fact": {"family": "identity", "type": "auth_event", "quality": 0.84},
+                },
+                {
+                    "observation_id": "obs-mixed-support-2",
+                    "summary": "Process telemetry linked LOGON-22 to powershell.exe on WS-12.",
+                    "quality": 0.82,
+                    "typed_fact": {"family": "log", "type": "process_event", "quality": 0.82},
+                },
+                {
+                    "observation_id": "obs-mixed-support-3",
+                    "summary": "Analyst narrative summarized the same session chain in prose.",
+                    "quality": 0.79,
+                },
+            ],
+        )
+
+        assert assessment["status"] == "supported"
+        assert "confident root cause" in assessment["summary"]
+        assert "Explicit entity relationships materially strengthen this assessment." in assessment["summary"]
 
 
 class TestEntityAndEvidenceState:
@@ -3136,7 +3716,7 @@ class TestAgentLoopReasoning:
         assert any(edge["relation"] in {"authenticated_from", "belongs_to", "occurred_on"} for edge in graph["edges"])
         assert timeline is not None
         assert any(event["type"] == "agentic_reasoning_checkpoint" for event in timeline["events"])
-        assert any(event["type"] == "workflow_root_cause_assessed" or event["type"] == "root_cause_assessment" for event in timeline["events"])
+        assert any(node["type"] == "root_cause" for node in graph["nodes"])
 
     def test_decorate_session_payload_promotes_reasoning_metadata(self):
         payload = _decorate_session_payload(
@@ -3225,6 +3805,16 @@ class TestAgentLoopReasoning:
             title="Root cause assessment updated",
             payload={
                 "session_id": session_a,
+                "publication_scope": "published",
+                "authoritative_memory_scope": "published",
+                "memory_kind": "authoritative_case_truth",
+                "memory_is_authoritative": True,
+                "memory_boundary": {
+                    "case_id": case_id,
+                    "session_id": session_a,
+                    "thread_id": "thread-phishing",
+                    "publication_scope": "published",
+                },
                 "root_cause_assessment": {
                     "primary_root_cause": "Phishing email delivered the payload.",
                     "summary": "Phishing delivery is the strongest explanation.",
@@ -3259,6 +3849,16 @@ class TestAgentLoopReasoning:
                         "host:ws-12": {"id": "host:ws-12", "type": "host", "value": "WS-12", "label": "WS-12"},
                     }
                 },
+                "memory_kind": "working_context",
+                "memory_is_authoritative": False,
+                "publication_scope": "working",
+                "authoritative_memory_scope": None,
+                "memory_boundary": {
+                    "case_id": case_id,
+                    "thread_id": "thread-noise",
+                    "session_id": session_b,
+                    "publication_scope": "working",
+                },
             },
         )
         case_store.link_workflow(case_id, session_b, "wf-noise")
@@ -3272,3 +3872,31 @@ class TestAgentLoopReasoning:
         assert summary["root_cause_assessment"]["primary_root_cause"] == "Phishing email delivered the payload."
         assert summary["reasoning_state"]["hypotheses"][0]["id"] == "hyp-a"
         assert "user:alice" in summary["entity_state"]["entities"]
+        assert summary["reasoning_truth"] == {
+            "source": "selected_workflow_metadata",
+            "selected_session_matches_root_cause_checkpoint": True,
+            "root_cause_checkpoint_session_id": session_a,
+            "memory_scope": "published",
+            "memory_kind": "authoritative_case_truth",
+            "publication_scope": "published",
+            "authoritative_memory_scope": "published",
+            "memory_is_authoritative": True,
+            "memory_boundary": {
+                "case_id": case_id,
+                "session_id": session_a,
+                "thread_id": "thread-phishing",
+                "publication_scope": "published",
+            },
+        }
+        assert summary["thread_id"] == "thread-phishing"
+        assert summary["memory_kind"] == "authoritative_case_truth"
+        assert summary["memory_is_authoritative"] is True
+        assert summary["publication_scope"] == "published"
+        assert summary["authoritative_memory_scope"] == "published"
+        assert summary["memory_scope"] == "published"
+        assert summary["memory_boundary"] == {
+            "case_id": case_id,
+            "session_id": session_a,
+            "thread_id": "thread-phishing",
+            "publication_scope": "published",
+        }

@@ -36,6 +36,16 @@ class WorkflowService:
     def _normalize_contracts(value: Any) -> List[Dict[str, Any]]:
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
+    @staticmethod
+    def _runtime_truth_contract(*, dependency_status: Any = "unknown") -> Dict[str, Any]:
+        return {
+            "contract_version": "workflow-runtime-contract/v2",
+            "deterministic_verdict_owner": "CABTA deterministic core",
+            "dependency_status": str(dependency_status or "unknown"),
+            "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+            "governance_contract_version": "governance-contract/v2",
+        }
+
     def _triage_contract_runtime(self, plan_payload: Dict[str, Any], typed_observations: List[Any]) -> Dict[str, Any]:
         contracts = self._normalize_contracts(plan_payload.get("triage_contracts"))
         observation_text = " ".join(str(item).lower() for item in typed_observations)
@@ -131,7 +141,12 @@ class WorkflowService:
             "optional_runtime_degraded": bool(optional_runtime.get("degraded")),
             "optional_runtime_blockers": degraded_optional,
             "dependency_status": dependency_state,
+            "runtime_status": "blocked" if headless_blockers or dependency_state == "blocked" else dependency_state,
+            "case_truth_ready": dependency_state in {"ready", "degraded"},
+            "headless_execution_eligible": supports_headless_execution and headless_declared and dependency_state != "blocked",
             "capability_scope": "workflow_runtime_contract",
+            "runtime_truth": "workflow_registry_plus_runtime_enforcement",
+            "contract_version": "workflow-runtime-contract/v2",
         }
 
     def evaluate_runtime_readiness(
@@ -239,15 +254,24 @@ class WorkflowService:
             execution_contract,
             dependency_status_for_surface,
         )
+        interactive_runtime_blocked = bool(execution_surface.get("interactive_runtime_required"))
+        if interactive_runtime_blocked:
+            blocking_reasons.append("interactive_runtime_required")
+            stop_condition_contract["triggered"].append("interactive_runtime_required")
 
         status = "blocked" if blocking_reasons else dependency_status.get("status", "ready")
         if status == "unknown":
             status = "ready"
+        dependency_case_truth_ready = dependency_status.get("status") in {"ready", "degraded"}
         return {
             "workflow_id": workflow_id,
             "status": status,
             "ready": not blocking_reasons and dependency_status.get("status") != "blocked",
+            "case_truth_ready": dependency_case_truth_ready,
             "blocking_reasons": blocking_reasons,
+            "runtime_truth_contract": self._runtime_truth_contract(
+                dependency_status=dependency_status.get("status", "unknown")
+            ),
             "plan_contract": {
                 **plan_contract,
                 "ready": plan_ready,
@@ -279,6 +303,7 @@ class WorkflowService:
                 "governance_store_ready": governance_ready,
             },
             "execution_surface": execution_surface,
+            "interactive_runtime_blocked": interactive_runtime_blocked,
             "dependency_status": dependency_status,
         }
 
@@ -309,6 +334,9 @@ class WorkflowService:
             "deterministic_verdict_owner": "CABTA deterministic core",
             "contract_version": "governance-contract/v2",
         }
+        runtime_truth_contract = self._runtime_truth_contract(
+            dependency_status=dependency_status.get("status", "unknown")
+        )
         fact_contract = {
             "contract_version": "workflow-runtime-contract/v2",
             "deterministic_verdict_owner": "CABTA deterministic core",
@@ -324,6 +352,7 @@ class WorkflowService:
             "workflow": workflow_contract,
             "dependency_status": dependency_status,
             "runtime_enforcement": runtime_enforcement,
+            "runtime_truth_contract": runtime_truth_contract,
             "run_contract": {
                 "supports_headless": bool(workflow.get("headless_ready")),
                 "supports_headless_execution": self._supports_headless_execution(workflow, execution_contract),
@@ -502,6 +531,16 @@ class WorkflowService:
         evidence_quality_summary = metadata.get("evidence_quality_summary", {}) if isinstance(metadata.get("evidence_quality_summary"), dict) else {}
         fact_family_schemas = metadata.get("fact_family_schemas", {}) if isinstance(metadata.get("fact_family_schemas"), dict) else {}
         investigation_plan = metadata.get("investigation_plan", {}) if isinstance(metadata.get("investigation_plan"), dict) else {}
+        execution_contract, _, _ = self._execution_contracts(workflow)
+        supports_headless_execution = self._supports_headless_execution(workflow, execution_contract)
+        interactive_runtime_required = not supports_headless_execution
+        headless_declared = bool(workflow.get("headless_ready"))
+        headless_blockers: List[str] = []
+        if not headless_declared:
+            headless_blockers.append("workflow_not_declared_headless_ready")
+        if interactive_runtime_required:
+            headless_blockers.append("approval_checkpoints_require_interactive_runtime")
+
         return {
             "session_id": session["id"],
             "workflow_id": workflow_id,
@@ -522,7 +561,7 @@ class WorkflowService:
             "phase_index": phase_index,
             "phases": phases,
             "execution_backend": workflow.get("execution_backend", "agent"),
-            "headless_ready": bool(workflow.get("headless_ready")),
+            "headless_ready": headless_declared,
             "approval_mode": workflow.get("approval_mode", "inherited"),
             "requires_playbook": bool(workflow.get("playbook_id")),
             "created_at": session.get("created_at"),
@@ -536,9 +575,15 @@ class WorkflowService:
                 "triage_contract_count": len(list(investigation_plan.get("triage_contracts") or [])),
                 "evidence_ready": int(evidence_quality_summary.get("observation_count", 0) or 0) > 0,
                 "governed": True,
+                "case_truth_ready": int(evidence_quality_summary.get("observation_count", 0) or 0) > 0,
                 "deterministic_verdict_owner": str(
                     investigation_plan.get("deterministic_verdict_owner") or "CABTA deterministic core"
                 ),
+                "runtime_truth": "workflow_registry_plus_session_metadata",
+                "contract_version": "workflow-runtime-contract/v2",
+                "supports_headless_execution": supports_headless_execution,
+                "interactive_runtime_required": interactive_runtime_required,
+                "headless_blockers": headless_blockers,
             },
             "typed_fact_contract": {
                 "contract_version": "workflow-runtime-contract/v2",

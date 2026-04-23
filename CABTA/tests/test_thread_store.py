@@ -119,9 +119,15 @@ def test_get_latest_accepted_snapshot_returns_published_or_accepted_thread_truth
     )
 
     accepted = store.get_latest_accepted_snapshot(thread_id)
+    authoritative = store.get_latest_authoritative_memory_snapshot(thread_id)
+    latest_memory = store.get_latest_memory_snapshot(thread_id)
 
     assert accepted["snapshot_id"] == snapshot_id
+    assert authoritative["snapshot_id"] == snapshot_id
+    assert latest_memory["snapshot_id"] == snapshot_id
     assert accepted["authority_scope"] == "published"
+    assert authoritative["authority_scope"] == "published"
+    assert latest_memory["authority_scope"] == "published"
     assert accepted["snapshot"]["accepted_memory"]["accepted_facts"][0]["summary"] == "published fact"
 
 
@@ -148,7 +154,11 @@ def test_get_latest_accepted_snapshot_does_not_alias_working_snapshot_as_accepte
     )
 
     latest = store.get_latest_snapshot(thread_id)
+    latest_memory = store.get_latest_memory_snapshot(thread_id)
     accepted = store.get_latest_accepted_snapshot(thread_id)
+    authoritative = store.get_latest_authoritative_memory_snapshot(thread_id)
 
     assert latest["authority_scope"] == "working"
+    assert latest_memory["authority_scope"] == "working"
     assert accepted == {}
+    assert authoritative == {}

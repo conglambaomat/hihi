@@ -205,6 +205,33 @@ def test_assess_specialist_routing_exposes_scores_and_signal_reasons():
     assert "top_gap_process_execution" in assessment["scores"]["malware_endpoint"]["reasons"]
 
 
+def test_assess_specialist_routing_exposes_memory_contract_and_uses_authoritative_publication_scope_bias():
+    router = SpecialistRouter()
+    state = _build_state(
+        specialist_team=["triage", "investigator", "correlator"],
+        chat_context_restored_memory_scope="published",
+        chat_context_restored_memory_kind="authoritative_case_truth",
+        chat_context_restored_publication_scope="published",
+        active_observations=[],
+        unresolved_questions=[],
+        accepted_facts=[],
+        entity_state={"entities": {}, "relationships": []},
+        investigation_plan={},
+        reasoning_state={},
+        agentic_explanation={"missing_evidence": [], "root_cause_assessment": {"status": "collecting"}},
+    )
+
+    assessment = router.assess_specialist_routing(state)
+
+    assert assessment["selected_index"] == 1
+    assert assessment["selected_profile"] == "investigator"
+    assert assessment["signals"]["memory_scope"] == "published"
+    assert assessment["signals"]["memory_kind"] == "authoritative_case_truth"
+    assert assessment["signals"]["publication_scope"] == "published"
+    assert assessment["scores"]["investigator"]["score"] == 1
+    assert "authoritative_published_context" in assessment["scores"]["investigator"]["reasons"]
+
+
 def test_assess_specialist_routing_uses_network_fact_family_signal():
     router = SpecialistRouter()
     state = _build_state(

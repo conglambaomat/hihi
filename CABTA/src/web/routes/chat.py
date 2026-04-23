@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.chat_intent_router import ChatIntentRouter
 from src.agent.session_response_builder import SessionResponseBuilder
+from src.agent.thread_sync_service import ThreadSyncService
 
 from .agent import _chat_history_messages, _decorate_session_payload
 
@@ -75,6 +76,18 @@ def _session_metadata(session: dict) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
+
+def _normalize_memory_contract(
+    case_memory_context: Optional[dict],
+    *,
+    snapshot: Optional[dict] = None,
+) -> dict:
+    return ThreadSyncService.resolve_session_memory_contract(
+        case_memory_context,
+        snapshot=snapshot,
+    )
+
+
 def _preferred_chat_profile(session: Optional[dict] = None) -> str:
     metadata = _session_metadata(session or {})
     for key in ("active_specialist", "lead_agent_profile_id", "agent_profile_id"):
@@ -82,6 +95,36 @@ def _preferred_chat_profile(session: Optional[dict] = None) -> str:
         if candidate and candidate != "workflow_controller":
             return candidate
     return DEFAULT_CHAT_AGENT_PROFILE
+
+
+
+def _select_follow_up_snapshot(
+    *,
+    thread_snapshot: Optional[dict],
+    case_memory_context: Optional[dict],
+) -> tuple[dict, Optional[dict], str]:
+    resolved_thread_snapshot = thread_snapshot if isinstance(thread_snapshot, dict) else {}
+    resolved_case_memory_context = case_memory_context if isinstance(case_memory_context, dict) else None
+    thread_contract = _normalize_memory_contract(snapshot=resolved_thread_snapshot, case_memory_context=None)
+    authoritative_snapshot = {}
+    if resolved_case_memory_context is not None:
+        authoritative_snapshot = (
+            resolved_case_memory_context.get("authoritative_snapshot")
+            or resolved_case_memory_context.get("memory_snapshot")
+            or {}
+        )
+    authoritative_snapshot = authoritative_snapshot if isinstance(authoritative_snapshot, dict) else {}
+    case_contract = _normalize_memory_contract(
+        resolved_case_memory_context,
+        snapshot=authoritative_snapshot,
+    ) if authoritative_snapshot else {}
+    if authoritative_snapshot and case_contract.get("memory_is_authoritative") and not thread_contract.get("memory_is_authoritative"):
+        return authoritative_snapshot, resolved_case_memory_context, "case_memory"
+    if resolved_thread_snapshot:
+        return resolved_thread_snapshot, resolved_case_memory_context, "thread_snapshot"
+    if authoritative_snapshot:
+        return authoritative_snapshot, resolved_case_memory_context, "case_memory"
+    return {}, resolved_case_memory_context, "none"
 
 
 def _finding_snapshot(findings, limit: int = 3) -> str:
@@ -193,6 +236,11 @@ async def send_message(request: Request, body: ChatMessage):
         # If session is still active, return status
         if session.get('status') == 'active':
             command_id = None
+            queued_command_payload = {
+                "intent": intent_payload["intent"],
+                "requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
+                "queued_while_active": True,
+            }
             if thread_store and thread_id:
                 thread_store.append_message(
                     thread_id=thread_id,
@@ -206,11 +254,7 @@ async def send_message(request: Request, body: ChatMessage):
                     content=body.message,
                     session_id=body.session_id,
                     intent=intent_payload["intent"],
-                    payload={
-                        "intent": intent_payload["intent"],
-                        "requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
-                        "queued_while_active": True,
-                    },
+                    payload=queued_command_payload,
                 )
             return {
                 "session_id": body.session_id,
@@ -219,25 +263,31 @@ async def send_message(request: Request, body: ChatMessage):
                 "thread_id": thread_id or None,
                 "queued_command_id": command_id,
                 "queued_intent": intent_payload["intent"],
+                "queued_requires_fresh_evidence": queued_command_payload["requires_fresh_evidence"],
+                "queued_command_payload": queued_command_payload,
             }
 
         # If session is completed/failed, start a new investigation with context
         case_memory_context = None
-        if not snapshot and case_memory_service is not None and session.get("case_id"):
+        if case_memory_service is not None and session.get("case_id"):
             case_memory_context = case_memory_service.get_case_memory(session.get("case_id"))
-            authoritative_snapshot = (
-                case_memory_context.get("authoritative_snapshot")
-                or case_memory_context.get("memory_snapshot")
-                or case_memory_context.get("accepted_snapshot", {})
-                if isinstance(case_memory_context, dict)
-                else {}
-            )
-            if isinstance(authoritative_snapshot, dict) and authoritative_snapshot:
-                snapshot = authoritative_snapshot
-                thread_summary = thread_summary or str(case_memory_context.get("summary") or "").strip()
-                thread_id = thread_id or str(case_memory_context.get("thread_id") or "").strip()
+        snapshot, case_memory_context, snapshot_source = _select_follow_up_snapshot(
+            thread_snapshot=snapshot,
+            case_memory_context=case_memory_context,
+        )
+        if snapshot_source == "case_memory" and isinstance(case_memory_context, dict):
+            thread_summary = thread_summary or str(case_memory_context.get("summary") or "").strip()
+            thread_id = thread_id or str(case_memory_context.get("thread_id") or "").strip()
 
         if snapshot:
+            memory_contract = _normalize_memory_contract(case_memory_context, snapshot=snapshot)
+            if not memory_contract.get("memory_boundary") and isinstance(case_memory_context, dict):
+                inherited_boundary = case_memory_context.get("memory_boundary")
+                if isinstance(inherited_boundary, dict):
+                    memory_contract = {
+                        **memory_contract,
+                        "memory_boundary": dict(inherited_boundary),
+                    }
             context = _response_builder.build_follow_up_goal(
                 previous_goal=str(session.get("goal") or ""),
                 thread_summary=thread_summary,
@@ -245,12 +295,11 @@ async def send_message(request: Request, body: ChatMessage):
                 message=body.message,
                 intent=intent_payload["intent"],
                 requires_fresh_evidence=bool(intent_payload["requires_fresh_evidence"]),
-                memory_scope=(
-                    case_memory_context.get("authoritative_memory_scope")
-                    or case_memory_context.get("memory_scope")
-                    if isinstance(case_memory_context, dict)
-                    else None
-                ),
+                memory_scope=memory_contract["memory_scope"],
+                memory_boundary=memory_contract["memory_boundary"],
+                memory_kind=memory_contract["memory_kind"],
+                publication_scope=memory_contract["publication_scope"],
+                memory_is_authoritative=memory_contract["memory_is_authoritative"],
             )
         else:
             context = _build_follow_up_goal(session, body.message)
@@ -267,6 +316,12 @@ async def send_message(request: Request, body: ChatMessage):
                 "thread_id": thread_id or None,
                 "chat_intent": intent_payload["intent"],
                 "chat_follow_up_requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
+                "memory_scope": memory_contract["memory_scope"] if snapshot else None,
+                "memory_kind": memory_contract["memory_kind"] if snapshot else None,
+                "memory_is_authoritative": memory_contract["memory_is_authoritative"] if snapshot else None,
+                "publication_scope": memory_contract["publication_scope"] if snapshot else None,
+                "authoritative_memory_scope": memory_contract["authoritative_memory_scope"] if snapshot else None,
+                "memory_boundary": memory_contract["memory_boundary"] if snapshot else {},
                 "case_memory_context": case_memory_context if isinstance(case_memory_context, dict) else None,
             },
         )

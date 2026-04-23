@@ -55,8 +55,16 @@ def test_build_thread_snapshot_returns_expected_shape(sample_state):
     assert snapshot["thread_context"]["thread_id"] == "thread-1"
     assert snapshot["thread_context"]["step_count"] == 3
     assert snapshot["thread_context"]["memory_scope"] == "working"
+    assert snapshot["snapshot_contract"]["memory_kind"] == "working_context"
+    assert snapshot["snapshot_contract"]["memory_is_authoritative"] is False
+    assert snapshot["snapshot_contract"]["authoritative_memory_scope"] is None
+    assert snapshot["snapshot_contract"]["publication_scope"] == "working"
     assert snapshot["memory_boundary"]["case_id"] == "case-1"
     assert snapshot["memory_boundary"]["thread_id"] == "thread-1"
+    assert snapshot["memory_boundary"]["publication_scope"] == "working"
+    assert snapshot["memory_boundary"]["authoritative_memory_scope"] is None
+    assert snapshot["memory_boundary"]["memory_kind"] == "working_context"
+    assert snapshot["memory_boundary"]["memory_is_authoritative"] is False
     assert snapshot["case_scope"]["case_id"] == "case-1"
 
 
@@ -90,8 +98,16 @@ def test_build_thread_snapshot_exposes_candidate_lifecycle_contract(sample_state
     assert snapshot["lifecycle_memory_layers"]["candidate"] == "working_memory"
     assert snapshot["snapshot_contract"]["state_version"] == "thread-snapshot-lifecycle/v1"
     assert snapshot["snapshot_contract"]["lifecycle"] == "candidate"
+    assert snapshot["snapshot_contract"]["memory_kind"] == "working_context"
+    assert snapshot["snapshot_contract"]["memory_is_authoritative"] is False
+    assert snapshot["snapshot_contract"]["authoritative_memory_scope"] is None
+    assert snapshot["snapshot_contract"]["publication_scope"] == "candidate"
     assert snapshot["snapshot_contract"]["is_terminal"] is False
     assert snapshot["snapshot_contract"]["publication_ready"] is False
+    assert snapshot["memory_boundary"]["publication_scope"] == "candidate"
+    assert snapshot["memory_boundary"]["authoritative_memory_scope"] is None
+    assert snapshot["memory_boundary"]["memory_kind"] == "working_context"
+    assert snapshot["memory_boundary"]["memory_is_authoritative"] is False
 
 
 def test_finalize_lifecycle_for_state_normalizes_terminal_defaults():
@@ -99,8 +115,8 @@ def test_finalize_lifecycle_for_state_normalizes_terminal_defaults():
     published_state = SimpleNamespace(snapshot_lifecycle=None, is_published=True, is_terminal=lambda: True)
     active_state = SimpleNamespace(snapshot_lifecycle=None, is_published=False, is_terminal=lambda: False)
 
-    assert ThreadSyncService.finalize_lifecycle_for_state(completed_state) == "accepted"
-    assert completed_state.snapshot_lifecycle == "accepted"
+    assert ThreadSyncService.finalize_lifecycle_for_state(completed_state) == "candidate"
+    assert completed_state.snapshot_lifecycle == "candidate"
     assert ThreadSyncService.finalize_lifecycle_for_state(published_state) == "published"
     assert published_state.snapshot_lifecycle == "published"
     assert ThreadSyncService.finalize_lifecycle_for_state(active_state) == "working"
@@ -133,7 +149,9 @@ def test_sync_thread_snapshot_marks_terminal_state_as_completed():
     kwargs = thread_store.update_thread_snapshot.call_args.kwargs
     assert kwargs["status"] == "completed"
     assert kwargs["snapshot"]["snapshot_state"] == "accepted"
-    assert kwargs["snapshot"]["thread_context"]["memory_scope"] == "accepted"
+    assert kwargs["snapshot"]["thread_context"]["memory_scope"] == "candidate"
+    assert kwargs["snapshot"]["snapshot_lifecycle"] == "candidate"
+    assert kwargs["snapshot"]["snapshot_contract"]["memory_is_authoritative"] is False
 
 
 def test_build_thread_snapshot_promotes_published_lifecycle_when_terminal_and_published():
@@ -162,11 +180,117 @@ def test_build_thread_snapshot_promotes_published_lifecycle_when_terminal_and_pu
     assert snapshot["snapshot_lifecycle"] == "published"
     assert snapshot["lifecycle_memory_layers"]["published"] == "accepted_memory"
     assert snapshot["snapshot_contract"]["lifecycle"] == "published"
+    assert snapshot["snapshot_contract"]["memory_kind"] == "authoritative_case_truth"
+    assert snapshot["snapshot_contract"]["memory_is_authoritative"] is True
+    assert snapshot["snapshot_contract"]["authoritative_memory_scope"] == "published"
+    assert snapshot["snapshot_contract"]["publication_scope"] == "published"
     assert snapshot["snapshot_contract"]["is_terminal"] is True
     assert snapshot["snapshot_contract"]["publication_ready"] is True
     assert snapshot["accepted_memory"]["deterministic_decision"]["verdict"] == "MALICIOUS"
     assert snapshot["thread_context"]["memory_scope"] == "published"
     assert snapshot["memory_boundary"]["thread_id"] == "thread-published"
+    assert snapshot["memory_boundary"]["publication_scope"] == "published"
+    assert snapshot["memory_boundary"]["authoritative_memory_scope"] == "published"
+    assert snapshot["memory_boundary"]["memory_kind"] == "authoritative_case_truth"
+    assert snapshot["memory_boundary"]["memory_is_authoritative"] is True
+
+
+def test_resolve_memory_contract_normalizes_authoritative_and_working_payloads():
+    published_contract = ThreadSyncService.resolve_memory_contract(
+        {
+            "memory_scope": "published",
+            "memory_boundary": {"publication_scope": "published"},
+        }
+    )
+    working_contract = ThreadSyncService.resolve_memory_contract(
+        {
+            "publication_scope": "working",
+            "memory_boundary": {"case_id": "case-1", "publication_scope": "working"},
+        }
+    )
+
+    assert published_contract == {
+        "memory_scope": "published",
+        "authoritative_memory_scope": "published",
+        "publication_scope": "published",
+        "memory_kind": "authoritative_case_truth",
+        "memory_is_authoritative": True,
+        "memory_boundary": {"publication_scope": "published"},
+    }
+    assert working_contract == {
+        "memory_scope": "working",
+        "authoritative_memory_scope": None,
+        "publication_scope": "working",
+        "memory_kind": "working_context",
+        "memory_is_authoritative": False,
+        "memory_boundary": {"case_id": "case-1", "publication_scope": "working"},
+    }
+
+
+def test_resolve_memory_contract_from_snapshot_uses_snapshot_contract_and_boundary():
+    contract = ThreadSyncService.resolve_memory_contract_from_snapshot(
+        {
+            "snapshot_lifecycle": "accepted",
+            "snapshot_contract": {
+                "lifecycle": "accepted",
+                "authoritative_memory_scope": "accepted",
+                "publication_scope": "accepted",
+                "memory_kind": "authoritative_case_truth",
+                "memory_is_authoritative": True,
+            },
+            "memory_boundary": {"case_id": "case-2", "thread_id": "thread-2", "publication_scope": "accepted"},
+        }
+    )
+
+    assert contract == {
+        "memory_scope": "accepted",
+        "authoritative_memory_scope": "accepted",
+        "publication_scope": "accepted",
+        "memory_kind": "authoritative_case_truth",
+        "memory_is_authoritative": True,
+        "memory_boundary": {"case_id": "case-2", "thread_id": "thread-2", "publication_scope": "accepted"},
+    }
+
+
+
+def test_resolve_session_memory_contract_falls_back_to_snapshot_when_payload_has_no_contract():
+    contract = ThreadSyncService.resolve_session_memory_contract(
+        {
+            "publication_scope": "working",
+            "memory_boundary": {"case_id": "case-8", "publication_scope": "working"},
+        },
+        snapshot={
+            "snapshot_lifecycle": "published",
+            "snapshot_contract": {
+                "lifecycle": "published",
+                "authoritative_memory_scope": "published",
+                "publication_scope": "published",
+                "memory_kind": "authoritative_case_truth",
+                "memory_is_authoritative": True,
+            },
+            "memory_boundary": {
+                "case_id": "case-8",
+                "thread_id": "thread-8",
+                "session_id": "sess-8",
+                "publication_scope": "published",
+            },
+        },
+    )
+
+    assert contract == {
+        "memory_scope": "published",
+        "authoritative_memory_scope": "published",
+        "publication_scope": "published",
+        "memory_kind": "authoritative_case_truth",
+        "memory_is_authoritative": True,
+        "memory_boundary": {
+            "case_id": "case-8",
+            "thread_id": "thread-8",
+            "session_id": "sess-8",
+            "publication_scope": "published",
+        },
+    }
+
 
 
 def test_thread_memory_helpers_support_new_and_legacy_snapshot_shapes():
@@ -243,6 +367,14 @@ def test_consume_pending_thread_command_updates_state_and_store(sample_state):
     assert sample_state.unresolved_questions[0] == "Check adjacent host telemetry"
     assert sample_state.reasoning_state["open_questions"][0] == "Check adjacent host telemetry"
     store.update_session_metadata.assert_called_once()
+    metadata_update = store.update_session_metadata.call_args.args[1]
+    assert metadata_update["pending_thread_command_id"] == "cmd-1"
+    assert metadata_update["pending_thread_command_intent"] == "follow_up"
+    assert metadata_update["pending_thread_command_requires_fresh_evidence"] is True
+    assert metadata_update["pending_thread_command_payload"] == {
+        "intent": "follow_up",
+        "requires_fresh_evidence": True,
+    }
     store.add_step.assert_called_once()
     thread_store.complete_command.assert_called_once()
     notify.assert_called_once()
