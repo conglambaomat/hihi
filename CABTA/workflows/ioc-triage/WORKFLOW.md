@@ -1,7 +1,7 @@
 ---
 id: ioc-triage
 name: IOC Triage
-description: "Structured IOC enrichment and analyst-ready prioritization backed by CABTA scoring."
+description: "Structured IOC enrichment and analyst-ready prioritization backed by AISA scoring."
 execution-backend: playbook
 playbook-id: ioc_triage
 default-agent-profile: threat_intel_analyst
@@ -41,6 +41,6 @@ evidence-backed verdict.
 
 ## Operating Model
 
-- Prefer CABTA IOC investigation and scoring first.
+- Prefer AISA IOC investigation and scoring first.
 - Use enrichment tools to explain or strengthen the evidence chain.
 - Treat single-source hits as supporting context, not as final proof.

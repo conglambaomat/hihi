@@ -32,6 +32,8 @@ class CaseMemoryService:
         snapshot_lifecycle: Optional[str] = None,
         checkpoint_metrics: Optional[Dict[str, Any]] = None,
         checkpoint_summary: Optional[Dict[str, Any]] = None,
+        context_pack_summary: Optional[Dict[str, Any]] = None,
+        context_ledger_summary: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self.case_store is None or not case_id:
             return
@@ -77,6 +79,9 @@ class CaseMemoryService:
             "evidence_edges": evidence_summary.get("edges", []) if isinstance(evidence_summary, dict) else [],
             "checkpoint_metrics": dict(checkpoint_metrics or {}),
             "checkpoint_summary": dict(checkpoint_summary or {}),
+            "context_pack_summary_latest": dict(context_pack_summary or {}),
+            "context_ledger_summary_latest": dict(context_ledger_summary or {}),
+            "context_authority_policy": "context_pack_is_orchestration_metadata_not_verdict_authority",
         }
         publication_ready = authoritative_scope is not None
         root_cause_ready = publication_ready and isinstance(root_cause_assessment, dict) and bool(

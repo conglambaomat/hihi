@@ -1,4 +1,4 @@
-# CABTA Investigator-Grade Architecture Refactor Plan
+# AISA Investigator-Grade Architecture Refactor Plan
 
 **Date:** 2026-04-19
 **Status:** Planning
@@ -6,11 +6,11 @@
 
 ## Goal
 
-Refactor CABTA's agentic investigation architecture so it becomes more reliable, more explainable, easier to evolve, and closer to investigator-grade behavior without rewriting the whole system.
+Refactor AISA's agentic investigation architecture so it becomes more reliable, more explainable, easier to evolve, and closer to investigator-grade behavior without rewriting the whole system.
 
 This plan must make the system cleaner while preserving the following core invariants:
 
-- deterministic CABTA analyzers and scoring remain the source of truth for verdict-bearing outputs
+- deterministic AISA analyzers and scoring remain the source of truth for verdict-bearing outputs
 - local-first behavior remains intact
 - optional integrations continue to degrade gracefully
 - current API and UI flows remain stable unless explicitly versioned
@@ -135,7 +135,7 @@ Relations should increasingly carry:
 
 ### Outcome E — Clean Memory Semantics
 
-CABTA should explicitly separate:
+AISA should explicitly separate:
 
 1. working memory
 2. session execution snapshot
@@ -594,7 +594,7 @@ Make prompt layering and provider behavior consistent across backends.
 
 ### Goal
 
-Prepare CABTA for real-world scale and iterative improvement without blocking earlier refactors.
+Prepare AISA for real-world scale and iterative improvement without blocking earlier refactors.
 
 ### Work
 

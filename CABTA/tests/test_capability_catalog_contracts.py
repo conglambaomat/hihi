@@ -38,7 +38,7 @@ def test_build_summary_exposes_readiness_flags(tmp_path):
 
     summary = CapabilityCatalog().build_summary(app)
 
-    assert summary["verdict_authority_owner"] == "cabta_scoring"
+    assert summary["verdict_authority_owner"] == "aisa_scoring"
     assert summary["tool_count"] >= 1
     assert summary["analysis_core_ready"] is True
     assert summary["mcp_ready"] is False
@@ -136,4 +136,24 @@ def test_build_catalog_exposes_control_plane_and_truth_metadata(tmp_path):
     assert catalog["orchestration_plane"]["control_plane"]["governance_truth_explicit"] is True
 
     assert catalog["analysis_core"]["readiness"]["status"] == "ready"
-    assert catalog["verdict_authority"]["owner"] == "cabta_scoring"
+    assert catalog["verdict_authority"]["owner"] == "aisa_scoring"
+
+
+def test_tool_registry_resolves_live_connector_capabilities():
+    from src.agent.tool_registry import ToolRegistry
+
+    registry = ToolRegistry()
+    async def noop(**kwargs):
+        return {}
+    registry.register_local_tool('investigate_ioc', 'ioc', {}, 'threat_intel', noop)
+    registry.register_mcp_tools('splunk', [{'name': 'search_logs', 'description': 'search', 'inputSchema': {}}])
+    registry.register_local_tool('correlate_findings', 'correlate', {}, 'case_management', noop)
+
+    ioc = registry.resolve_action_connector({'action_type': 'IOC_EXTRACT_ENRICH', 'capability_id': 'ioc.enrich'})
+    assert ioc['status'] == 'available'
+    assert any(t['name'] == 'investigate_ioc' for t in ioc['available_tools'])
+    splunk = registry.resolve_action_connector({'action_type': 'RELATED_EVENT_SEARCH', 'capability_id': 'splunk.search_logs'})
+    assert splunk['status'] == 'available'
+    assert any(t['name'] == 'splunk.search_logs' for t in splunk['available_tools'])
+    availability = registry.connector_availability()
+    assert availability['available_count'] >= 3

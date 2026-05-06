@@ -1,4 +1,4 @@
-"""Blue Team Assistant - File Analyzers"""
+"""AI Security Assistant - File Analyzers"""
 
 from .pe_analyzer import PEAnalyzer
 from .elf_analyzer import ELFAnalyzer

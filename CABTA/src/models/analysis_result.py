@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - Standardized Analysis Result Models.
+AI Security Assistant - Standardized Analysis Result Models.
 Author: Ugur Ates
 
 Provides a unified data structure for all analyzer outputs.

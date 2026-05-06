@@ -141,7 +141,7 @@ class ThreatIntelligence:
         """
         Normalize IOC type aliases to the endpoint families used by VirusTotal.
 
-        CABTA commonly categorizes hashes as ``md5``, ``sha1`` or ``sha256``,
+        AISA commonly categorizes hashes as ``md5``, ``sha1`` or ``sha256``,
         while the VirusTotal client historically only accepted ``hash``. That
         mismatch silently dropped file reputation from file-analysis scoring.
         """

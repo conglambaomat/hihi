@@ -1,4 +1,4 @@
-# CABTA Codex Upgrade Master Plan
+# AISA Codex Upgrade Master Plan
 
 **Date:** 2026-04-19
 **Status:** Planning
@@ -6,9 +6,9 @@
 
 ## Goal
 
-Upgrade CABTA from a strong agentic investigation scaffold into a true agentic SOC investigator that can plan investigations, normalize evidence, reason across entities and causal chains, preserve deterministic verdict authority, and carry follow-up investigations without corrupting session state.
+Upgrade AISA from a strong agentic investigation scaffold into a true agentic SOC investigator that can plan investigations, normalize evidence, reason across entities and causal chains, preserve deterministic verdict authority, and carry follow-up investigations without corrupting session state.
 
-This plan is implementation-facing. It is intended for Codex or another code-writing agent operating directly in the CABTA repository. It should be treated as the primary working plan for the next major agentic-investigation upgrade.
+This plan is implementation-facing. It is intended for Codex or another code-writing agent operating directly in the AISA repository. It should be treated as the primary working plan for the next major agentic-investigation upgrade.
 
 ## Source Of Truth
 
@@ -53,7 +53,7 @@ Primary existing test files to extend:
 ## Scope
 
 - in scope: investigation planning, observation normalization, stronger entity and evidence modeling, stronger hypothesis reasoning, root-cause assessment, thread memory groundwork, evidence-driven specialist routing, and log-first investigation improvements
-- in scope: evolving the current session/store/case architecture without replacing CABTA's deterministic core
+- in scope: evolving the current session/store/case architecture without replacing AISA's deterministic core
 - in scope: additive schema and metadata changes in `AgentState`, `AgentStore`, `CaseStore`, and read-side services
 - in scope: focused helper services that reduce `AgentLoop` overload without rewriting the runtime
 - out of scope: replacing deterministic scoring with LLM reasoning
@@ -63,7 +63,7 @@ Primary existing test files to extend:
 
 ## Current Code-Grounded Assessment
 
-### What CABTA already has and must preserve
+### What AISA already has and must preserve
 
 - `AgentLoop` is already a real asynchronous investigation runtime with THINK/ACT/OBSERVE-style looping, local and MCP tool execution, playbook dispatch, approval waits, provider failover, persistence hooks, and case sync.
 - `AgentState` already carries `reasoning_state`, `entity_state`, `evidence_state`, `deterministic_decision`, and `agentic_explanation`.
@@ -130,7 +130,7 @@ Target architecture:
 
 ## Target End State
 
-CABTA should evolve toward this operating model:
+AISA should evolve toward this operating model:
 
 - the agent is the lead investigator
 - tools, MCP servers, and playbooks are the capability plane
@@ -600,7 +600,7 @@ Examples:
 
 ## Log Investigation Upgrade
 
-CABTA already has a strong log-hunting base. The next step is to separate planning from execution while preserving safety controls.
+AISA already has a strong log-hunting base. The next step is to separate planning from execution while preserving safety controls.
 
 Required additions:
 
@@ -627,7 +627,7 @@ Required stance:
 
 - keep naming cleanup as a dedicated pass
 - do not mix large rename churn into the first reasoning slices
-- prefer `CABTA` in new plan text, new docs, new logs, and new user-facing strings
+- prefer `AISA` in new plan text, new docs, new logs, and new user-facing strings
 
 Likely rename targets later:
 

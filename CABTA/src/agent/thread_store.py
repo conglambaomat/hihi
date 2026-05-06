@@ -17,12 +17,12 @@ def _now_iso() -> str:
 
 
 def _default_db_path() -> Path:
-    explicit = os.environ.get("CABTA_THREAD_DB")
+    explicit = os.environ.get("AISA_THREAD_DB") or os.environ.get("CABTA_THREAD_DB")
     if explicit:
         return Path(explicit)
-    home_override = os.environ.get("CABTA_HOME")
+    home_override = os.environ.get("AISA_HOME") or os.environ.get("CABTA_HOME")
     home_path = Path(home_override) if home_override else Path.home()
-    return home_path / ".cabta-runtime" / "threads.db"
+    return home_path / ".aisa-runtime" / "threads.db"
 
 
 class ThreadStore:

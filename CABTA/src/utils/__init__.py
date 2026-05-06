@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Utility Functions"""
+"""AI Security Assistant - Utility Functions"""
 
 from .config import load_config
 from .ioc_extractor import IOCExtractor

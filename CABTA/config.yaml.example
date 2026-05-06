@@ -1,178 +1,221 @@
-# CABTA Configuration
-# Copy this file to config.yaml and add your API keys
-
-# API Keys (Optional - tool works without them but with limited features)
 api_keys:
-  virustotal: ""          # https://www.virustotal.com/gui/my-apikey
-  abuseipdb: ""           # https://www.abuseipdb.com/account/api
-  shodan: ""              # https://account.shodan.io/
-  alienvault: ""          # https://otx.alienvault.com/api
-  hybrid_analysis: ""     # https://www.hybrid-analysis.com/my-account?tab=api-key
-  greynoise: ""           # https://viz.greynoise.io/account/api-key
-  urlscan: ""             # https://urlscan.io/user/profile/
-  openrouter: ""          # https://openrouter.ai/keys
-  gemini: ""              # https://aistudio.google.com/app/apikey
-
-# LLM Configuration (Optional - for AI-powered analysis)
+  virustotal: ''
+  abuseipdb: ''
+  shodan: ''
+  alienvault: ''
+  hybrid_analysis: ''
+  greynoise: ''
+  urlscan: ''
+  openrouter: ''
+  gemini: ''
 llm:
-  provider: "openrouter"  # CABTA is configured to use OpenRouter-only for hosted LLM access
-  auto_failover: false    # Keep false if you want CABTA to warn on provider errors instead of falling back
-  fallback_providers: []
-  openrouter_force_json_decision_mode: false  # Set true only if a specific OpenRouter model fails native tool calling
-  openrouter_model: "arcee-ai/trinity-large-preview:free"
-  openrouter_endpoint: "https://openrouter.ai/api/v1"
-  ollama_model: "llama3.1:8b"
-  ollama_endpoint: "http://localhost:11434"
-  anthropic_model: "claude-sonnet-4-20250514"
-  gemini_model: "gemini-2.5-flash"
-  gemini_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai"
-
-# Agent Loop Settings
+  provider: router
+  base_url: http://localhost:20128/v1
+  model: gpt-5.4
+  timeout_seconds: 120
 agent:
-  max_steps: 50
+  max_steps: 1000
   auto_enrich_timeout_seconds: 12
-  chat_tool_cap: 14             # For quick analyst chat questions, expose a smaller tool set to the LLM
-  chat_prompt_findings_limit: 5 # Keep the live chat prompt focused on the most relevant recent evidence
-  chat_auto_enrich_limit: 1     # For simple IOC chat, auto-run only the highest-value enrichment pivot
-  chat_response_timeout_seconds: 15
-
-# Analysis Settings
+  chat_tool_cap: 14
+  chat_prompt_findings_limit: 5
+  chat_auto_enrich_limit: 1
+  chat_response_timeout_seconds: 120
+  llm_request_interpreter:
+    mode: primary
+    max_repair_attempts: 1
+    min_accept_confidence: 0.75
+    min_clarify_confidence: 0.5
+    fallback_to_heuristic: true
+    audit_deterministic_diff: true
+    safety_gates_enforced:
+      schema_validation: true
+      parameter_binding: true
+      preflight_validation: true
+      destructive_action_approval: true
+      final_answer_evidence_gate: true
+      deterministic_verdict_authority: true
+  autonomy:
+    level: assistive
+  context:
+    enabled: true
+    context_window_tokens: 32000
+    reserved_output_tokens: 4096
+    safety_margin_tokens: 1024
+    hard_prompt_budget_ratio: 0.92
+    compaction_threshold_ratio: 0.85
+    max_context_pack_bytes: 200000
+    max_ledger_items: 120
+    section_budgets:
+      system_rules: 0.1
+      goal: 0.06
+      reasoning: 0.2
+      evidence: 0.24
+      entities: 0.1
+      hypotheses: 0.12
+      coverage: 0.08
+      tools: 0.06
+      workflow: 0.04
+  runtime_mode: production
+  execution:
+    strict_dag_mode: true
+    require_capability_boundary: true
+    allow_legacy_direct_tool_fallback: false
+    allow_legacy_runtime_in_production: false
+    strict_dag_max_retries: 0
+  capability_plugins:
+    allow_static_catalog_fallback: false
+  tool_policy:
+    allowed_scopes:
+    - data:logs
+    - network:siem
+    - network:external
+    - file:read
+    - sandbox:submit
 analysis:
-  max_file_size_mb: 100   # Maximum file size for analysis
-  timeout_seconds: 300    # Analysis timeout
-  enable_sandbox: true    # Enable sandbox integration
-  enable_yara: true       # Enable YARA scanning
-  llm_timeout_seconds: 25 # Limit the final AI summary so deterministic analysis still completes
-  text_max_scan_mb: 3     # For very large text/log files, scan head+tail up to this total size
-
-# Output Settings
+  max_file_size_mb: 100
+  timeout_seconds: 300
+  enable_sandbox: true
+  enable_yara: true
+  llm_timeout_seconds: 25
+  text_max_scan_mb: 3
 output:
-  default_format: "cli"   # Options: cli, json, html
-  save_reports: true      # Auto-save HTML reports
-  report_dir: "./reports" # Report output directory
-
-# Logging
+  default_format: cli
+  save_reports: true
+  report_dir: ./reports
 logging:
-  level: "INFO"           # Options: DEBUG, INFO, WARNING, ERROR
-  file: ""                # Log file path (empty = console only)
-
-# Web Dashboard
+  level: INFO
+  file: ''
 web:
   demo_mode:
-    enabled: false        # Use deterministic demo fixtures for localhost walkthroughs
-    dataset: "default"    # Fixture set under data/demo/
-
-# Log hunting defaults
+    enabled: false
+    dataset: default
 log_hunting:
   max_window_hours: 168
   max_results: 200
   max_queries_per_hunt: 3
-  demo_backend:
-    enabled: false        # Use the seeded playbook log fixture when Splunk is unavailable
-    dataset: "playbook_log_hunt"
-
-# Optional headless SOC daemon
+  max_retry_attempts: 3
+  max_attempts_per_gap: 2
+  max_attempts_per_objective: 3
+  max_attempts_per_session: 6
+  llm_query_assist_enabled: false
+  llm_query_assist_max_candidates: 3
+  llm_query_assist_require_validation: true
 daemon:
   enabled: false
   retry_backoff_seconds: 60
   lease_timeout_seconds: 300
   schedules: []
-
-# Built-in MCP Servers
-# These names intentionally match the playbook references under data/playbooks/.
-# Start CABTA from the project root so relative paths resolve correctly.
 mcp_servers:
-  - name: "free-osint"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.free_osint_tools"]
-    description: "Free OSINT enrichment and phishing / malware feed lookups"
-    auto_connect: true
-
-  - name: "osint-tools"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.osint_tools"]
-    description: "WHOIS, DNS, SSL, domain age, and lightweight OSINT utilities"
-    auto_connect: true
-
-  - name: "threat-intel-free"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.threat_intel_tools"]
-    env:
-      ABUSECH_AUTH_KEY: ""
-    description: "Free threat intel feeds for IP, domain, URL, and hash pivoting"
-    auto_connect: true
-
-  - name: "vulnerability-tools"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.vulnerability_tools"]
-    description: "CVE, KEV, EPSS, and vulnerability context helpers"
-    auto_connect: true
-
-  - name: "network-analysis"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.network_tools"]
-    description: "Network and protocol analysis helpers"
-    auto_connect: true
-
-  - name: "forensics-tools"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.forensics_tools"]
-    description: "Local forensics and evidence extraction helpers"
-    auto_connect: true
-
-  - name: "malwoverview"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.malwoverview_tools"]
-    env:
-      ABUSECH_AUTH_KEY: ""
-    description: "Malware triage helpers and static overview tooling"
-    auto_connect: true
-
-  - name: "remnux"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.remnux_tools"]
-    description: "REMnux-style malware analysis helpers"
-    auto_connect: true
-
-  - name: "ghidra"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.ghidra_tools"]
-    description: "Reverse engineering helpers with optional Ghidra integration"
-    auto_connect: true
-
-  - name: "mobsf"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.mobsf_tools"]
-    description: "Mobile app analysis helpers with optional MobSF integration"
-    auto_connect: true
-
-  - name: "flare"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.flare_tools"]
-    description: "FLARE-style reverse engineering helpers"
-    auto_connect: true
-
-  - name: "splunk"
-    transport: "stdio"
-    command: ".\\.venv\\Scripts\\python.exe"
-    args: ["-m", "src.mcp_servers.splunk_tools"]
-    env:
-      SPLUNK_URL: "https://splunk.example.local:8089"
-      SPLUNK_TOKEN: ""
-      SPLUNK_VERIFY_TLS: "true"
-      SPLUNK_ALLOWED_INDEXES: "main,endpoint,network"
-      SPLUNK_MAX_WINDOW_HOURS: "168"
-      SPLUNK_MAX_RESULTS: "200"
-    description: "Read-only Splunk hunting, pivots, and host timeline lookups"
-    auto_connect: false
+- name: free-osint
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.free_osint_tools
+  description: Free OSINT enrichment and phishing / malware feed lookups
+  auto_connect: true
+- name: osint-tools
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.osint_tools
+  description: WHOIS, DNS, SSL, domain age, and lightweight OSINT utilities
+  auto_connect: true
+- name: threat-intel-free
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.threat_intel_tools
+  env:
+    ABUSECH_AUTH_KEY: ''
+  description: Free threat intel feeds for IP, domain, URL, and hash pivoting
+  auto_connect: true
+- name: vulnerability-tools
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.vulnerability_tools
+  description: CVE, KEV, EPSS, and vulnerability context helpers
+  auto_connect: true
+- name: network-analysis
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.network_tools
+  description: Network and protocol analysis helpers
+  auto_connect: true
+- name: forensics-tools
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.forensics_tools
+  description: Local forensics and evidence extraction helpers
+  auto_connect: true
+- name: malwoverview
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.malwoverview_tools
+  env:
+    ABUSECH_AUTH_KEY: ''
+  description: Malware triage helpers and static overview tooling
+  auto_connect: true
+- name: remnux
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.remnux_tools
+  description: REMnux-style malware analysis helpers
+  auto_connect: true
+- name: ghidra
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.ghidra_tools
+  description: Reverse engineering helpers with optional Ghidra integration
+  auto_connect: true
+- name: mobsf
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.mobsf_tools
+  description: Mobile app analysis helpers with optional MobSF integration
+  auto_connect: true
+- name: flare
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.flare_tools
+  description: FLARE-style reverse engineering helpers
+  auto_connect: true
+- name: splunk
+  transport: stdio
+  command: .\.venv\Scripts\python.exe
+  args:
+  - -m
+  - src.mcp_servers.splunk_tools
+  env:
+    SPLUNK_URL: https://splunk.example.local:8089
+    SPLUNK_TOKEN: ''
+    SPLUNK_VERIFY_TLS: 'true'
+    SPLUNK_ALLOWED_INDEXES: main,soc101
+    SPLUNK_MAX_WINDOW_HOURS: '168'
+    SPLUNK_MAX_RESULTS: '200'
+  description: Read-only Splunk hunting, pivots, and host timeline lookups
+  auto_connect: false
+runtime:
+  mode: production
+  supervisor:
+    enabled: true
+    max_queue_size: 100
+    worker_count: 1

@@ -1,10 +1,10 @@
-# GitNexus — optional code intelligence workflow
+# GitNexus - optional code intelligence workflow
 
-Use this when the **GitNexus MCP server** (or CLI) is available in your environment. If GitNexus is not connected, use normal search, tests, and code reading instead — nothing in this document is mandatory for editing the repo.
+Use this when the **GitNexus MCP server** (or CLI) is available in your environment. If GitNexus is not connected, use normal search, tests, and code reading instead - do not block small edits on missing GitNexus.
 
 This project may be indexed as **claudekit-engi** in GitNexus. Use GitNexus tools to understand code, assess impact, and navigate safely when the integration is active.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in the terminal first.
+> Before serious code tasks, check GitNexus index freshness with repo context or a safe read tool. If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in the terminal before relying on GitNexus output.
 
 ## Recommended when GitNexus is available
 

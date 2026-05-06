@@ -388,3 +388,27 @@ async def test_run_cycle_ignores_disabled_schedules_for_queue_seeding_and_dispat
     assert enabled_job is not None
     assert enabled_job["schedule_id"] == "sched-enabled"
     agent_loop.investigate.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_run_cycle_requeues_pending_resume_lifecycle_when_budget_remains(tmp_path):
+    queue_store = DaemonQueueStore(db_path=str(tmp_path / "daemon.db"))
+    agent_loop = MagicMock()
+    agent_loop.investigate = AsyncMock(return_value="sess-resume")
+    app = SimpleNamespace(state=SimpleNamespace(agent_loop=agent_loop, case_store=None))
+    daemon = HeadlessSOCDaemon(
+        config={"daemon": {"enabled": True, "cycle_limit": 1, "retry_backoff_seconds": 30, "schedules": [{"id": "sched-r", "workflow_id": "wf-r"}]}},
+        workflow_registry=StubWorkflowRegistry(),
+        workflow_service=StubWorkflowService(),
+        queue_store=queue_store,
+    )
+    queue_store.seed_schedules(daemon.list_schedules())
+    job = queue_store.lease_due_jobs("seed", limit=1)[0]
+    queue_store.fail_job(job["id"], "agentic investigation session still running; resume check deferred", retryable=True, base_backoff_seconds=300)
+
+    results = await daemon.run_cycle(app, worker_id="worker-resume", limit=1)
+
+    assert len(results) == 1
+    assert results[0]["status"] == "running"
+    assert daemon._last_cycle_summary["resumed_lifecycle_jobs"] == 1
+    assert queue_store.get_job(job["id"])["status"] == "completed"

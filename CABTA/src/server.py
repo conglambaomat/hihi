@@ -1,4 +1,4 @@
-"""Blue Team Assistant - MCP Server Interface.
+"""AI Security Assistant - MCP Server Interface.
 
 Author: Ugur Ates
 Version: 1.0.0
@@ -176,7 +176,7 @@ async def main():
     from mcp.server.stdio import stdio_server
     
     async with stdio_server() as (read_stream, write_stream):
-        logger.info("[SERVER] Blue Team Assistant started")
+        logger.info("[SERVER] AI Security Assistant started")
         await app.run(
             read_stream,
             write_stream,

@@ -173,6 +173,15 @@ class EvidenceGraph:
                 "status": hypothesis.get("status"),
                 "confidence": hypothesis.get("confidence"),
                 "topics": list(hypothesis.get("topics", [])),
+                "origin": hypothesis.get("origin"),
+                "hypothesis_type": hypothesis.get("hypothesis_type") or hypothesis.get("type"),
+                "attack_path": list(hypothesis.get("attack_path", []) or []),
+                "trigger_observation_ids": list(hypothesis.get("trigger_observation_ids", []) or []),
+                "trigger_entity_ids": list(hypothesis.get("trigger_entity_ids", []) or []),
+                "reason_codes": list(hypothesis.get("reason_codes", []) or [])[:8],
+                "audit_event_count": len(hypothesis.get("audit_trail", []) or []),
+                "confidence_delta": hypothesis.get("confidence_delta"),
+                "authoritative": False,
             }
             self._upsert_node(state, hypothesis_node)
             for ref in hypothesis.get("supporting_evidence_refs", []) or []:
@@ -203,6 +212,55 @@ class EvidenceGraph:
                             "basis": ref.get("source_kind") or "structured_evidence",
                             "explicit": True,
                             "timestamp": ref.get("created_at") or _now_iso(),
+                        },
+                    )
+            for observation_id in hypothesis.get("trigger_observation_ids", []) or []:
+                if observation_id:
+                    self._upsert_edge(
+                        state,
+                        {
+                            "source": str(observation_id).lower(),
+                            "target": hypothesis_node["id"],
+                            "relation": "triggered_by",
+                            "confidence": hypothesis.get("confidence") or 0.4,
+                            "basis": "dynamic_hypothesis_trigger",
+                            "explicit": False,
+                            "timestamp": hypothesis.get("updated_at") or _now_iso(),
+                        },
+                    )
+
+        self._sync_hypothesis_requirement_coverage(state, reasoning_state)
+        self._sync_retry_and_query_coverage(state, reasoning_state, session_id)
+        self._sync_hypothesis_events(state, reasoning_state, session_id)
+
+        candidates = reasoning_state.get("candidate_hypotheses", []) if isinstance(reasoning_state, dict) else []
+        for candidate in candidates[:8]:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_node = {
+                "id": f"candidate-hypothesis:{candidate.get('candidate_id')}".lower(),
+                "type": "candidate_hypothesis",
+                "label": candidate.get("statement", "Candidate hypothesis"),
+                "status": candidate.get("promotion_status") or (candidate.get("verification", {}) or {}).get("status"),
+                "origin": candidate.get("origin"),
+                "hypothesis_type": candidate.get("hypothesis_type") or candidate.get("type"),
+                "attack_path": list(candidate.get("attack_path", []) or []),
+                "trigger_observation_ids": list(candidate.get("trigger_observation_ids", []) or []),
+                "authoritative": False,
+            }
+            self._upsert_node(state, candidate_node)
+            for observation_id in candidate.get("trigger_observation_ids", []) or []:
+                if observation_id:
+                    self._upsert_edge(
+                        state,
+                        {
+                            "source": str(observation_id).lower(),
+                            "target": candidate_node["id"],
+                            "relation": "triggered_by",
+                            "confidence": candidate.get("confidence_prior") or 0.32,
+                            "basis": "candidate_hypothesis_trigger",
+                            "explicit": False,
+                            "timestamp": candidate.get("created_at") or _now_iso(),
                         },
                     )
 
@@ -270,6 +328,147 @@ class EvidenceGraph:
         state["causal_support"] = self.summarize_causal_support(state)
         state["updated_at"] = _now_iso()
         return state
+
+    def _sync_hypothesis_requirement_coverage(self, state: Dict[str, Any], reasoning_state: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(reasoning_state, dict):
+            return
+        coverage = reasoning_state.get("coverage_matrix") if isinstance(reasoning_state.get("coverage_matrix"), dict) else {}
+        cells = coverage.get("cells", []) if isinstance(coverage, dict) else []
+        for cell in cells if isinstance(cells, list) else []:
+            if not isinstance(cell, dict):
+                continue
+            metadata = cell.get("metadata") if isinstance(cell.get("metadata"), dict) else {}
+            if metadata.get("cell_type") != "hypothesis_required_evidence":
+                continue
+            hypothesis_id = str(metadata.get("hypothesis_id") or "").strip()
+            contract_id = str(metadata.get("contract_id") or cell.get("facet") or "required_evidence").strip()
+            if not hypothesis_id:
+                continue
+            node_id = f"coverage:hypothesis:{hypothesis_id}:{contract_id}".lower()
+            self._upsert_node(
+                state,
+                {
+                    "id": node_id,
+                    "type": "coverage_requirement",
+                    "label": f"Required evidence coverage for {hypothesis_id}",
+                    "status": cell.get("status"),
+                    "confidence": cell.get("confidence"),
+                    "missing_fields": list(cell.get("missing_fields") or [])[:12],
+                    "relation_basis": dict(metadata.get("relation_basis") or {}),
+                    "strongest_relation_basis": metadata.get("strongest_relation_basis"),
+                    "authoritative": False,
+                },
+            )
+            self._upsert_edge(
+                state,
+                {
+                    "source": node_id,
+                    "target": f"hypothesis:{hypothesis_id}".lower(),
+                    "relation": "requires",
+                    "confidence": cell.get("confidence") or 0.3,
+                    "basis": "hypothesis_required_evidence_coverage",
+                    "explicit": False,
+                    "timestamp": _now_iso(),
+                    "support_kind": "non_authoritative_coverage_metadata",
+                },
+            )
+
+    def _sync_retry_and_query_coverage(self, state: Dict[str, Any], reasoning_state: Optional[Dict[str, Any]], session_id: str) -> None:
+        if not isinstance(reasoning_state, dict):
+            return
+        attempts = reasoning_state.get("query_attempts", []) if isinstance(reasoning_state.get("query_attempts"), list) else []
+        for attempt in attempts[-6:]:
+            if not isinstance(attempt, dict):
+                continue
+            attempt_id = str(attempt.get("attempt_id") or "").strip()
+            if not attempt_id:
+                continue
+            node_id = f"query-attempt:{session_id}:{attempt_id}".lower()
+            self._upsert_node(
+                state,
+                {
+                    "id": node_id,
+                    "type": "query_attempt",
+                    "label": attempt.get("objective") or "Log query attempt",
+                    "status": attempt.get("result_class"),
+                    "covered_cells": list(attempt.get("covered_cells") or [])[:12],
+                    "remaining_gaps": list(attempt.get("remaining_gaps") or [])[:12],
+                    "coverage_delta": attempt.get("coverage_delta") if isinstance(attempt.get("coverage_delta"), dict) else {},
+                    "diagnosis": attempt.get("diagnosis") if isinstance(attempt.get("diagnosis"), dict) else {},
+                    "authoritative": False,
+                },
+            )
+        events = reasoning_state.get("retry_audit_events", []) if isinstance(reasoning_state.get("retry_audit_events"), list) else []
+        for event in events[-6:]:
+            if not isinstance(event, dict):
+                continue
+            attempt_id = str(event.get("attempt_id") or "").strip()
+            if not attempt_id:
+                continue
+            event_id = f"retry-audit:{session_id}:{attempt_id}".lower()
+            attempt_node_id = f"query-attempt:{session_id}:{attempt_id}".lower()
+            self._upsert_node(
+                state,
+                {
+                    "id": event_id,
+                    "type": "retry_audit_event",
+                    "label": "Retry/backtracking audit event",
+                    "status": event.get("result_class"),
+                    "diagnosis": event.get("diagnosis") if isinstance(event.get("diagnosis"), dict) else {},
+                    "coverage_delta": event.get("coverage_delta") if isinstance(event.get("coverage_delta"), dict) else {},
+                    "authoritative": False,
+                },
+            )
+            self._upsert_edge(
+                state,
+                {
+                    "source": event_id,
+                    "target": attempt_node_id,
+                    "relation": "audits",
+                    "confidence": 0.55,
+                    "basis": "retry_backtracking_audit",
+                    "explicit": False,
+                    "timestamp": event.get("created_at") or _now_iso(),
+                    "support_kind": "non_authoritative_retry_metadata",
+                },
+            )
+
+    def _sync_hypothesis_events(self, state: Dict[str, Any], reasoning_state: Optional[Dict[str, Any]], session_id: str) -> None:
+        if not isinstance(reasoning_state, dict):
+            return
+        events = reasoning_state.get("hypothesis_events", []) if isinstance(reasoning_state.get("hypothesis_events"), list) else []
+        for event in events[-12:]:
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("event_id") or event.get("id") or "").strip() or f"{event.get('event_type')}-{len(state.get('nodes', []))}"
+            node_id = f"hypothesis-event:{session_id}:{event_id}".lower()
+            target_id = str(event.get("hypothesis_id") or "").strip()
+            self._upsert_node(
+                state,
+                {
+                    "id": node_id,
+                    "type": "hypothesis_audit_event",
+                    "label": event.get("summary") or event.get("event_type") or "Hypothesis event",
+                    "status": event.get("event_type"),
+                    "reason_codes": list(event.get("reason_codes") or [])[:8],
+                    "trigger_observation_ids": list(event.get("trigger_observation_ids") or [])[:8],
+                    "authoritative": False,
+                },
+            )
+            if target_id:
+                self._upsert_edge(
+                    state,
+                    {
+                        "source": node_id,
+                        "target": f"hypothesis:{target_id}".lower(),
+                        "relation": "audits",
+                        "confidence": 0.5,
+                        "basis": "hypothesis_audit_event",
+                        "explicit": False,
+                        "timestamp": event.get("created_at") or _now_iso(),
+                        "support_kind": "non_authoritative_hypothesis_metadata",
+                    },
+                )
 
     def _root_path_summaries(self, state: Dict[str, Any], support_edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         node_lookup = {

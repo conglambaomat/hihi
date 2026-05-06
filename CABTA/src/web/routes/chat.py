@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.agent.chat_intent_router import ChatIntentRouter
+from src.agent.compile_preview_service import CompilePreviewService
 from src.agent.session_response_builder import SessionResponseBuilder
 from src.agent.thread_sync_service import ThreadSyncService
 
@@ -28,6 +29,11 @@ class ChatMessage(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
     playbook_id: Optional[str] = None
+
+
+class ChatPreviewRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    session_id: Optional[str] = None
 
 
 def _coerce_playbook_chat_input(message: str, input_params) -> dict:
@@ -160,13 +166,74 @@ def _finding_snapshot(findings, limit: int = 3) -> str:
     return "\n".join(lines)
 
 
-def _build_follow_up_goal(session: dict, message: str) -> str:
-    return _response_builder.build_legacy_follow_up_goal(
+def _build_follow_up_goal(session: dict, message: str, *, execution_mode: str = ChatIntentRouter.INVESTIGATION_MODE) -> str:
+    legacy_goal = _response_builder.build_legacy_follow_up_goal(
         previous_goal=str(session.get("goal") or ""),
         previous_summary=str(session.get("summary") or "").strip(),
         evidence_snapshot=_finding_snapshot(session.get("findings")),
         message=message,
     )
+    if str(execution_mode or "").strip().lower() != ChatIntentRouter.DIRECT_RESPONSE_MODE:
+        return legacy_goal
+    return legacy_goal + (
+        "\n\nExecution mode: direct_response.\n\n"
+        "Treat this as a direct conversational follow-up. Answer from carried-over context first and do not start tool use unless the analyst explicitly supplies a new observable or artifact and the available evidence is clearly insufficient."
+    )
+
+
+def _soc_progress_metadata(agent_loop, session_id: str) -> dict:
+    state = agent_loop.get_state(session_id) if agent_loop and session_id else None
+    reasoning = state.get("reasoning_state", {}) if isinstance(state, dict) else {}
+    soc_task = reasoning.get("soc_task_state", {}) if isinstance(reasoning, dict) else {}
+    actions = soc_task.get("actions", []) if isinstance(soc_task, dict) else []
+    current_action = actions[-1] if actions else {}
+    preflight = current_action.get("preflight", {}) if isinstance(current_action, dict) else {}
+    interpretation = (soc_task.get("field_sources", {}) or {}).get("interpretation", {}) if isinstance(soc_task.get("field_sources", {}), dict) else {}
+    structured_verdict = reasoning.get("structured_verdict") if isinstance(reasoning.get("structured_verdict"), dict) else (soc_task.get("structured_verdict", {}) if isinstance(soc_task, dict) else {})
+    return {
+        "task_id": soc_task.get("task_id") if isinstance(soc_task, dict) else None,
+        "objective_summary": soc_task.get("analyst_objective") if isinstance(soc_task, dict) else None,
+        "current_action": current_action,
+        "capability_id": current_action.get("capability_id") if isinstance(current_action, dict) else None,
+        "preflight_status": preflight.get("status") if isinstance(preflight, dict) else None,
+        "coverage_status": (reasoning.get("coverage_matrix") or {}).get("overall_status") if isinstance(reasoning.get("coverage_matrix"), dict) else None,
+        "pending_clarifications": soc_task.get("pending_clarifications", []) if isinstance(soc_task, dict) else [],
+        "pending_approvals": soc_task.get("pending_approvals", []) if isinstance(soc_task, dict) else [],
+        "degraded_capabilities": reasoning.get("degraded_capabilities", []) if isinstance(reasoning, dict) else [],
+        "final_answer_gate_status": (reasoning.get("final_answer_gate") or {}).get("status") if isinstance(reasoning.get("final_answer_gate"), dict) else None,
+        "final_answer_gate": reasoning.get("final_answer_gate", {}) if isinstance(reasoning.get("final_answer_gate"), dict) else {},
+        "compiled_input": reasoning.get("compiled_input", {}) if isinstance(reasoning.get("compiled_input"), dict) else (soc_task.get("compiled_input", {}) if isinstance(soc_task, dict) else {}),
+        "capability_plan": reasoning.get("capability_plan", {}) if isinstance(reasoning.get("capability_plan"), dict) else (soc_task.get("capability_plan", {}) if isinstance(soc_task, dict) else {}),
+        "investigation_dag": reasoning.get("investigation_dag", {}) if isinstance(reasoning.get("investigation_dag"), dict) else (soc_task.get("investigation_dag", {}) if isinstance(soc_task, dict) else {}),
+        "structured_verdict": structured_verdict,
+        "verdict_badge": structured_verdict.get("ui_badge") if isinstance(structured_verdict, dict) else None,
+        "evidence_chips": reasoning.get("evidence_chips", []) if isinstance(reasoning.get("evidence_chips"), list) else (soc_task.get("evidence_chips", []) if isinstance(soc_task, dict) else []),
+        "verified_claims": reasoning.get("verified_claims", []) if isinstance(reasoning.get("verified_claims"), list) else [],
+        "unsupported_claims": reasoning.get("unsupported_claims", []) if isinstance(reasoning.get("unsupported_claims"), list) else [],
+        "claim_evidence_map": reasoning.get("claim_evidence_map", {}) if isinstance(reasoning.get("claim_evidence_map"), dict) else (soc_task.get("claim_evidence_map", {}) if isinstance(soc_task, dict) else {}),
+        "progress_events": soc_task.get("progress_events", []) if isinstance(soc_task, dict) else [],
+        "interpretation_mode": interpretation.get("mode") if isinstance(interpretation, dict) else None,
+        "interpretation_status": (interpretation.get("validation", {}) or {}).get("schema_status") if isinstance(interpretation, dict) else None,
+        "interpretation_confidence": interpretation.get("confidence") if isinstance(interpretation, dict) else None,
+        "interpretation_source": "llm-request-interpreter/v1" if isinstance(interpretation, dict) and interpretation else None,
+        "interpretation_repair_attempted": bool((interpretation.get("repair", {}) or {}).get("attempted")) if isinstance(interpretation, dict) else False,
+        "interpretation_fallback_used": bool((interpretation.get("fallback", {}) or {}).get("used")) if isinstance(interpretation, dict) else False,
+        "interpretation_validation_warnings": (interpretation.get("validation", {}) or {}).get("warnings", []) if isinstance(interpretation, dict) else [],
+    }
+
+
+@router.post('/preview')
+async def preview_message(request: Request, body: ChatPreviewRequest):
+    """Compile and plan a chat message without starting an investigation."""
+    store = getattr(request.app.state, "agent_store", None)
+    before_count = len(store.list_sessions(limit=1000)) if store is not None and hasattr(store, "list_sessions") else None
+    contract = CompilePreviewService().compile_and_plan(
+        body.message,
+        {"session_id": body.session_id or "preview", "source": "chat_preview"},
+        execute=False,
+    ).to_dict()
+    after_count = len(store.list_sessions(limit=1000)) if store is not None and hasattr(store, "list_sessions") else before_count
+    return {"status": "preview", "message": body.message, "soc_task_contract": contract, "compile_preview": contract["compiled_input"], "capability_plan": contract["capability_plan"], "investigation_dag": contract.get("investigation_dag", {}), "side_effects": {"session_created": before_count is not None and after_count != before_count}}
 
 
 @router.post('')
@@ -226,6 +293,7 @@ async def send_message(request: Request, body: ChatMessage):
             )
             store.update_session_metadata(body.session_id, {"thread_id": thread_id}, merge=True)
         intent_payload = _intent_router.classify(body.message)
+        execution_mode = str(intent_payload.get("execution_mode") or ChatIntentRouter.DIRECT_RESPONSE_MODE)
         latest_snapshot = thread_store.get_latest_snapshot(thread_id) if thread_store and thread_id else {}
         thread_payload = thread_store.get_thread(thread_id) if thread_store and thread_id else {}
         snapshot = latest_snapshot.get("snapshot", {}) if isinstance(latest_snapshot, dict) else {}
@@ -238,6 +306,7 @@ async def send_message(request: Request, body: ChatMessage):
             command_id = None
             queued_command_payload = {
                 "intent": intent_payload["intent"],
+                "execution_mode": execution_mode,
                 "requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
                 "queued_while_active": True,
             }
@@ -247,7 +316,11 @@ async def send_message(request: Request, body: ChatMessage):
                     role="user",
                     content=body.message,
                     session_id=body.session_id,
-                    metadata={"intent": intent_payload["intent"], "queued_while_active": True},
+                    metadata={
+                        "intent": intent_payload["intent"],
+                        "execution_mode": execution_mode,
+                        "queued_while_active": True,
+                    },
                 )
                 command_id = thread_store.enqueue_command(
                     thread_id=thread_id,
@@ -294,6 +367,7 @@ async def send_message(request: Request, body: ChatMessage):
                 snapshot=snapshot,
                 message=body.message,
                 intent=intent_payload["intent"],
+                execution_mode=execution_mode,
                 requires_fresh_evidence=bool(intent_payload["requires_fresh_evidence"]),
                 memory_scope=memory_contract["memory_scope"],
                 memory_boundary=memory_contract["memory_boundary"],
@@ -302,7 +376,7 @@ async def send_message(request: Request, body: ChatMessage):
                 memory_is_authoritative=memory_contract["memory_is_authoritative"],
             )
         else:
-            context = _build_follow_up_goal(session, body.message)
+            context = _build_follow_up_goal(session, body.message, execution_mode=execution_mode)
         session_id = await agent_loop.investigate(
             context,
             case_id=session.get('case_id'),
@@ -311,10 +385,13 @@ async def send_message(request: Request, body: ChatMessage):
                 "chat_mode": True,
                 "ui_mode": "chat",
                 "response_style": "conversational",
+                "chat_execution_mode": execution_mode,
                 "chat_user_message": body.message,
                 "chat_parent_session_id": body.session_id,
                 "thread_id": thread_id or None,
                 "chat_intent": intent_payload["intent"],
+                "chat_has_observable": bool(intent_payload.get("has_observable")),
+                "chat_looks_like_artifact": bool(intent_payload.get("looks_like_artifact")),
                 "chat_follow_up_requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
                 "memory_scope": memory_contract["memory_scope"] if snapshot else None,
                 "memory_kind": memory_contract["memory_kind"] if snapshot else None,
@@ -330,9 +407,11 @@ async def send_message(request: Request, body: ChatMessage):
             "status": "processing",
             "response": "Follow-up investigation started.",
             "thread_id": thread_id or None,
+            "soc_progress": _soc_progress_metadata(agent_loop, session_id),
         }
     else:
-        # New investigation - LLM will see available playbooks and may auto-select one
+        # New chat turn - authoritative router decides direct vs investigation mode before runtime bootstrap
+        intent_payload = _intent_router.classify(body.message)
         session_id = await agent_loop.investigate(
             body.message,
             metadata={
@@ -340,6 +419,11 @@ async def send_message(request: Request, body: ChatMessage):
                 "chat_mode": True,
                 "ui_mode": "chat",
                 "response_style": "conversational",
+                "chat_execution_mode": intent_payload["execution_mode"],
+                "chat_intent": intent_payload["intent"],
+                "chat_has_observable": bool(intent_payload.get("has_observable")),
+                "chat_looks_like_artifact": bool(intent_payload.get("looks_like_artifact")),
+                "chat_follow_up_requires_fresh_evidence": bool(intent_payload["requires_fresh_evidence"]),
                 "chat_user_message": body.message,
             },
         )
@@ -347,6 +431,7 @@ async def send_message(request: Request, body: ChatMessage):
             "session_id": session_id,
             "status": "processing",
             "message": body.message,
+            "soc_progress": _soc_progress_metadata(agent_loop, session_id),
         }
 
 
@@ -379,4 +464,5 @@ async def get_chat_session(request: Request, session_id: str):
         live_state = agent_loop.get_state(session_id)
         if live_state:
             session['live_state'] = live_state
+            session['soc_progress'] = _soc_progress_metadata(agent_loop, session_id)
     return session

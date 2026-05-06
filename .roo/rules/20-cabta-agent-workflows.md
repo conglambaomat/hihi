@@ -1,6 +1,6 @@
-# CABTA Agent Workflows
+# AISA Agent Workflows
 
-Use this rule for CABTA's investigation and orchestration planes.
+Use this rule for AISA's investigation and orchestration planes.
 
 ## Scope
 
@@ -22,7 +22,7 @@ This lane coordinates investigations around the analysis core.
 
 It may:
 
-- gather evidence through CABTA tools and approved MCP tools
+- gather evidence through AISA tools and approved MCP tools
 - organize reasoning, hypotheses, and case memory
 - drive workflows, specialist routing, and approvals
 - summarize findings and recommend next actions
@@ -30,7 +30,7 @@ It may:
 It may not:
 
 - invent unsupported findings instead of calling tools
-- override deterministic CABTA scoring as the final verdict source
+- override deterministic AISA scoring as the final verdict source
 - hide degraded runtime capability behind fake success
 
 ## Important modules

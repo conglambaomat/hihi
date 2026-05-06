@@ -1,12 +1,12 @@
-# CABTA Queue-Backed Runtime Design
+# AISA Queue-Backed Runtime Design
 
 ## Purpose
 
-This document defines the intended queue-backed runtime model for CABTA background and headless workflow execution.
+This document defines the intended queue-backed runtime model for AISA background and headless workflow execution.
 
-It exists to make the runtime migration path explicit and safe while preserving CABTA's current local-first, evidence-first behavior.
+It exists to make the runtime migration path explicit and safe while preserving AISA's current local-first, evidence-first behavior.
 
-This design does **not** replace CABTA's deterministic verdict authority.
+This design does **not** replace AISA's deterministic verdict authority.
 It describes orchestration semantics only.
 
 ## Current Compatibility Path
@@ -168,7 +168,7 @@ Future UI/API behavior should surface:
 
 ## Bounded Concurrency Policy
 
-CABTA should remain local-first and predictable.
+AISA should remain local-first and predictable.
 Background execution must not silently overrun host resources.
 
 Current bounded execution controls:
@@ -216,7 +216,7 @@ Current daemon status now exposes:
 
 The queue-backed runtime must preserve the following:
 
-- CABTA remains usable without daemon mode
+- AISA remains usable without daemon mode
 - local interactive investigations keep working
 - queue-backed execution does not replace deterministic analyzer authority
 - missing optional services degrade enrichment/orchestration, not core product viability
@@ -260,5 +260,5 @@ The following remain intentionally open:
 At every runtime phase:
 
 - queue/runtime orchestration must not become verdict authority
-- deterministic CABTA analysis remains authoritative for verdict-bearing output
+- deterministic AISA analysis remains authoritative for verdict-bearing output
 - runtime hardening must improve reliability, not blur evidence ownership

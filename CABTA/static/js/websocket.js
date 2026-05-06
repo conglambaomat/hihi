@@ -1,5 +1,5 @@
 /**
- * Blue Team Assistant - WebSocket Client
+ * AI Security Assistant - WebSocket Client
  * Author: Ugur Ates
  *
  * Provides the BTAWebSocket class for real-time analysis progress updates.

@@ -95,7 +95,7 @@ def test_feature_status_marks_static_only_sandbox_and_missing_groq_key_as_degrad
 
     status = provider.feature_status(app)
 
-    assert status['llm']['status'] == 'degraded'
+    assert status['llm']['status'] == 'error'
     assert status['sandbox']['status'] == 'degraded'
     assert status['sandbox']['label'] == 'Static-only'
 

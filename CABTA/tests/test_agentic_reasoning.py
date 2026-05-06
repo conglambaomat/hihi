@@ -9,6 +9,7 @@ from src.agent.evidence_graph import EvidenceGraph
 from src.agent.investigation_planner import InvestigationPlanner
 from src.agent.agent_state import AgentPhase, AgentState
 from src.agent.agent_store import AgentStore
+from src.agent.hypothesis_generator import HypothesisGenerator
 from src.agent.hypothesis_manager import HypothesisManager
 from src.agent.observation_normalizer import ObservationNormalizer
 from src.agent.root_cause_engine import RootCauseEngine
@@ -84,6 +85,55 @@ class TestHypothesisManager:
         assert primary["supporting_evidence_refs"][0]["tool_name"] == "investigate_ioc"
         assert alternate["contradicting_evidence_refs"][0]["stance"] == "contradicts"
         assert primary["evidence_score"] > 0
+
+    def test_revise_records_support_confidence_delta_audit_event(self):
+        manager = HypothesisManager()
+        state = manager.bootstrap("Investigate 185.220.101.12", "sess-delta-support")
+
+        updated = manager.revise(
+            state,
+            goal="Investigate 185.220.101.12",
+            session_id="sess-delta-support",
+            tool_name="investigate_ioc",
+            params={"ioc": "185.220.101.12"},
+            result={"verdict": "MALICIOUS", "score": 91, "severity": "high"},
+            finding_index=0,
+            step_number=0,
+        )
+
+        event = updated["hypothesis_events"][-1]
+        assert event["event_type"] in {"hypothesis_confidence_supported", "hypothesis_confidence_contradicted"}
+        assert event["before_confidence"] is not None
+        assert event["after_confidence"] is not None
+        assert event["delta"] != 0
+        hypothesis_events = [evt for hyp in updated["hypotheses"] for evt in hyp.get("audit_events", [])]
+        assert any(evt["event_type"] == "hypothesis_confidence_supported" for evt in hypothesis_events)
+        support_event = next(evt for evt in hypothesis_events if evt["event_type"] == "hypothesis_confidence_supported")
+        assert "MALICIOUS_VERDICT_OR_SEVERITY" in support_event["reason_codes"]
+        assert support_event["assessment_factors"]["typed_signal_strength"] >= 0
+        assert support_event["threshold_profile"]
+
+    def test_revise_records_contradiction_confidence_delta_audit_event(self):
+        manager = HypothesisManager()
+        state = manager.bootstrap("Investigate 8.8.8.8", "sess-delta-contradiction")
+
+        updated = manager.revise(
+            state,
+            goal="Investigate 8.8.8.8",
+            session_id="sess-delta-contradiction",
+            tool_name="investigate_ioc",
+            params={"ioc": "8.8.8.8"},
+            result={"verdict": "CLEAN", "score": 5, "severity": "low"},
+            finding_index=0,
+            step_number=0,
+        )
+
+        events = [evt for hyp in updated["hypotheses"] for evt in hyp.get("audit_events", [])]
+        contradiction = next(evt for evt in events if evt["event_type"] == "hypothesis_confidence_contradicted")
+        assert contradiction["delta"] < 0
+        assert "BENIGN_OR_CLEAN_CONTRADICTION" in contradiction["reason_codes"]
+        assert contradiction["evidence_ref"]["tool_name"] == "investigate_ioc"
+        assert any(evt["event_type"] == "hypothesis_confidence_contradicted" for evt in updated["hypothesis_events"])
 
     def test_revise_can_strengthen_benign_hypothesis(self):
         manager = HypothesisManager()
@@ -3172,7 +3222,7 @@ class TestAgentLoopReasoning:
             "execution_guidance": {
                 "lane": "log_identity",
                 "deterministic_verdict": "SUSPICIOUS",
-                "deterministic_verdict_owner": "CABTA deterministic core",
+                "deterministic_verdict_owner": "AISA deterministic core",
                 "required_evidence_fields": ["account", "host", "source_ip"],
                 "escalation_hooks": ["Escalate when the event sequence suggests brute force, password spray, or compromised-session behavior."],
                 "causal_path_summaries": ["alice supports responder approval context"],
@@ -3188,7 +3238,7 @@ class TestAgentLoopReasoning:
         assert state.pending_approval["context"]["tool"] == "block_ip"
         assert state.pending_approval["context"]["escalation_conditions"] == ["Escalate when approval-gated actions are required."]
         assert state.pending_approval["context"]["execution_guidance"]["lane"] == "log_identity"
-        assert state.pending_approval["context"]["execution_guidance"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+        assert state.pending_approval["context"]["execution_guidance"]["deterministic_verdict_owner"] == "AISA deterministic core"
         assert "account" in state.pending_approval["context"]["execution_guidance"]["required_evidence_fields"]
         assert state.pending_approval["context"]["execution_guidance"]["escalation_hooks"]
 
@@ -3228,8 +3278,7 @@ class TestAgentLoopReasoning:
         loop.gemini_key = "dummy"
         loop.groq_key = "dummy"
 
-        loop._gemini_chat = AsyncMock(return_value=None)
-        loop._groq_chat = AsyncMock(return_value='{"action":"final_answer","answer":"done","verdict":"MALICIOUS"}')
+        loop.provider_gateway.chat = AsyncMock(return_value='{"action":"final_answer","answer":"done","verdict":"MALICIOUS"}')
 
         filtered_tools = [{"function": {"name": "investigate_ioc"}}]
         raw = await loop._chat_with_tools(
@@ -3238,9 +3287,8 @@ class TestAgentLoopReasoning:
         )
 
         assert raw == '{"action":"final_answer","answer":"done","verdict":"MALICIOUS"}'
-        loop._gemini_chat.assert_awaited_once()
-        loop._groq_chat.assert_awaited_once()
-        assert loop._groq_chat.await_args.args[1] == filtered_tools
+        loop.provider_gateway.chat.assert_awaited_once()
+        assert loop.provider_gateway.chat.await_args.kwargs["tools_payload"] == filtered_tools
 
     def test_simple_chat_enrichment_prefers_single_high_value_pivot(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -3507,6 +3555,48 @@ class TestAgentLoopReasoning:
         assert decision is not None
         assert decision["action"] == "use_tool"
         assert decision["tool"] == "correlate_findings"
+
+    def test_reasoning_guided_next_action_retries_search_logs_for_missing_coverage(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def search_logs(**kwargs):
+            return {"status": "executed", "results_count": 0, "results": []}
+
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"properties": {"query": {"type": "object"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        state = AgentState(session_id="sess-retry", goal="Investigate alice login on host-a", max_steps=4)
+        state.investigation_plan = {"lane": "log_identity"}
+        state.reasoning_state = {"open_questions": ["Which session and process are tied to alice?"]}
+        state.findings = [
+            {
+                "type": "tool_result",
+                "tool": "search_logs",
+                "result": {
+                    "status": "executed",
+                    "mode": "splunk_live",
+                    "queries": {"splunk": ["search index=* user=alice | head 200"]},
+                    "coverage_matrix": {
+                        "coverage_status": "partial",
+                        "retry_recommended": True,
+                        "retry_reason": "Session and process facets remain uncovered.",
+                        "missing_facets": ["session", "process"],
+                    },
+                },
+            }
+        ]
+
+        decision = loop._reasoning_guided_next_action(state)
+
+        assert decision is not None
+        assert decision["tool"] == "search_logs"
+        assert decision["decision_source"] == "log_coverage_retry"
+        assert decision["retry_plan"]["target_facets"] == ["session", "process"]
+        assert state.reasoning_state["last_log_query_plan"]["coverage_matrix"]
 
     def test_chat_findings_block_uses_compact_evidence_summaries(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -3888,15 +3978,176 @@ class TestAgentLoopReasoning:
                 "publication_scope": "published",
             },
         }
-        assert summary["thread_id"] == "thread-phishing"
-        assert summary["memory_kind"] == "authoritative_case_truth"
-        assert summary["memory_is_authoritative"] is True
-        assert summary["publication_scope"] == "published"
-        assert summary["authoritative_memory_scope"] == "published"
-        assert summary["memory_scope"] == "published"
-        assert summary["memory_boundary"] == {
-            "case_id": case_id,
-            "session_id": session_a,
-            "thread_id": "thread-phishing",
-            "publication_scope": "published",
+
+
+class TestHypothesisGenerator:
+    def _generate(self, observations, reasoning_state=None, entity_state=None, evidence_state=None):
+        return HypothesisGenerator().generate(
+            goal="Investigate dynamic hypothesis generation",
+            session_id="sess-dyn",
+            reasoning_state=reasoning_state or {"session_id": "sess-dyn", "hypotheses": []},
+            investigation_plan={"lane": "log_identity"},
+            active_observations=observations,
+            entity_state=entity_state or {},
+            evidence_state=evidence_state or {"timeline": [{"id": "t1"}, {"id": "t2"}]},
+            deterministic_decision={"verdict": "UNKNOWN"},
+        )
+
+    def test_network_fortigate_c2_candidate_generated(self):
+        result = self._generate([
+            {
+                "observation_id": "obs-net-1",
+                "observation_type": "network_event",
+                "quality": 0.82,
+                "summary": "FortiGate accepted outbound C2 beacon traffic.",
+                "facts": {"vendor": "Fortinet", "host": "WS-12", "src_ip": "10.0.0.5", "dest_ip": "185.220.101.45", "action": "accept", "service": "HTTPS"},
+                "entities": [{"type": "host", "value": "WS-12"}, {"type": "ip", "value": "185.220.101.45"}],
+                "typed_fact": {"type": "network_event", "family": "network", "quality": 0.82},
+            }
+        ])
+        assert any(item["hypothesis_type"] == "c2_beaconing" for item in result["candidates"])
+        candidate = result["candidates"][0]
+        assert "P0_C2_FORTIGATE_BEACON" in candidate["reason_codes"]
+        assert candidate["verification"]["status"] == "promotable"
+
+    def test_auth_impossible_travel_token_reuse_candidate_generated(self):
+        observations = [
+            {"observation_id": "obs-auth-1", "observation_type": "auth_event", "quality": 0.72, "summary": "alice login from Paris", "facts": {"user": "alice", "source_ip": "1.1.1.1"}, "entities": [{"type": "user", "value": "alice"}, {"type": "ip", "value": "1.1.1.1"}], "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.72}},
+            {"observation_id": "obs-auth-2", "observation_type": "auth_event", "quality": 0.76, "summary": "alice impossible travel token reuse from Singapore", "facts": {"user": "alice", "source_ip": "2.2.2.2"}, "entities": [{"type": "user", "value": "alice"}, {"type": "ip", "value": "2.2.2.2"}], "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.76}},
+        ]
+        result = self._generate(observations)
+        assert any(item["hypothesis_type"] == "identity_compromise" for item in result["candidates"])
+
+    def test_mfa_fatigue_candidate_generated(self):
+        result = self._generate([{"observation_id": "obs-mfa-1", "observation_type": "auth_event", "quality": 0.7, "summary": "Repeated MFA push denied then accepted for alice", "facts": {"user": "alice"}, "entities": [{"type": "user", "value": "alice"}], "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.7}}])
+        assert any(item["hypothesis_type"] == "mfa_fatigue" for item in result["candidates"])
+
+    def test_oauth_consent_candidate_generated(self):
+        result = self._generate([{"observation_id": "obs-oauth-1", "observation_type": "oauth_consent_event", "quality": 0.74, "summary": "OAuth consent grant for risky Mail.Read offline_access scope", "facts": {"user": "alice", "app": "evil-app"}, "entities": [{"type": "user", "value": "alice"}, {"type": "app", "value": "evil-app"}], "typed_fact": {"type": "oauth_consent_event", "family": "identity", "quality": 0.74}}])
+        assert any(item["hypothesis_type"] == "oauth_consent_abuse" for item in result["candidates"])
+
+    def test_phishing_to_auth_chain_candidate_generated(self):
+        observations = [
+            {"observation_id": "obs-email-1", "observation_type": "email_delivery", "quality": 0.8, "summary": "Phishing email delivered", "facts": {"sender": "attacker@example.com", "recipient": "alice@corp.local"}, "entities": [{"type": "sender", "value": "attacker@example.com"}, {"type": "recipient", "value": "alice@corp.local"}], "typed_fact": {"type": "email_delivery", "family": "email", "quality": 0.8}},
+            {"observation_id": "obs-auth-1", "observation_type": "auth_event", "quality": 0.78, "summary": "Suspicious auth after delivery", "facts": {"user": "alice"}, "entities": [{"type": "user", "value": "alice"}], "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.78}},
+        ]
+        result = self._generate(observations)
+        assert any(item["hypothesis_type"] == "phishing_compromise" for item in result["candidates"])
+
+    def test_malware_process_to_network_callback_candidate_generated(self):
+        observations = [
+            {"observation_id": "obs-proc-1", "observation_type": "process_event", "quality": 0.78, "summary": "invoice.exe execution", "facts": {"process_name": "invoice.exe", "host": "WS-12"}, "entities": [{"type": "process", "value": "invoice.exe"}, {"type": "host", "value": "WS-12"}], "typed_fact": {"type": "process_event", "family": "file", "quality": 0.78}},
+            {"observation_id": "obs-net-1", "observation_type": "network_event", "quality": 0.81, "summary": "Network callback to C2", "facts": {"dest_ip": "185.220.101.45"}, "entities": [{"type": "ip", "value": "185.220.101.45"}], "typed_fact": {"type": "network_event", "family": "network", "quality": 0.81}},
+        ]
+        result = self._generate(observations)
+        assert any(item["hypothesis_type"] == "malware_callback" for item in result["candidates"])
+
+    def test_benign_single_event_does_not_generate_high_confidence_malicious_hypothesis(self):
+        result = self._generate([{"observation_id": "obs-benign-1", "observation_type": "network_event", "quality": 0.9, "summary": "Clean benign allowlisted DNS lookup", "facts": {"verdict": "CLEAN", "dest_ip": "8.8.8.8"}, "entities": [{"type": "ip", "value": "8.8.8.8"}], "typed_fact": {"type": "network_event", "family": "network", "quality": 0.9}}])
+        assert not result["candidates"] or all(item["confidence_prior"] < 0.5 for item in result["candidates"])
+
+    def test_duplicate_candidate_not_promoted_twice_and_dynamic_metadata_preserved(self):
+        manager = HypothesisManager()
+        result = self._generate([{"observation_id": "obs-mfa-1", "observation_type": "auth_event", "quality": 0.7, "summary": "Repeated MFA push denied then accepted for alice", "facts": {"user": "alice"}, "entities": [{"type": "user", "value": "alice"}], "typed_fact": {"type": "auth_event", "family": "identity", "quality": 0.7}}])
+        state = manager.bootstrap("Investigate MFA fatigue", "sess-dyn")
+        state = manager.merge_candidates(state, result["candidates"], session_id="sess-dyn", generation_events=result["events"], generation_summary=result["summary"])
+        state = manager.merge_candidates(state, result["candidates"], session_id="sess-dyn", generation_events=result["events"], generation_summary=result["summary"])
+        dynamic = [item for item in state["hypotheses"] if item.get("origin") == "dynamic_evidence"]
+        assert len(dynamic) == 1
+        assert dynamic[0]["required_evidence"]
+        assert dynamic[0]["hypothesis_type"] == "mfa_fatigue"
+
+    def test_dynamic_hypothesis_does_not_override_deterministic_verdict(self):
+        loop = _make_agent_loop(__import__("pathlib").Path(".pytest-tmp"))
+        state = AgentState(session_id="sess-loop", goal="Investigate FortiGate callback", max_steps=4)
+        state.findings = [{"type": "tool_result", "tool": "search_logs", "result": {"status": "executed"}, "step": 0}]
+        loop._refresh_reasoning_outputs(
+            "sess-loop",
+            state,
+            tool_name="search_logs",
+            params={"query": "fortigate"},
+            result={"status": "executed", "results_count": 1, "results": [{"device_vendor": "Fortinet", "host": "WS-12", "src_ip": "10.0.0.5", "dstip": "185.220.101.45", "service": "HTTPS", "action": "accept"}]},
+        )
+        assert state.reasoning_state["hypothesis_generation_summary"]["candidate_count"] >= 1
+        assert state.deterministic_decision["verdict"] == "UNKNOWN"
+
+    def test_refresh_reasoning_outputs_two_log_attempts_update_vibe_soc_signals(self):
+        loop = _make_agent_loop(__import__("pathlib").Path(".pytest-tmp"))
+        loop.tools.register_default_tools({})
+        state = AgentState(session_id="sess-vibe", goal="Investigate alice suspicious logon", max_steps=4)
+        state.investigation_plan = {"lane": "log_identity"}
+        state.reasoning_state = loop.hypothesis_manager.bootstrap(
+            state.goal,
+            "sess-vibe",
+            investigation_plan=state.investigation_plan,
+        )
+        state.reasoning_state["hypotheses"] = [
+            {
+                "id": "hyp-identity",
+                "statement": "Potential identity compromise for alice",
+                "status": "open",
+                "confidence": 0.35,
+                "hypothesis_type": "identity_compromise",
+                "required_evidence": [
+                    {
+                        "contract_id": "identity-linkage",
+                        "required_observation_types": ["auth_event"],
+                        "required_entities": ["user", "host"],
+                        "required_relations": ["authenticated_from"],
+                    }
+                ],
+            }
+        ]
+
+        first_result = {
+            "status": "executed",
+            "results_count": 0,
+            "queries": {"splunk": ["search index=auth user=alice | head 50"]},
+            "coverage_matrix": {
+                "coverage_status": "partial",
+                "overall_score": 0.25,
+                "covered_facets": ["user"],
+                "missing_facets": ["host", "session", "process"],
+                "blocking_gaps": [{"facet": "host"}, {"facet": "session"}],
+                "retry_recommended": True,
+            },
+            "investigation_query_plan": {"objective": "auth_linkage", "focus": "alice", "expected_facets": ["user", "host", "session", "process"]},
         }
+        state.findings.append({"type": "tool_result", "tool": "search_logs", "result": first_result, "step": 0})
+        loop._refresh_reasoning_outputs("sess-vibe", state, tool_name="search_logs", params={"query": first_result["queries"]}, result=first_result)
+        first_delta = state.reasoning_state["latest_coverage_delta"]
+
+        retry_decision = loop.next_action_planner._retry_log_pivot_decision(state, set(), state.unresolved_questions)
+
+        second_result = {
+            "status": "executed",
+            "results_count": 1,
+            "queries": {"splunk": ["search index=auth user=alice host=* session_id=* | head 50"]},
+            "results": [{"user": "alice", "host": "WS-12", "session_id": "S-1", "src_ip": "10.0.0.5"}],
+            "coverage_matrix": {
+                "coverage_status": "partial",
+                "overall_score": 0.75,
+                "covered_facets": ["user", "host", "session"],
+                "missing_facets": ["process"],
+                "blocking_gaps": [{"facet": "process"}],
+                "retry_recommended": True,
+            },
+            "investigation_query_plan": {"objective": "auth_linkage", "focus": "alice", "expected_facets": ["user", "host", "session", "process"]},
+        }
+        state.findings.append({"type": "tool_result", "tool": "search_logs", "result": second_result, "step": 1})
+        loop._refresh_reasoning_outputs("sess-vibe", state, tool_name="search_logs", params={"query": second_result["queries"]}, result=second_result)
+
+        assert retry_decision["tool"] == "search_logs"
+        assert first_delta["newly_covered_facets"] == ["user"]
+        assert len(state.reasoning_state["retry_audit_events"]) == 2
+        assert state.reasoning_state["latest_coverage_delta"]["newly_covered_facets"] == ["host", "session"]
+        assert state.reasoning_state["latest_coverage_delta"]["still_missing_facets"] == ["process"]
+        assert any(
+            cell["metadata"].get("cell_type") == "hypothesis_required_evidence"
+            for cell in state.reasoning_state["coverage_matrix"]["cells"]
+        )
+        root_cause = state.agentic_explanation["root_cause_assessment"]
+        assert root_cause["status"] in {"needs_more_evidence", "inconclusive", "supported"}
+        assert state.evidence_state["causal_support"]
+        query_nodes = [node for node in state.evidence_state["nodes"] if node.get("type") == "query_attempt"]
+        assert len(query_nodes) == 2

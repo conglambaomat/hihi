@@ -1,8 +1,8 @@
-# CABTA Codebase Summary
+# AISA Codebase Summary
 
 ## Overview
 
-CABTA is a Python codebase with three main entry modes:
+AISA is a Python codebase with three main entry modes:
 
 - CLI via `src/soc_agent.py`
 - MCP server via `src/server.py`
@@ -99,8 +99,21 @@ Agent and MCP orchestration:
 - tool registry
 - sandbox orchestration
 - MCP client manager
+- objective/capability-first request understanding and planning
+- reflection, bounded repair, and final-answer gating
 
-This is a high-leverage area and a likely growth zone for future CABTA development.
+High-signal orchestration modules include:
+
+- `soc_interpretation_schema.py` and `llm_request_interpreter.py` for optional LLM-first, JSON-schema-constrained SOC request interpretation with deterministic validation, repair/fallback metadata, capability ontology checks, and audit cross-checks
+- `request_understanding.py` for deterministic fallback/cross-check intent, domain, backend, entity, timerange, safety extraction, and `SOCRequestInterpreter` canonical task creation
+- `soc_task_state.py` for canonical natural-chat task state across interpretation, actions, bindings, preflight, observations, approvals, and progress metadata
+- `capability_actions.py`, `parameter_binder.py`, `preflight_validator.py`, and `clarification_gate.py` for typed capability actions, safe parameter binding, execution gates, approval gates, and blocking clarification prompts
+- `objective_model.py` for additive `ObjectiveContract` and evidence requirements
+- `capability_ontology.py` and `capability_resolver.py` for capability-to-tool mapping and degraded availability
+- `next_action_planner.py` for capability-aware action selection with legacy tool compatibility
+- `reflection_engine.py` and `final_answer_gate.py` for coverage checks and grounded/degraded final responses
+
+This is a high-leverage area and a likely growth zone for future AISA development.
 
 ### `tests/`
 
@@ -129,7 +142,7 @@ Changes here affect direct analyst workflows and CLI usability.
 ### `src/server.py`
 
 - MCP server entrypoint
-- exposes CABTA as tools to external MCP clients
+- exposes AISA as tools to external MCP clients
 - wires IOC, email, and file analysis as callable tools
 
 Changes here affect AI-assisted interoperability.
@@ -147,17 +160,17 @@ Changes here affect the dashboard, APIs, and system startup behavior.
 
 ### 1. Legacy naming remains below the surface
 
-The primary prompt surface is now standardized on `CABTA`, but older names still exist in some code, comments, reports, and historical docs.
+The primary prompt surface is now standardized on `AISA`, but older names still exist in some code, comments, reports, and historical docs.
 
 When making new changes:
 
-- use `CABTA` in new docs and user-facing design decisions
-- treat `Blue Team Assistant` and `mcp-for-soc` as legacy references
+- use `AISA` in new docs and user-facing design decisions
+- treat `AI Security Assistant` and `mcp-for-soc` as legacy references
 - normalize touched surfaces when safe, instead of spreading old names forward
 
 ### 2. Mixed maturity across docs
 
-CABTA's main docs are now better aligned, but some deeper docs and historical strings still need cleanup when those areas are touched.
+AISA's main docs are now better aligned, but some deeper docs and historical strings still need cleanup when those areas are touched.
 
 ### 3. Cross-layer feature coupling
 

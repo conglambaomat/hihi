@@ -1,4 +1,4 @@
-# CABTA Routing and Onboarding
+# AISA Routing and Onboarding
 
 Apply this guidance for CABTA product work in this repository.
 
@@ -12,7 +12,7 @@ Use CABTA context when the task involves:
 - email forensics
 - SOC workflows
 - MCP servers
-- the CABTA dashboard or API
+- the AISA dashboard or API
 
 If the task is ambiguous, default to `CABTA/`.
 
@@ -30,7 +30,7 @@ Load the smallest useful CABTA context set in this order:
 
 Load deeper docs only when the task requires them.
 
-## CABTA lanes
+## AISA lanes
 
 Choose one primary lane before editing:
 
@@ -41,14 +41,20 @@ Choose one primary lane before editing:
 
 If a task crosses more than one lane, create or update a plan under `CABTA/plans/` before coding.
 
-## CABTA invariants
+## AISA invariants
 
-- `CABTA` is the canonical product name.
-- CABTA is local-first by default.
+- `AISA` is the canonical product name.
+- AISA is local-first by default.
 - Deterministic analyzers, scoring, and evidence paths remain authoritative for verdicts and scores.
 - LLMs may interpret, summarize, route, and assist, but must not silently become verdict authority.
 - Missing integrations should degrade honestly and preserve partial utility.
-- Treat `Blue Team Assistant`, `mcp-for-soc`, and similar names as legacy references only.
+- Treat `AI Security Assistant`, `mcp-for-soc`, and similar names as legacy references only.
+
+## GitNexus freshness
+
+Before serious code tasks, check GitNexus index freshness when the GitNexus MCP server is available. Use the repo context or a safe read tool such as `list_repos`, `query`, or `context`. If any GitNexus response says the index is stale, run `npx gitnexus analyze` from the workspace root before relying on GitNexus for navigation, impact analysis, or implementation planning.
+
+Do not block tiny local edits if GitNexus is unavailable. Do not auto-allow write-like GitNexus tools such as rename operations.
 
 ## Working note
 
@@ -56,5 +62,6 @@ Before implementation, state:
 
 1. the chosen lane
 2. the main files likely to change
-3. whether a plan is required
-4. which tests and docs are likely affected
+3. whether GitNexus was checked or unavailable for a serious code task
+4. whether a plan is required
+5. which tests and docs are likely affected

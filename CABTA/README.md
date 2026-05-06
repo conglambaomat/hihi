@@ -1,6 +1,6 @@
-# CABTA
+# AISA
 
-Cyan Agent Blue Team Assistant
+AI Security Assistant
 
 AI-powered SOC platform for threat analysis, IOC investigation, and email forensics.
 
@@ -8,9 +8,9 @@ AI-powered SOC platform for threat analysis, IOC investigation, and email forens
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/conglambaomat/hihi)
 
-CABTA is a comprehensive, local-first security analysis platform designed for SOC analysts, incident responders, and threat hunters. It features a modern web dashboard, 20+ threat intelligence sources, advanced malware analysis, email forensics, and AI-powered investigation with OpenRouter-backed LLM support for agent chat and analyst-assist summaries.
+AISA is a comprehensive, local-first security analysis platform designed for SOC analysts, incident responders, and threat hunters. It features a modern web dashboard, 20+ threat intelligence sources, advanced malware analysis, email forensics, and AI-powered investigation with OpenRouter-backed LLM support for agent chat and analyst-assist summaries.
 
-CABTA currently lives inside the `hihi` workspace repository. Clone the workspace repo, then work from the `CABTA/` directory.
+AISA currently lives inside the `hihi` workspace repository. Clone the workspace repo, then work from the `CABTA/` directory.
 
 ---
 
@@ -76,7 +76,7 @@ CABTA currently lives inside the `hihi` workspace repository. Clone the workspac
 
 ```
 +--------------------------------------------------------------------+
-|                            CABTA v2.0                               |
+|                            AISA v2.0                               |
 +--------------------------------------------------------------------+
 |                                                                      |
 |  +------------------+  +------------------+  +------------------+    |
@@ -291,7 +291,7 @@ Multi-source investigation for any indicator type:
 
 ## Scoring System
 
-CABTA uses a multi-layered scoring architecture:
+AISA uses a multi-layered scoring architecture:
 
 | Layer | Purpose | Weight |
 |-------|---------|--------|
@@ -334,7 +334,7 @@ CABTA uses a multi-layered scoring architecture:
 
 ## Detection Rule Generation
 
-CABTA auto-generates detection rules in **7 SIEM/tool formats**:
+AISA auto-generates detection rules in **7 SIEM/tool formats**:
 
 | Format | Target |
 |--------|--------|
@@ -458,7 +458,7 @@ curl -X POST http://localhost:3003/api/analysis/ioc -H "Content-Type: applicatio
 
 ## MCP Server Integration
 
-CABTA can run as an MCP (Model Context Protocol) server for integration with MCP-compatible clients:
+AISA can run as an MCP (Model Context Protocol) server for integration with MCP-compatible clients:
 
 ```json
 {

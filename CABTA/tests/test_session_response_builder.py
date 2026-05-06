@@ -11,97 +11,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.agent.session_response_builder import SessionResponseBuilder
 
 
-def test_build_fallback_decision_without_llm_returns_direct_answer_for_chat_without_findings():
-    builder = SessionResponseBuilder()
-    state = SimpleNamespace(findings=[])
-
-    result = builder.build_fallback_decision_without_llm(
-        state=state,
-        chat_prefers_direct_response=True,
-        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
-        goal="hello",
-        build_next_action_from_context=lambda _state: {"action": "use_tool", "tool": "investigate_ioc", "params": {}},
-        has_tool=lambda _tool: True,
-        resolve_authoritative_outcome=lambda _state: None,
-        is_chat_session=lambda _state: True,
-        provider_is_currently_unavailable=lambda _provider: False,
-        provider_name="openrouter",
-        build_chat_model_unavailable_answer=lambda _state: "unavailable",
-        build_fallback_answer=lambda _state, _outcome: "fallback",
-    )
-
-    assert result == {
-        "action": "final_answer",
-        "answer": "direct:hello",
-        "verdict": "UNKNOWN",
-        "reasoning": "Fallback: direct analyst chat response without tool use.",
-    }
-
-
-def test_build_fallback_decision_without_llm_returns_correlate_findings_when_evidence_exists():
-    builder = SessionResponseBuilder()
-    state = SimpleNamespace(
-        findings=[
-            {"type": "tool_result", "tool": "investigate_ioc", "result": {"verdict": "SUSPICIOUS"}},
-            {"type": "tool_result", "tool": "whois_lookup", "result": {"registrar": "Example"}},
-        ]
-    )
-
-    result = builder.build_fallback_decision_without_llm(
-        state=state,
-        chat_prefers_direct_response=False,
-        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
-        goal="Investigate 1.2.3.4",
-        build_next_action_from_context=lambda _state: {"action": "use_tool", "tool": "investigate_ioc", "params": {}},
-        has_tool=lambda tool: tool == "correlate_findings",
-        resolve_authoritative_outcome=lambda _state: {"label": "SUSPICIOUS"},
-        is_chat_session=lambda _state: False,
-        provider_is_currently_unavailable=lambda _provider: False,
-        provider_name="openrouter",
-        build_chat_model_unavailable_answer=lambda _state: "unavailable",
-        build_fallback_answer=lambda _state, _outcome: "fallback",
-    )
-
-    assert result["action"] == "use_tool"
-    assert result["tool"] == "correlate_findings"
-    assert result["params"]["findings"] == state.findings[-10:]
-    assert "correlate the accumulated evidence" in result["reasoning"]
-
-
-def test_build_fallback_decision_without_llm_returns_unavailable_chat_answer_when_provider_is_down():
-    builder = SessionResponseBuilder()
-    state = SimpleNamespace(
-        findings=[
-            {"type": "tool_result", "tool": "correlate_findings", "result": {"verdict": "MALICIOUS"}}
-        ]
-    )
-
-    result = builder.build_fallback_decision_without_llm(
-        state=state,
-        chat_prefers_direct_response=False,
-        build_direct_chat_fallback_answer=lambda goal: f"direct:{goal}",
-        goal="Summarize the evidence",
-        build_next_action_from_context=lambda _state: {"action": "use_tool", "tool": "investigate_ioc", "params": {}},
-        has_tool=lambda _tool: True,
-        resolve_authoritative_outcome=lambda _state: {"label": "MALICIOUS"},
-        is_chat_session=lambda _state: True,
-        provider_is_currently_unavailable=lambda _provider: True,
-        provider_name="openrouter",
-        build_chat_model_unavailable_answer=lambda _state: "provider unavailable preserved state",
-        build_fallback_answer=lambda _state, _outcome: "fallback",
-    )
-
-    assert result == {
-        "action": "final_answer",
-        "answer": "provider unavailable preserved state",
-        "verdict": "MALICIOUS",
-        "reasoning": (
-            "Fallback: the configured chat model is unavailable, so preserve the investigation state "
-            "without generating a deterministic narrative answer."
-        ),
-    }
-
-
 def test_generate_summary_prefers_llm_text_when_available():
     import asyncio
 
@@ -173,13 +82,13 @@ def test_summary_from_final_answer_keeps_runtime_unavailable_answer_unprefixed()
         findings=[
             {
                 "type": "final_answer",
-                "answer": "Provider model is currently unavailable. CABTA did not fall back to another model.",
+                "answer": "Provider model is currently unavailable. AISA did not fall back to another model.",
             }
         ],
         authoritative_outcome={"label": "CLEAN"},
     )
 
-    assert result == "Provider model is currently unavailable. CABTA did not fall back to another model."
+    assert result == "Provider model is currently unavailable. AISA did not fall back to another model."
 
 
 def test_build_chat_specific_fallback_returns_mapping_for_chat_lookup_questions():
@@ -334,7 +243,7 @@ def test_build_unavailable_model_preserved_outputs_answer_reuses_notice_wording(
     builder = SessionResponseBuilder()
 
     result = builder.build_unavailable_model_preserved_outputs_answer(
-        llm_unavailable_notice="Gemini model openrouter/model-a is currently unavailable. CABTA did not fall back to another model.",
+        llm_unavailable_notice="Gemini model openrouter/model-a is currently unavailable. AISA did not fall back to another model.",
     )
 
     assert result.startswith("Gemini model openrouter/model-a is currently unavailable")
@@ -749,6 +658,10 @@ def test_build_think_request_metadata_uses_prompt_payload_and_planned_step_summa
         "prompt_envelope": {"user_intent": {"mode": "native_tooling"}},
         "model_only_chat": False,
         "uses_native_tools": True,
+        "context_pack_summary": None,
+        "context_ledger": None,
+        "context_ledger_id": None,
+        "context_budget_summary": None,
         "planned_next_step_summary": "Next planned step: search_logs. Source: telemetry_gap_log_pivot.",
     }
 
@@ -980,6 +893,21 @@ def test_chat_follow_up_can_answer_from_context_requires_restored_context_and_no
     ) is False
 
 
+
+def test_chat_follow_up_can_answer_from_context_honors_direct_execution_mode_even_without_restored_state():
+    builder = SessionResponseBuilder()
+
+    assert builder.chat_follow_up_can_answer_from_context(
+        is_chat_session=True,
+        metadata={"chat_execution_mode": "direct_response", "chat_context_restored": False},
+        requires_fresh_evidence=True,
+        has_context_state=False,
+        latest_message="Ban co phai la nen tang vibesoc that su chua?",
+        goal_has_observable=lambda _message: False,
+        execution_mode="direct_response",
+    ) is True
+
+
 def test_message_requests_fresh_evidence_distinguishes_explanation_from_new_pivot():
     builder = SessionResponseBuilder()
 
@@ -1032,6 +960,7 @@ def test_build_follow_up_goal_mentions_when_fresh_evidence_is_required():
         },
         message="Pivot on registrar-linked infrastructure.",
         intent="new_pivot",
+        execution_mode="investigation",
         requires_fresh_evidence=True,
         memory_scope="accepted",
         memory_boundary={"case_id": "CASE-1", "thread_id": "thread-1", "publication_scope": "accepted"},
@@ -1062,6 +991,7 @@ def test_build_follow_up_goal_uses_published_memory_scope_language_when_provided
         },
         message="Explain why this case stayed suspicious.",
         intent="follow_up_question",
+        execution_mode="direct_response",
         requires_fresh_evidence=False,
         memory_scope="published",
         memory_boundary={"case_id": "CASE-42", "thread_id": "case-thread-1", "session_id": "sess-case-memory", "publication_scope": "published"},

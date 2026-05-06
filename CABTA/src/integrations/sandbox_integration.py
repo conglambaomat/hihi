@@ -193,7 +193,7 @@ class SandboxIntegration:
             url = f"{self.endpoints['hybrid_analysis']}/search/hash"
             headers = {
                 'api-key': api_key,
-                'User-Agent': 'Blue Team Assistant',
+                'User-Agent': 'AI Security Assistant',
                 'accept': 'application/json'
             }
             
@@ -276,7 +276,7 @@ class SandboxIntegration:
     
     async def _check_anyrun(self, file_hash: str) -> Dict:
         """Check ANY.RUN for public submissions."""
-        # Do not claim a report exists unless CABTA actually queried and
+        # Do not claim a report exists unless AISA actually queried and
         # confirmed one.  We currently only provide a manual search URL.
         try:
             url = f"https://any.run/malware-trends/search/?iocs={file_hash}"
@@ -531,7 +531,7 @@ class SandboxIntegration:
             url = f"{self.endpoints['hybrid_analysis']}/submit/file"
             headers = {
                 'api-key': api_key,
-                'User-Agent': 'Blue Team Assistant/6.2'
+                'User-Agent': 'AI Security Assistant/6.2'
             }
             
             import aiohttp

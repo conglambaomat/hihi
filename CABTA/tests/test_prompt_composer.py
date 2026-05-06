@@ -54,7 +54,49 @@ def test_build_think_payload_for_native_tools():
         "top_evidence_gap": "Need stronger destination infrastructure evidence.",
     }
     assert payload["prompt_envelope"]["user_intent"]["mode"] == "native_tooling"
-    assert "Continue the CABTA investigation" in payload["user_prompt"]
+    assert "Continue the AISA investigation" in payload["user_prompt"]
+
+
+def test_prompt_composer_renders_context_pack_envelope_and_ledger():
+    composer = PromptComposer()
+    state = SimpleNamespace(goal="Investigate WS-12", agentic_explanation={}, investigation_plan={})
+    context_pack = {
+        "pack_id": "ctx-1",
+        "ledger_id": "led-1",
+        "objective": "decide_next_tool",
+        "authority_policy": "deterministic_evidence_scoring_and_root_cause_remain_authoritative",
+        "token_estimate": {"total": 100},
+        "budget_report": {"estimated_total": 100, "over_budget": False},
+        "ledger": {"ledger_id": "led-1", "included": []},
+        "sections": {
+            "evidence_briefs": [{"summary": "Old important evidence", "evidence_ref": {"tool_name": "search_logs"}, "authority": "tool_observation", "selected_reason": "supports top hypothesis"}],
+            "hypotheses": [{"statement": "C2 beaconing", "confidence": 0.7, "status": "supported", "evidence_refs": [{"tool_name": "search_logs"}], "reason_codes": ["C2"], "authority": "agentic_explanation"}],
+            "coverage_gaps": [{"facet": "process", "status": "missing", "basis": "no_direct_evidence"}],
+            "deterministic_decision": {"verdict": "SUSPICIOUS", "score": 65, "source": "correlate_findings"},
+        },
+    }
+
+    payload = composer.build_think_payload(
+        state=state,
+        tools_block="- search_logs()",
+        findings_block="legacy findings",
+        response_style_block="",
+        chat_decision_block="",
+        reasoning_block="legacy reasoning",
+        profile_block="",
+        workflow_block="",
+        playbooks_block="",
+        model_only_chat=False,
+        has_native_tools=True,
+        context_pack=context_pack,
+    )
+
+    assert "Context pack selected evidence" in payload["system_prompt"]
+    assert "Old important evidence" in payload["system_prompt"]
+    assert "deterministic evidence, scoring" in payload["system_prompt"]
+    assert payload["context_ledger_id"] == "led-1"
+    assert payload["prompt_envelope"]["investigation_context"]["context_ledger_id"] == "led-1"
+    assert payload["context_pack_summary"]["authoritative_for_verdict"] is False
 
 
 def test_build_think_payload_for_json_mode_without_tools():
@@ -158,6 +200,44 @@ def test_build_summary_payload_exposes_layered_prompt_contract():
     }
     assert payload["prompt_envelope"]["investigation_context"]["step_count"] == 4
     assert payload["prompt_envelope"]["user_intent"]["mode"] == "summary_explanation"
+
+
+def test_build_summary_payload_uses_context_pack_without_dumping_raw_context():
+    composer = PromptComposer()
+    state = SimpleNamespace(goal="Investigate WS-12", agentic_explanation={}, investigation_plan={})
+    huge_raw = "x" * 9000
+    context_pack = {
+        "pack_id": "ctx-summary",
+        "ledger_id": "led-summary",
+        "objective": "summary",
+        "authority_policy": "deterministic_evidence_scoring_and_root_cause_remain_authoritative",
+        "token_estimate": {"total": 120},
+        "budget_report": {"estimated_total": 120, "over_budget": False, "by_section": {"evidence_briefs": 30}},
+        "summary": {"pack_id": "ctx-summary", "ledger_id": "led-summary", "authoritative_for_verdict": False},
+        "sections": {
+            "evidence_briefs": [{"summary": "FortiGate log links WS-12 to outbound C2", "evidence_ref": {"tool_name": "search_logs"}, "authority": "tool_observation", "selected_reason": "supports top hypothesis", "raw": huge_raw}],
+            "coverage_gaps": [{"facet": "process", "status": "missing", "basis": "no endpoint telemetry"}],
+            "hypotheses": [{"statement": "WS-12 beaconing", "confidence": 0.7, "status": "supported", "authority": "agentic_explanation"}],
+            "deterministic_decision": {"verdict": "SUSPICIOUS", "score": 65},
+        },
+    }
+
+    payload = composer.build_summary_payload(
+        state=state,
+        response_style_block="",
+        reasoning_block="legacy reasoning",
+        step_count=5,
+        findings_json=huge_raw,
+        context_pack=context_pack,
+    )
+
+    assert "Summary context pack constraints" in payload["prompt"]
+    assert "led-summary" in payload["prompt"]
+    assert "FortiGate log links WS-12" in payload["prompt"]
+    assert "deterministic AISA evidence" in payload["prompt"]
+    assert huge_raw not in payload["prompt"]
+    assert payload["context_ledger_id"] == "led-summary"
+    assert payload["prompt_envelope"]["investigation_context"]["context_pack_summary"]["authoritative_for_verdict"] is False
 
 
 def test_build_summary_prompt():

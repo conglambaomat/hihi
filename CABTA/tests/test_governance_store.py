@@ -53,7 +53,7 @@ def test_record_decision_feedback_persists_structured_event(tmp_path):
     decision = store.get_ai_decision(decision_id)
     assert decision is not None
     assert decision["metadata"]["governance_contract_version"] == "governance-contract/v2"
-    assert decision["metadata"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert decision["metadata"]["deterministic_verdict_owner"] == "AISA deterministic core"
     assert decision["metadata"]["plan_driven_investigation"] is True
     assert decision["metadata"]["typed_evidence_required"] is True
     assert decision["metadata"]["evidence_ref_count"] == 0
@@ -195,13 +195,13 @@ def test_governance_summary_aggregates_approvals_decisions_and_feedback_by_scope
     assert summary["ai_decisions"]["total"] == 1
     assert summary["ai_decisions"]["by_type"]["root_cause"] == 1
     assert summary["ai_decisions"]["by_contract_version"]["governance-contract/v2"] == 1
-    assert summary["ai_decisions"]["deterministic_verdict_owners"]["CABTA deterministic core"] == 1
+    assert summary["ai_decisions"]["deterministic_verdict_owners"]["AISA deterministic core"] == 1
     assert summary["ai_decisions"]["plan_driven_investigation"]["true"] == 1
     assert summary["ai_decisions"]["typed_evidence_required"]["true"] == 1
     assert summary["decision_feedback"]["total"] == 1
     assert summary["decision_feedback"]["by_type"]["root_cause_correctness"] == 1
     assert summary["decision_feedback"]["by_verdict"]["correct"] == 1
     assert summary["governance_hooks"]["contract_version"] == "governance-contract/v2"
-    assert summary["governance_hooks"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert summary["governance_hooks"]["deterministic_verdict_owner"] == "AISA deterministic core"
     assert summary["governance_hooks"]["plan_driven_investigation"] is True
     assert summary["governance_hooks"]["typed_evidence_required"] is True

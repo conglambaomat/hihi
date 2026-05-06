@@ -1,7 +1,7 @@
 id: log_investigation_demo
 name: Log Investigation Demo
 description: >
-  Deterministic local playbook for validating that CABTA can generate hunt
+  Deterministic local playbook for validating that AISA can generate hunt
   queries, execute a log search through the seeded demo backend, and correlate
   the returned evidence without requiring a live Splunk deployment.
 trigger_type: manual
@@ -69,7 +69,7 @@ steps:
     action: final_answer
     description: >
       Demo hunt confirmed {{execute_hunt.results_count}} matching log events.
-      CABTA generated hunt queries, executed search_logs, and correlated the
+      AISA generated hunt queries, executed search_logs, and correlated the
       returned evidence for {{known_indicators}}.
 
   - name: report_negative

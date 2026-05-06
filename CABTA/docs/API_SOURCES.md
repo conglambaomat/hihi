@@ -2,7 +2,7 @@
 
 ## Overview
 
-CABTA integrates with **20+ threat intelligence sources** to provide comprehensive IOC analysis. This document describes each source and how to obtain API keys.
+AISA integrates with **20+ threat intelligence sources** to provide comprehensive IOC analysis. This document describes each source and how to obtain API keys.
 
 ---
 
@@ -307,7 +307,7 @@ api_keys:
 
 ### Handling Rate Limits
 
-CABTA automatically:
+AISA automatically:
 - Respects API rate limits
 - Uses timeouts (15s default)
 - Falls back gracefully on errors

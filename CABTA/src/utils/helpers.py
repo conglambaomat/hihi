@@ -1,5 +1,5 @@
 """
-Author: Ugur AtesCommon helper functions for Blue Team Assistant."""
+Author: Ugur AtesCommon helper functions for AI Security Assistant."""
 
 import hashlib
 from pathlib import Path

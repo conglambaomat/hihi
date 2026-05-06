@@ -39,11 +39,11 @@ trigger-examples:
 
 # Phishing Investigation
 
-This workflow uses the existing CABTA email analysis path as the operational
+This workflow uses the existing AISA email analysis path as the operational
 core and layers orchestration on top for cleaner execution and reporting.
 
 ## Operating Model
 
-- Parse and score the email through CABTA first.
+- Parse and score the email through AISA first.
 - Use IOC pivots and attachments as follow-on evidence, not as isolated facts.
 - Keep sender identity, auth results, URLs, and attachments explicit in the output.

@@ -47,4 +47,4 @@ artifacts instead of letting the model improvise unsupported conclusions.
 - Convert the hypothesis into explicit pivots and generated hunt queries.
 - Run hunt queries through the read-only Splunk MCP backend when it is connected and policy allows automatic execution.
 - Mark manual lookup requirements clearly when the environment lacks a live log backend.
-- Feed confirmed evidence back through CABTA correlation before summarizing.
+- Feed confirmed evidence back through AISA correlation before summarizing.

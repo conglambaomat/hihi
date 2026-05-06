@@ -332,7 +332,7 @@ class SandboxSubmitter:
         
         headers = {
             'api-key': api_key,
-            'User-Agent': 'Blue Team Assistant/6.2'
+            'User-Agent': 'AI Security Assistant/6.2'
         }
         
         async with aiohttp.ClientSession() as session:
@@ -585,7 +585,7 @@ class SandboxSubmitter:
         url = f"https://www.hybrid-analysis.com/api/v2/report/{job_id}/summary"
         headers = {
             'api-key': api_key,
-            'User-Agent': 'Blue Team Assistant/6.2'
+            'User-Agent': 'AI Security Assistant/6.2'
         }
         
         async with aiohttp.ClientSession() as session:

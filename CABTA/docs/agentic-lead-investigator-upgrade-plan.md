@@ -1,8 +1,8 @@
-# CABTA Agentic Lead-Investigator Upgrade Plan
+# AISA Agentic Lead-Investigator Upgrade Plan
 
 ## Purpose
 
-This document is the implementation-facing plan for upgrading CABTA's agentic layer from:
+This document is the implementation-facing plan for upgrading AISA's agentic layer from:
 
 - tool router + summarizer
 
@@ -10,7 +10,7 @@ into:
 
 - lead investigator + evidence-governed reasoner
 
-This plan is grounded in the current CABTA codebase.
+This plan is grounded in the current AISA codebase.
 It is not a speculative redesign.
 
 Use this file when implementing agentic upgrades so we preserve:
@@ -23,9 +23,9 @@ Use this file when implementing agentic upgrades so we preserve:
 
 ## Decision Summary
 
-CABTA should not stay in its current form where the agent is mainly a tool coordinator.
+AISA should not stay in its current form where the agent is mainly a tool coordinator.
 
-CABTA also should not become a free-form agent that owns final scores, verdicts, or policy decisions.
+AISA also should not become a free-form agent that owns final scores, verdicts, or policy decisions.
 
 The correct target architecture is:
 
@@ -97,7 +97,7 @@ It already:
 - tracks specialist routing and handoffs
 - produces an analyst-facing summary
 
-This means CABTA does not need a new agent system.
+This means AISA does not need a new agent system.
 It needs a structured reasoning layer on top of the current loop.
 
 ### What is currently missing
@@ -161,7 +161,7 @@ The agent may not claim:
 
 without linking those claims back to stored evidence references.
 
-### 3. Reuse the current CABTA seams
+### 3. Reuse the current AISA seams
 
 Do not rewrite:
 
@@ -242,7 +242,7 @@ Recommended status values:
 
 ### Evidence reference
 
-Evidence references should point back to existing CABTA artifacts, not duplicate raw blobs.
+Evidence references should point back to existing AISA artifacts, not duplicate raw blobs.
 
 Minimum fields:
 
@@ -275,7 +275,7 @@ It must not override deterministic score or verdict.
 
 ## Output Contract
 
-CABTA should expose two distinct outputs.
+AISA should expose two distinct outputs.
 
 ### 1. DeterministicDecisionOutput
 
@@ -738,7 +738,7 @@ Do not start with scoring changes.
 
 ## Definition of Success
 
-This upgrade is successful when CABTA can do all of the following in one investigation session:
+This upgrade is successful when AISA can do all of the following in one investigation session:
 
 - maintain multiple competing hypotheses
 - revise them after tool observations
@@ -759,4 +759,4 @@ That means:
 - revise hypotheses after tool observations inside the current `agent_loop.py`
 - leave scoring, MCP transport, playbook engine, and analyzers untouched
 
-This is the smallest slice that proves the new architecture without destabilizing CABTA.
+This is the smallest slice that proves the new architecture without destabilizing AISA.

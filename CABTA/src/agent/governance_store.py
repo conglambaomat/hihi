@@ -18,11 +18,11 @@ from ..utils.runtime_paths import runtime_cache_dir
 logger = logging.getLogger(__name__)
 
 def _default_db_path() -> Path:
-    explicit = os.environ.get('CABTA_GOVERNANCE_DB')
+    explicit = os.environ.get('AISA_GOVERNANCE_DB') or os.environ.get('CABTA_GOVERNANCE_DB')
     if explicit:
         return Path(explicit)
 
-    home_override = os.environ.get('CABTA_HOME')
+    home_override = os.environ.get('AISA_HOME') or os.environ.get('CABTA_HOME')
     home_path = Path(home_override) if home_override else Path.home()
     return (runtime_cache_dir() if not home_override else home_path / 'cache') / 'governance.db'
 
@@ -42,7 +42,7 @@ class GovernanceStore:
         except (PermissionError, OSError, sqlite3.OperationalError) as exc:
             if db_path is not None:
                 raise
-            fallback = Path.cwd() / '.cabta-runtime' / 'governance.db'
+            fallback = Path.cwd() / '.aisa-runtime' / 'governance.db'
             logger.warning(
                 "[GOVERNANCE] Default DB %s unavailable (%s); falling back to %s",
                 self._db_path,
@@ -181,8 +181,15 @@ class GovernanceStore:
         decision_id = uuid.uuid4().hex[:12]
         now = datetime.now(timezone.utc).isoformat()
         decision_metadata = dict(metadata or {})
+        decision_metadata.setdefault("schema_version", "ai-decision-log/v1")
+        decision_metadata.setdefault("objective_ref", decision_metadata.get("objective_ref") or decision_metadata.get("objective_id") or "")
+        decision_metadata.setdefault("context_ledger_ref", decision_metadata.get("context_ledger_ref") or decision_metadata.get("ledger_id") or "")
+        decision_metadata.setdefault("input_refs", decision_metadata.get("input_refs") or list(evidence_refs or []))
+        decision_metadata.setdefault("output_ref", decision_metadata.get("output_ref") or "")
+        decision_metadata.setdefault("policy_flags", decision_metadata.get("policy_flags") or [])
+        decision_metadata.setdefault("human_feedback", decision_metadata.get("human_feedback") or {"status": "pending"})
         decision_metadata.setdefault("governance_contract_version", "governance-contract/v2")
-        decision_metadata.setdefault("deterministic_verdict_owner", "CABTA deterministic core")
+        decision_metadata.setdefault("deterministic_verdict_owner", "AISA deterministic core")
         decision_metadata.setdefault("workflow_runtime_governed", True)
         decision_metadata.setdefault("plan_driven_investigation", True)
         decision_metadata.setdefault("typed_evidence_required", True)
@@ -373,6 +380,110 @@ class GovernanceStore:
         conn.close()
         return [self._row_to_dict(desc, row) for row in rows]
 
+    def record_agent_event(
+        self,
+        *,
+        event_id: str,
+        session_id: str,
+        event_type: str,
+        timestamp: str,
+        payload: Optional[Dict[str, Any]] = None,
+        severity: str = "info",
+        case_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        dag_node_id: Optional[str] = None,
+        refs: Optional[List[Dict[str, Any]]] = None,
+        authoritative: bool = False,
+        schema_version: str = "agent-event/v1",
+    ) -> str:
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_events
+                   (id, session_id, case_id, task_id, dag_node_id, event_type,
+                    payload_json, severity, refs_json, authoritative, schema_version, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    session_id,
+                    case_id,
+                    task_id,
+                    dag_node_id,
+                    event_type,
+                    json.dumps(payload or {}, default=str),
+                    severity,
+                    json.dumps(refs or [], default=str),
+                    int(bool(authoritative)),
+                    schema_version,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            conn.close()
+        return event_id
+
+    def list_agent_events(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM agent_events"
+        clauses = []
+        params: List[Any] = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if case_id:
+            clauses.append("case_id = ?")
+            params.append(case_id)
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at ASC LIMIT ?"
+        params.append(limit)
+        conn = self._connect()
+        cur = conn.execute(query, tuple(params))
+        rows = cur.fetchall()
+        desc = cur.description
+        conn.close()
+        return [self._row_to_dict(desc, row) for row in rows]
+
+    def record_structured_feedback(
+        self,
+        *,
+        session_id: str,
+        feedback_type: str,
+        target_type: str,
+        target_ref: str,
+        reviewer: str = "analyst",
+        verdict: Optional[str] = None,
+        useful: Optional[bool] = None,
+        comment: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        case_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        decision_id: str = "",
+    ) -> str:
+        target = {"target_type": target_type, "target_ref": target_ref}
+        return self.record_decision_feedback(
+            decision_id=decision_id or f"session:{session_id}",
+            session_id=session_id,
+            case_id=case_id,
+            workflow_id=workflow_id,
+            feedback_type=feedback_type,
+            reviewer=reviewer,
+            verdict=verdict,
+            target=target,
+            useful=useful,
+            comment=comment,
+            metadata={"schema_version": "structured-feedback/v1", **(metadata or {})},
+        )
+
     def governance_summary(
         self,
         *,
@@ -442,7 +553,7 @@ class GovernanceStore:
                 "contract_version": "governance-contract/v2",
                 "decision_logging": True,
                 "feedback_logging": True,
-                "deterministic_verdict_owner": "CABTA deterministic core",
+                "deterministic_verdict_owner": "AISA deterministic core",
                 "plan_driven_investigation": True,
                 "typed_evidence_required": True,
             },
@@ -513,6 +624,24 @@ class GovernanceStore:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL,
+                case_id         TEXT,
+                task_id         TEXT,
+                dag_node_id     TEXT,
+                event_type      TEXT NOT NULL,
+                payload_json    TEXT DEFAULT '{}',
+                severity        TEXT DEFAULT 'info',
+                refs_json       TEXT DEFAULT '[]',
+                authoritative   INTEGER DEFAULT 0,
+                schema_version  TEXT DEFAULT 'agent-event/v1',
+                created_at      TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -555,4 +684,10 @@ class GovernanceStore:
             payload["metadata"] = self._json_load(payload.pop("metadata_json"), {})
         if "evidence_refs_json" in payload:
             payload["evidence_refs"] = self._json_load(payload.pop("evidence_refs_json"), [])
+        if "payload_json" in payload:
+            payload["payload"] = self._json_load(payload.pop("payload_json"), {})
+        if "refs_json" in payload:
+            payload["refs"] = self._json_load(payload.pop("refs_json"), [])
+        if "authoritative" in payload:
+            payload["authoritative"] = bool(payload["authoritative"])
         return payload

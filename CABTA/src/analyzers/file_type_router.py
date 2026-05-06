@@ -255,7 +255,7 @@ class FileTypeRouter:
         # 2. High-signal script extension override
         #
         # Script files frequently come back from libmagic as generic
-        # ``text/plain``. If we let that win, CABTA routes malicious scripts
+        # ``text/plain``. If we let that win, AISA routes malicious scripts
         # into the text analyzer instead of the dedicated script analyzer.
         ext = metadata['extension']
         if ext in FileTypeRouter.SCRIPT_EXTENSIONS:

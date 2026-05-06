@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import time
 import urllib.parse
@@ -13,7 +14,7 @@ from typing import Any, Dict, List
 
 from mcp.server.fastmcp import FastMCP
 
-from src.utils.log_hunting_policy import evaluate_hunt_request, normalize_query_text
+from src.utils.log_hunting_policy import evaluate_hunt_request, normalize_query_text, parse_timerange
 
 mcp = FastMCP("splunk")
 
@@ -23,6 +24,7 @@ SPLUNK_APP = os.environ.get("SPLUNK_APP", "search").strip() or "search"
 SPLUNK_OWNER = os.environ.get("SPLUNK_OWNER", "nobody").strip() or "nobody"
 SPLUNK_VERIFY_TLS = os.environ.get("SPLUNK_VERIFY_TLS", "true").strip().lower() not in {"0", "false", "no"}
 SPLUNK_ALLOWED_INDEXES = [item.strip() for item in os.environ.get("SPLUNK_ALLOWED_INDEXES", "").split(",") if item.strip()]
+SPLUNK_DISALLOWED_INDEXES = [item.strip() for item in os.environ.get("SPLUNK_DISALLOWED_INDEXES", "_*").split(",") if item.strip()]
 SPLUNK_MAX_WINDOW_HOURS = int(os.environ.get("SPLUNK_MAX_WINDOW_HOURS", "168") or 168)
 SPLUNK_MAX_RESULTS = int(os.environ.get("SPLUNK_MAX_RESULTS", "200") or 200)
 TIMEOUT = int(os.environ.get("SPLUNK_TIMEOUT_SECONDS", "30") or 30)
@@ -50,7 +52,7 @@ def _request(path: str, *, method: str = "GET", data: Dict[str, Any] | None = No
         headers={
             "Authorization": f"Bearer {SPLUNK_TOKEN}",
             "Accept": "application/json",
-            "User-Agent": "CABTA-Splunk-MCP/1.0",
+            "User-Agent": "AISA-Splunk-MCP/1.0",
         },
     )
     try:
@@ -61,13 +63,106 @@ def _request(path: str, *, method: str = "GET", data: Dict[str, Any] | None = No
         return {"status": "error", "backend": "splunk", "error": f"HTTP {exc.code}: {detail[:300]}"}
 
 
+_SPLUNK_SEARCH_HEAD_COMMANDS = {
+    "search",
+    "tstats",
+    "from",
+    "makeresults",
+    "metadata",
+    "eventcount",
+    "inputlookup",
+    "savedsearch",
+    "loadjob",
+    "dbinspect",
+    "datamodel",
+    "mstats",
+    "mcatalog",
+    "mpreview",
+    "pivot",
+    "typeahead",
+}
+
+
+def _starts_with_search_head_command(query: str) -> bool:
+    text = normalize_query_text(query)
+    if not text:
+        return False
+    if text.startswith("|"):
+        return True
+    command_match = re.match(r"^([A-Za-z][A-Za-z0-9_+-]*)\b", text)
+    if not command_match:
+        return False
+    return command_match.group(1).lower() in _SPLUNK_SEARCH_HEAD_COMMANDS
+
+
+def _normalize_splunk_search_query(query: str) -> str:
+    """Return SPL valid for Splunk's search/jobs endpoint."""
+    normalized = normalize_query_text(query)
+    if not normalized or _starts_with_search_head_command(normalized):
+        return normalized
+    return f"search {normalized}"
+
+
+def _index_patterns(query: str) -> List[str]:
+    return [
+        match.group(1).strip().strip('"\'').lower()
+        for match in re.finditer(r"\bindex\s*=\s*([^\s)]+)", normalize_query_text(query), re.IGNORECASE)
+    ]
+
+
+def _index_matches(pattern: str, candidate: str) -> bool:
+    if pattern == "*":
+        return True
+    if pattern.endswith("*"):
+        return candidate.startswith(pattern[:-1])
+    return candidate == pattern
+
+
 def _safe_query(query: str) -> str:
     normalized = normalize_query_text(query)
-    if SPLUNK_ALLOWED_INDEXES and not any(f"index={index_name.lower()}" in normalized.lower() for index_name in SPLUNK_ALLOWED_INDEXES):
-        prefix = " OR ".join(f'index={index_name}' for index_name in SPLUNK_ALLOWED_INDEXES)
-        base = normalized[7:].strip() if normalized.lower().startswith("search ") else normalized
-        normalized = f"search ({prefix}) ({base})"
-    return normalized
+    indexes = _index_patterns(normalized)
+    for index_name in indexes:
+        if any(_index_matches(disallowed.lower(), index_name) for disallowed in SPLUNK_DISALLOWED_INDEXES):
+            raise ValueError(f"Splunk index '{index_name}' is disallowed by policy.")
+    allowed = [item.lower() for item in SPLUNK_ALLOWED_INDEXES]
+    if allowed:
+        explicit_allowed = bool(indexes) and all(
+            any(_index_matches(allowed_name, index_name) for allowed_name in allowed)
+            for index_name in indexes
+        )
+        if not explicit_allowed:
+            prefix = " OR ".join(f"index={index_name}" for index_name in SPLUNK_ALLOWED_INDEXES)
+            base = normalized[7:].strip() if normalized.lower().startswith("search ") else normalized
+            normalized = f"search ({prefix}) ({base})"
+    return _normalize_splunk_search_query(normalized)
+
+
+def _classify_collection_failure(payload: Dict[str, Any]) -> bool:
+    text = " ".join(str(payload.get(key) or "") for key in ("error", "message", "detail")).lower()
+    return any(token in text for token in ("invalid earliest_time", "dispatch", "failed to create splunk search job"))
+
+
+def _source_profile_from_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    indexes, sourcetypes, sources = [], [], []
+    for row in rows:
+        for key, bucket in (("index", indexes), ("sourcetype", sourcetypes), ("source", sources)):
+            value = str(row.get(key) or "").strip()
+            if value and value not in bucket:
+                bucket.append(value)
+    return {"indexes": indexes[:10], "sourcetypes": sourcetypes[:20], "sources": sources[:20]}
+
+
+def _inject_source_binding(query: str, profile: Dict[str, Any]) -> str:
+    normalized = normalize_query_text(query)
+    if re.search(r"\b(?:index|sourcetype|source)\s*=", normalized, re.IGNORECASE):
+        return normalized
+    indexes = profile.get("indexes") or []
+    sourcetypes = profile.get("sourcetypes") or []
+    scope = " OR ".join(f"index={item}" for item in indexes[:3]) if indexes else "index=*"
+    if sourcetypes:
+        scope = f"({scope}) (" + " OR ".join(f'sourcetype="{item}"' for item in sourcetypes[:5]) + ")"
+    base = normalized[7:].strip() if normalized.lower().startswith("search ") else normalized
+    return f"search ({scope}) ({base})"
 
 
 def _collect_entities(results: List[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -112,14 +207,18 @@ def _run_search(query: str, timerange: str = "24h", max_results: int = 100, note
             "timerange": plan["timerange"],
         }
 
-    query_text = _safe_query(plan["query"])
+    try:
+        query_text = _safe_query(plan["query"])
+    except ValueError as exc:
+        return {"status": "blocked", "backend": "splunk", "message": str(exc), "query": plan["query"], "timerange": plan["timerange"]}
+    earliest, latest, _, normalized_timerange = parse_timerange(plan["timerange"])
     create = _request(
         "/services/search/jobs",
         method="POST",
         data={
             "search": query_text,
-            "earliest_time": plan["earliest"],
-            "latest_time": plan["latest"],
+            "earliest_time": earliest,
+            "latest_time": latest,
             "output_mode": "json",
             "exec_mode": "normal",
             "adhoc_search_level": "smart",
@@ -129,7 +228,10 @@ def _run_search(query: str, timerange: str = "24h", max_results: int = 100, note
         return create
     sid = create.get("sid")
     if not sid:
-        return {"status": "error", "backend": "splunk", "message": f"Failed to create Splunk search job: {create}"}
+        payload = {"status": "error", "backend": "splunk", "message": f"Failed to create Splunk search job: {create}"}
+        if _classify_collection_failure(payload):
+            payload["collection_status"] = "collection_failed"
+        return payload
 
     for _ in range(20):
         job = _request(f"/services/search/jobs/{sid}", data={"output_mode": "json"})
@@ -153,7 +255,8 @@ def _run_search(query: str, timerange: str = "24h", max_results: int = 100, note
         "status": "executed",
         "backend": "splunk",
         "sid": sid,
-        "timerange": plan["timerange"],
+        "timerange": normalized_timerange,
+        "collection_status": "collected",
         "query": query_text,
         "results_count": len(rows),
         "results": rows,
@@ -204,6 +307,42 @@ def get_host_timeline(host: str, timerange: str = "24h", max_results: int = 200)
         "| sort 0 _time | table _time host sourcetype source user process_name Image dest_ip dest url query"
     )
     return _run_search(query, timerange=timerange, max_results=max_results, note=f"Host timeline for {host}")
+
+
+@mcp.tool()
+def discover_sources(timerange: str = "24h", max_results: int = 20) -> Dict[str, Any]:
+    """Safely discover active Splunk indexes, sourcetypes, and sources."""
+    query = "| eventcount summarize=false index=* | head 50 | table index sourcetype source"
+    result = _run_search(query, timerange=timerange, max_results=max_results, note="splunk discovery")
+    rows = result.get("results", []) if isinstance(result, dict) else []
+    return {
+        "status": "executed" if result.get("status") == "executed" else result.get("status", "discovery_failed"),
+        "backend": "splunk",
+        "discovery": "sources",
+        "source_profile": _source_profile_from_rows(rows),
+        "raw": result,
+    }
+
+
+@mcp.tool()
+def fieldsummary(query: str = "search index=* | head 50", timerange: str = "24h", max_results: int = 20) -> Dict[str, Any]:
+    """Run a bounded fieldsummary probe for schema discovery."""
+    probe = f"{_normalize_splunk_search_query(query)} | fieldsummary | head {min(max_results, SPLUNK_MAX_RESULTS)}"
+    return _run_search(probe, timerange=timerange, max_results=max_results, note="splunk fieldsummary discovery")
+
+
+@mcp.tool()
+def probe_source_binding(query: str, timerange: str = "24h", max_results: int = 20) -> Dict[str, Any]:
+    """Return source-bound SPL using best-effort environment discovery."""
+    discovery = discover_sources(timerange=timerange, max_results=max_results)
+    profile = discovery.get("source_profile", {}) if isinstance(discovery, dict) else {}
+    return {
+        "status": "executed",
+        "backend": "splunk",
+        "query": _inject_source_binding(query, profile if isinstance(profile, dict) else {}),
+        "source_profile": profile,
+        "discovery": discovery,
+    }
 
 
 if __name__ == "__main__":

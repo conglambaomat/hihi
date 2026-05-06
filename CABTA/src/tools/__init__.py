@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Analysis Tools"""
+"""AI Security Assistant - Analysis Tools"""
 
 from .ioc_investigator import IOCInvestigator
 from .email_analyzer import EmailAnalyzer

@@ -1,5 +1,5 @@
 /**
- * Blue Team Assistant - IOC Chart Visualizations
+ * AI Security Assistant - IOC Chart Visualizations
  * Author: Ugur Ates
  *
  * Chart.js-based visualizations for IOC analysis results.

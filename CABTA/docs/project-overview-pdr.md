@@ -1,16 +1,16 @@
-# CABTA Project Overview
+# AISA Project Overview
 
 > **Naming (authoritative for implementation):** **`CABTA`** is the canonical product name in code, UI, and new documentation — see [`AGENTS.md`](../AGENTS.md). This document remains a **strategic / historical** overview and may reference **AISA** as a legacy alias for the same product direction, not a second codebase. **Architecture and structure:** use [`system-design.md`](system-design.md) as the technical source of truth (do not duplicate long architecture sections here).
 
 ## Product Identity
 
-- Canonical implementation and shipping name: `CABTA` (Cyan Agent Blue Team Assistant); repository path: `CABTA/`
-- Historical strategic alias in older material: `AISA` / `AI Security Assistant`
+- Canonical implementation and shipping name: `AISA` (AI Security Assistant); repository path: `CABTA/`
+- Historical strategic alias in older material: `CABTA` / `Blue Team Assistant`
 - Primary product mode: `web-first localhost SOC and DFIR workbench`
 
 ## Product Thesis
 
-CABTA should evolve from a strong local-first analysis toolkit into a local-first AI SOC assistant platform.
+AISA should evolve from a strong local-first analysis toolkit into a local-first AI SOC assistant platform.
 
 Its long-term value is not only:
 
@@ -29,11 +29,11 @@ It is the combination of:
 
 In short:
 
-CABTA should become an analyst-owned investigation platform, not just a set of analyzers and not a black-box AI SOC.
+AISA should become an analyst-owned investigation platform, not just a set of analyzers and not a black-box AI SOC.
 
 ## Product Purpose
 
-CABTA helps defenders move from raw security inputs to trustworthy investigation outcomes.
+AISA helps defenders move from raw security inputs to trustworthy investigation outcomes.
 
 It should turn alerts, artifacts, and hypotheses into:
 
@@ -47,9 +47,9 @@ It should turn alerts, artifacts, and hypotheses into:
 
 ## Strategic Direction
 
-CABTA should combine:
+AISA should combine:
 
-### CABTA's existing strengths
+### AISA's existing strengths
 
 - local-first operation
 - broad IOC, file, and email analysis coverage
@@ -70,7 +70,7 @@ CABTA should combine:
 
 The goal is not to copy Vigil mechanically.
 
-The goal is to adapt the best ideas into CABTA's architecture while preserving CABTA's strongest constraints:
+The goal is to adapt the best ideas into AISA's architecture while preserving AISA's strongest constraints:
 
 - evidence first
 - deterministic verdicts
@@ -81,9 +81,9 @@ The goal is to adapt the best ideas into CABTA's architecture while preserving C
 
 The integration direction is intentionally asymmetric.
 
-### CABTA owns the analysis core
+### AISA owns the analysis core
 
-CABTA remains the system of record for:
+AISA remains the system of record for:
 
 - artifact analysis
 - evidence extraction
@@ -92,7 +92,7 @@ CABTA remains the system of record for:
 - verdict governance
 - analyst-facing evidence outputs
 
-That means verdict-bearing flows still belong to CABTA's existing core:
+That means verdict-bearing flows still belong to AISA's existing core:
 
 - IOC investigation
 - file analysis
@@ -108,7 +108,7 @@ Vigil should be treated as the source of ideas and patterns for:
 - optional headless SOC daemon behavior
 - richer investigation coordination
 
-These features should sit around the CABTA core, not replace it.
+These features should sit around the AISA core, not replace it.
 
 ### Tool-first integration rule
 
@@ -116,14 +116,14 @@ Workflow execution must gather evidence through real tools and services.
 
 In practice, that means:
 
-- workflows call CABTA analyzers, orchestrators, integrations, scoring, and MCP tools
+- workflows call AISA analyzers, orchestrators, integrations, scoring, and MCP tools
 - agents summarize, organize, plan, and recommend
 - agents do not invent investigative evidence
 - workflows do not substitute model speculation for tool execution
 
 ### Verdict rule
 
-For any flow that produces a security verdict, the final verdict must come from the CABTA scoring and evidence path.
+For any flow that produces a security verdict, the final verdict must come from the AISA scoring and evidence path.
 
 Agent outputs may:
 
@@ -187,7 +187,7 @@ These need a clear extensibility model with runtime visibility and safe agent ac
 
 ### 5. Local-first users still need "platform power"
 
-CABTA should remain useful on a single analyst machine, but still grow toward:
+AISA should remain useful on a single analyst machine, but still grow toward:
 
 - richer workflow orchestration
 - case intelligence
@@ -212,7 +212,7 @@ LLMs may explain and assist, but they do not replace final verdict authority.
 
 ### Evidence-Linked Investigation Plane
 
-CABTA should support longer-lived investigations through:
+AISA should support longer-lived investigations through:
 
 - cases
 - workflows
@@ -223,7 +223,7 @@ CABTA should support longer-lived investigations through:
 
 ### Specialist AI Agents
 
-CABTA should move toward role-based assistants such as:
+AISA should move toward role-based assistants such as:
 
 - triage
 - investigator
@@ -262,7 +262,7 @@ AI actions must be governed with:
 
 ### MCP-First Extensibility
 
-CABTA should continue treating MCP as the main expansion surface for:
+AISA should continue treating MCP as the main expansion surface for:
 
 - SIEM
 - EDR
@@ -306,7 +306,7 @@ The main product path must remain useful:
 
 ## Non-Goals
 
-CABTA should not become:
+AISA should not become:
 
 - an LLM-only verdict engine
 - a cloud-required SOC platform for basic use
@@ -324,7 +324,7 @@ CABTA should not become:
 
 ## What Effective Vibe Coding Needs
 
-To build CABTA effectively after learning from Vigil, the repo needs docs that keep five things explicit:
+To build AISA effectively after learning from Vigil, the repo needs docs that keep five things explicit:
 
 1. which layers own deterministic analysis versus agentic orchestration
 2. which Vigil ideas should be adopted directly, adapted carefully, or avoided

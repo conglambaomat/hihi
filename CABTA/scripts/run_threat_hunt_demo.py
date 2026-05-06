@@ -105,11 +105,6 @@ async def _run_demo(scenario_name: str, config_path: str | None) -> Dict[str, An
     config.setdefault("analysis", {})
     config["analysis"]["enable_llm"] = False
 
-    log_hunting_cfg = config.setdefault("log_hunting", {})
-    demo_cfg = log_hunting_cfg.setdefault("demo_backend", {})
-    demo_cfg["enabled"] = True
-    demo_cfg["dataset"] = str(scenario.get("log_dataset") or "threat_hunt_account_securecheck")
-
     with tempfile.TemporaryDirectory(prefix="cabta-threat-hunt-demo-") as tmp_dir:
         tmp_path = Path(tmp_dir)
         agent_store = AgentStore(db_path=str(tmp_path / "agent.db"))
@@ -209,7 +204,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         default=None,
-        help="Optional path to CABTA config.yaml",
+        help="Optional path to AISA config.yaml",
     )
     args = parser.parse_args()
 

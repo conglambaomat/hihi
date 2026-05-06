@@ -1,6 +1,6 @@
-# CABTA Web Surfaces
+# AISA Web Surfaces
 
-Use this rule for CABTA's localhost web app and API-facing behavior.
+Use this rule for AISA's localhost web app and API-facing behavior.
 
 ## Scope
 

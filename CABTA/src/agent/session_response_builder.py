@@ -8,7 +8,7 @@ from src.agent.thread_sync_service import ThreadSyncService
 
 
 class SessionResponseBuilder:
-    """Build compact prompts and evidence-backed responses for CABTA sessions."""
+    """Build compact prompts and evidence-backed responses for AISA sessions."""
 
     def chat_prefers_direct_response(
         self,
@@ -18,9 +18,12 @@ class SessionResponseBuilder:
         focused_goal: str,
         goal_has_observable: Callable[[str], bool],
         looks_like_artifact_submission: Callable[[str], bool],
+        execution_mode: str = "",
     ) -> bool:
         if not is_chat_session or has_findings:
             return False
+        if str(execution_mode or "").strip().lower() == "direct_response":
+            return True
         clean_goal = str(focused_goal or "").strip()
         if not clean_goal:
             return True
@@ -39,9 +42,12 @@ class SessionResponseBuilder:
         has_context_state: bool,
         latest_message: str,
         goal_has_observable: Callable[[str], bool],
+        execution_mode: str = "",
     ) -> bool:
         if not is_chat_session:
             return False
+        if str(execution_mode or metadata.get("chat_execution_mode") or "").strip().lower() == "direct_response":
+            return True
         if not metadata.get("chat_context_restored"):
             return False
         if requires_fresh_evidence:
@@ -80,8 +86,9 @@ class SessionResponseBuilder:
             return ""
 
         message = str(latest_message or "").lower()
+        normalized_message = self._normalize_natural_chat_text(message)
         if any(
-            token in message
+            token in normalized_message
             for token in (
                 "what can you do",
                 "help me investigate",
@@ -90,22 +97,40 @@ class SessionResponseBuilder:
                 "what would you do",
                 "soc workflow",
                 "capabilities",
+                "capability",
                 "hello",
                 "hi",
                 "xin chao",
                 "chao",
+                "ban co the lam gi",
+                "ban co the lam duoc gi",
+                "ban lam duoc gi",
+                "co the lam gi",
+                "lam duoc gi",
+                "giup toi",
+                "tro giup",
             )
         ):
             return (
-                "I can investigate IPs, domains, URLs, hashes, suspicious files, email artifacts, "
-                "and log snippets. Share a concrete artifact and I will start with the highest-value "
-                "pivots, explain what the evidence shows, and tell you what to check next."
+                "Hello — I am AISA, your local-first SOC assistant. I can help with IOC triage, "
+                "log/Splunk-style hunts, phishing and email analysis, malware/file analysis, incident-response "
+                "approval proposals, case follow-up, and capability/degraded-status checks. Share an IOC, log clue, "
+                "email, file, or case question and I will gather evidence before making investigation claims."
             )
 
         return (
             "Share a concrete IOC, file path, email artifact, or log snippet and I will start the "
             "investigation, gather evidence with the relevant tools, and explain the result clearly."
         )
+
+    @staticmethod
+    def _normalize_natural_chat_text(text: str) -> str:
+        import re
+        import unicodedata
+
+        folded = unicodedata.normalize("NFKD", str(text or "").strip().lower())
+        simplified = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        return re.sub(r"\s+", " ", simplified).strip()
 
     def build_initial_chat_tool_decision(
         self,
@@ -247,6 +272,7 @@ class SessionResponseBuilder:
         snapshot: Dict[str, Any],
         message: str,
         intent: str,
+        execution_mode: str = "investigation",
         requires_fresh_evidence: bool,
         memory_scope: Optional[str] = None,
         memory_boundary: Optional[Dict[str, Any]] = None,
@@ -254,7 +280,7 @@ class SessionResponseBuilder:
         publication_scope: Optional[str] = None,
         memory_is_authoritative: Optional[bool] = None,
     ) -> str:
-        blocks: List[str] = ["Continue the same analyst thread for the ongoing CABTA investigation."]
+        blocks: List[str] = ["Continue the same analyst thread for the ongoing AISA investigation."]
         clean_goal = str(previous_goal or "").strip()
         if clean_goal:
             blocks.append(f"Original investigation goal:\n{clean_goal}")
@@ -298,6 +324,7 @@ class SessionResponseBuilder:
                 blocks.append("Unresolved questions:\n" + "\n".join(unresolved_lines))
 
         blocks.append(f"Follow-up analyst request ({intent}):\n{str(message or '').strip()}")
+        blocks.append(f"Execution mode: {str(execution_mode or 'investigation').strip() or 'investigation'}.")
         contract_parts = [f"memory_scope={scope}"]
         if normalized_memory_kind:
             contract_parts.append(f"memory_kind={normalized_memory_kind}")
@@ -306,7 +333,12 @@ class SessionResponseBuilder:
         if isinstance(memory_boundary, dict) and memory_boundary:
             contract_parts.append(f"memory_boundary={memory_boundary}")
         blocks.append("Restored memory contract: " + ", ".join(contract_parts) + ".")
-        if requires_fresh_evidence:
+        if str(execution_mode or "").strip().lower() == "direct_response":
+            lifecycle_label = truth_label if authoritative else snapshot_label
+            blocks.append(
+                f"Treat this as a direct conversational follow-up. Answer from the {snapshot_label} and structured reasoning state. Do not start tool use unless the analyst explicitly supplies a new observable or artifact and the available evidence is clearly insufficient. Do not present {lifecycle_label} as more authoritative than this lifecycle allows."
+            )
+        elif requires_fresh_evidence:
             bounded_label = truth_label if authoritative else snapshot_label
             blocks.append(
                 f"Use the {snapshot_label} as bounded {bounded_label}, then collect fresh evidence only where it materially reduces uncertainty for this new pivot."
@@ -490,8 +522,12 @@ class SessionResponseBuilder:
 
     def provider_display_name(self, provider: Optional[str]) -> str:
         provider_name = str(provider or "").strip().lower()
-        if provider_name == "nvidia":
-            return "NVIDIA Build"
+        display_names = {
+            "router": "LLM Router",
+            "nvidia": "NVIDIA Build",
+        }
+        if provider_name in display_names:
+            return display_names[provider_name]
         return provider_name.capitalize() if provider_name else "Provider"
 
     def provider_runtime_error_excerpt(
@@ -536,11 +572,11 @@ class SessionResponseBuilder:
         if provider_excerpt:
             return (
                 f"{provider_display_name(effective_provider)} model {model_name} is currently unavailable "
-                f"({provider_excerpt}). CABTA did not fall back to another model."
+                f"({provider_excerpt}). AISA did not fall back to another model."
             )
         return (
             f"{provider_display_name(effective_provider)} model {model_name} is currently unavailable. "
-            "CABTA did not fall back to another model."
+            "AISA did not fall back to another model."
         )
 
     def build_provider_timeout_error(
@@ -559,51 +595,12 @@ class SessionResponseBuilder:
         self,
         *,
         provider: str,
-        groq_endpoint: str,
-        groq_model: str,
-        anthropic_model: str,
-        gemini_endpoint: str,
-        gemini_model: str,
-        nvidia_endpoint: str,
-        nvidia_model: str,
-        openrouter_endpoint: str,
-        openrouter_model: str,
-        ollama_endpoint: str,
-        ollama_model: str,
+        base_url: str,
+        model: str,
     ) -> str:
-        if provider == "groq":
-            return (
-                "LLM returned no decision. Verify the Groq API key is configured, "
-                f"the endpoint '{groq_endpoint}' is reachable, and model "
-                f"'{groq_model}' is available."
-            )
-        if provider == "anthropic":
-            return (
-                "LLM returned no decision. Verify the Anthropic API key is configured "
-                f"and model '{anthropic_model}' is available."
-            )
-        if provider == "gemini":
-            return (
-                "LLM returned no decision. Verify the Gemini API key is configured, "
-                f"the endpoint '{gemini_endpoint}' is reachable, and model "
-                f"'{gemini_model}' is available."
-            )
-        if provider == "nvidia":
-            return (
-                "LLM returned no decision. Verify the NVIDIA Build API key is configured, "
-                f"the endpoint '{nvidia_endpoint}' is reachable, and model "
-                f"'{nvidia_model}' is available."
-            )
-        if provider == "openrouter":
-            return (
-                "LLM returned no decision. Verify the OpenRouter API key is configured, "
-                f"the endpoint '{openrouter_endpoint}' is reachable, and model "
-                f"'{openrouter_model}' is available."
-            )
         return (
-            "LLM returned no decision. Verify Ollama is running "
-            f"({ollama_endpoint}) and model '{ollama_model}' "
-            "is pulled. Run: ollama pull " + ollama_model
+            "LLM returned no decision. Verify the router API key is configured, "
+            f"the endpoint '{base_url}' is reachable, and model '{model}' is available."
         )
 
     def build_direct_chat_fallback_answer(
@@ -623,7 +620,7 @@ class SessionResponseBuilder:
     ) -> str:
         return (
             f"{llm_unavailable_notice} "
-            "CABTA preserved the collected tool outputs in this session and did not synthesize a fallback narrative answer while the model was unavailable. "
+            "AISA preserved the collected tool outputs in this session and did not synthesize a fallback narrative answer while the model was unavailable. "
             "Review the tool results above or retry once the model is available again."
         )
 
@@ -976,6 +973,10 @@ class SessionResponseBuilder:
             "prompt_envelope": prompt_payload.get("prompt_envelope"),
             "model_only_chat": prompt_payload.get("model_only_chat"),
             "uses_native_tools": prompt_payload.get("uses_native_tools"),
+            "context_pack_summary": prompt_payload.get("context_pack_summary"),
+            "context_ledger": prompt_payload.get("context_ledger"),
+            "context_ledger_id": prompt_payload.get("context_ledger_id"),
+            "context_budget_summary": prompt_payload.get("context_budget_summary"),
             "planned_next_step_summary": self.build_planned_next_step_summary(
                 decision=planned_decision
             ),
@@ -1191,72 +1192,6 @@ class SessionResponseBuilder:
             ).get("chat_decision_block")
             or ""
         )
-
-    def build_fallback_decision_without_llm(
-        self,
-        *,
-        state: Any,
-        chat_prefers_direct_response: bool,
-        build_direct_chat_fallback_answer: Callable[[str], str],
-        goal: str,
-        build_next_action_from_context: Callable[[Any], Dict[str, Any]],
-        has_tool: Callable[[str], bool],
-        resolve_authoritative_outcome: Callable[[Any], Optional[Dict[str, str]]],
-        is_chat_session: Callable[[Any], bool],
-        provider_is_currently_unavailable: Callable[[Optional[str]], bool],
-        provider_name: Optional[str],
-        build_chat_model_unavailable_answer: Callable[[Any], str],
-        build_fallback_answer: Callable[[Any, Optional[Dict[str, str]]], str],
-    ) -> Dict[str, Any]:
-        findings = getattr(state, "findings", []) or []
-        if not findings:
-            if chat_prefers_direct_response:
-                return {
-                    "action": "final_answer",
-                    "answer": build_direct_chat_fallback_answer(goal),
-                    "verdict": "UNKNOWN",
-                    "reasoning": "Fallback: direct analyst chat response without tool use.",
-                }
-            decision = build_next_action_from_context(state)
-            decision["reasoning"] = (
-                "Fallback: LLM returned no decision. "
-                + str(decision.get("reasoning") or "")
-            ).strip()
-            return decision
-
-        last_tool = ""
-        for finding in reversed(findings):
-            if finding.get("type") == "tool_result":
-                last_tool = str(finding.get("tool") or "")
-                break
-
-        if last_tool != "correlate_findings" and has_tool("correlate_findings"):
-            return {
-                "action": "use_tool",
-                "tool": "correlate_findings",
-                "params": {"findings": findings[-10:]},
-                "reasoning": "Fallback: LLM returned no decision, so correlate the accumulated evidence.",
-            }
-
-        authoritative_outcome = resolve_authoritative_outcome(state)
-        verdict = authoritative_outcome["label"] if authoritative_outcome else "UNKNOWN"
-        if is_chat_session(state) and provider_is_currently_unavailable(provider_name):
-            return {
-                "action": "final_answer",
-                "answer": build_chat_model_unavailable_answer(state),
-                "verdict": verdict,
-                "reasoning": (
-                    "Fallback: the configured chat model is unavailable, so preserve the investigation state "
-                    "without generating a deterministic narrative answer."
-                ),
-            }
-        answer = build_fallback_answer(state, authoritative_outcome)
-        return {
-            "action": "final_answer",
-            "answer": answer,
-            "verdict": verdict,
-            "reasoning": "Fallback: end the investigation with an evidence-preserving summary.",
-        }
 
     def build_fallback_answer(
         self,
@@ -1523,6 +1458,30 @@ class SessionResponseBuilder:
                 build_fallback_answer=build_fallback_answer,
             )
 
+    def enforce_final_report_shape(self, *, answer: Any, gate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        required = ["executive_summary", "timeline", "evidence", "root_cause", "coverage", "limitations", "next_actions"]
+        if isinstance(answer, dict) and isinstance(answer.get("final_investigation_report"), dict):
+            report = dict(answer["final_investigation_report"])
+            missing = [section for section in required if section not in report]
+            if not missing:
+                return {"final_investigation_report": report}
+            report.setdefault("limitations", []).append("Report was missing required sections: " + ", ".join(missing))
+            for section in missing:
+                report.setdefault(section, [] if section in {"timeline", "evidence", "limitations", "next_actions"} else "")
+            return {"final_investigation_report": report}
+
+        gate = dict(gate or {})
+        allowed = gate.get("allowed") is True
+        return {
+            "partial_safe_stop": {
+                "reason": "final_report_shape_missing" if allowed else "final_not_allowed",
+                "summary": str(answer or "")[:1200],
+                "limitations": list(gate.get("blocking_reasons") or gate.get("missing_evidence") or ["Required final_investigation_report sections were not present."]),
+                "pending_actions": list(((gate.get("structured_verdict") or {}).get("pending_actions") or [])) if isinstance(gate.get("structured_verdict"), dict) else [],
+                "authority": "session_response_builder_report_shape_enforcer",
+            }
+        }
+
     def summary_from_final_answer(
         self,
         *,
@@ -1535,6 +1494,11 @@ class SessionResponseBuilder:
             answer = finding.get("answer", "")
             if not answer:
                 continue
+            gate = finding.get("final_answer_gate", {}) if isinstance(finding.get("final_answer_gate"), dict) else {}
+            verdict = str(finding.get("verdict") or "").strip().upper()
+            shaped = self.enforce_final_report_shape(answer=answer, gate=gate)
+            if gate.get("allowed") is False or verdict == "UNKNOWN":
+                return str(shaped["partial_safe_stop"] if "partial_safe_stop" in shaped else shaped)
             if authoritative_outcome and "did not fall back to another model" not in str(answer).lower():
                 return f"[{authoritative_outcome['label']}] {answer}"
             return str(answer)

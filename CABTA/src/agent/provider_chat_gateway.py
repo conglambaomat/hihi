@@ -1,4 +1,4 @@
-"""Provider-agnostic chat/text request envelope helpers for CABTA LLM providers."""
+"""Router-only chat/text request envelope helpers for AISA LLM runtime."""
 
 from __future__ import annotations
 
@@ -6,59 +6,32 @@ from typing import Any, Dict, List, Optional
 
 
 class ProviderChatGateway:
-    """Build stable provider-facing request envelopes without owning transport."""
+    """Build stable router-facing request envelopes without owning transport."""
 
     @staticmethod
     def _normalize_provider_name(provider_name: str) -> str:
-        return str(provider_name or "").strip().lower()
-
-    @staticmethod
-    def _provider_family(provider_name: str) -> str:
         normalized = str(provider_name or "").strip().lower()
-        if not normalized:
-            return "unknown"
-        return normalized.split(":", 1)[0].split("/", 1)[0]
+        return normalized or "router"
 
     def _tool_prompting_profile(
         self,
         *,
-        provider_family: str,
         mode: str,
-        prompt_mode: str,
-        structured_intent: str,
         has_tools: bool,
     ) -> Dict[str, Any]:
         if not has_tools or mode != "tool_decision":
             return {
                 "tool_prompting_strategy": "disabled",
-                "tool_prompting_family": provider_family,
+                "tool_prompting_family": "router",
                 "tool_decision_format": "none",
                 "should_include_tool_schema_in_prompt": False,
             }
 
-        normalized_prompt_mode = str(prompt_mode or structured_intent or "").strip().lower()
-        if provider_family == "openrouter":
-            return {
-                "tool_prompting_strategy": "native_tools",
-                "tool_prompting_family": provider_family,
-                "tool_decision_format": "native_tool_call",
-                "should_include_tool_schema_in_prompt": False,
-            }
-        if provider_family in {"gemini", "groq", "anthropic", "nvidia", "ollama"}:
-            decision_format = "json_tool_decision"
-            if normalized_prompt_mode == "native_tooling":
-                decision_format = "native_tool_call"
-            return {
-                "tool_prompting_strategy": "aligned_tool_contract",
-                "tool_prompting_family": provider_family,
-                "tool_decision_format": decision_format,
-                "should_include_tool_schema_in_prompt": decision_format != "native_tool_call",
-            }
         return {
-            "tool_prompting_strategy": "aligned_tool_contract",
-            "tool_prompting_family": provider_family or "unknown",
-            "tool_decision_format": "json_tool_decision",
-            "should_include_tool_schema_in_prompt": True,
+            "tool_prompting_strategy": "native_tools",
+            "tool_prompting_family": "router",
+            "tool_decision_format": "native_tool_call",
+            "should_include_tool_schema_in_prompt": False,
         }
 
     def build_chat_request(
@@ -81,19 +54,15 @@ class ProviderChatGateway:
             else ""
         )
 
-        provider_family = self._provider_family(normalized_provider)
         prompt_mode = str(((normalized_prompt_envelope.get("investigation_context") or {}).get("prompt_mode")) or "").strip()
         tool_prompting_profile = self._tool_prompting_profile(
-            provider_family=provider_family,
             mode=mode,
-            prompt_mode=prompt_mode,
-            structured_intent=structured_intent,
             has_tools=bool(normalized_tools) and not model_only_chat,
         )
 
         request: Dict[str, Any] = {
-            "provider": normalized_provider,
-            "provider_family": provider_family,
+            "provider": "router",
+            "provider_family": "router",
             "messages": normalized_messages,
             "tools": [] if model_only_chat else normalized_tools,
             "mode": mode,
@@ -109,23 +78,74 @@ class ProviderChatGateway:
         request["tool_count"] = len(request["tools"])
         return request
 
+    def build_interpretation_request(
+        self,
+        *,
+        provider_name: str,
+        messages: List[Dict[str, Any]],
+        prompt_envelope: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_messages = [dict(message) for message in (messages or [])]
+        return {
+            "provider": "router",
+            "provider_family": "router",
+            "messages": normalized_messages,
+            "tools": [],
+            "mode": "schema_interpretation",
+            "intent": "soc_request_interpretation",
+            "tool_choice_allowed": False,
+            "native_tooling": False,
+            "response_format": {"type": "json_object"},
+            "prompt_envelope": dict(prompt_envelope or {}),
+            "prompt_mode": "schema_interpretation",
+            "structured_intent": "soc_request_interpretation",
+            "tool_prompting_strategy": "disabled",
+            "tool_prompting_family": "router",
+            "tool_decision_format": "none",
+            "should_include_tool_schema_in_prompt": False,
+            "message_count": len(normalized_messages),
+            "tool_count": 0,
+        }
+
+    def build_reviewer_request(
+        self,
+        *,
+        provider_name: str,
+        prompt: str,
+        schema: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self._normalize_provider_name(provider_name)
+        return {
+            "provider": "router",
+            "provider_family": "router",
+            "prompt": str(prompt or ""),
+            "mode": "schema_review",
+            "intent": "soc_final_investigation_review",
+            "native_tooling": False,
+            "tool_prompting_strategy": "disabled",
+            "tool_prompting_family": "router",
+            "tool_decision_format": "none",
+            "should_include_tool_schema_in_prompt": False,
+            "response_format": {"type": "json_object"},
+            "schema": dict(schema or {}),
+        }
+
     def build_text_request(
         self,
         *,
         provider_name: str,
         prompt: str,
     ) -> Dict[str, Any]:
-        normalized_provider = self._normalize_provider_name(provider_name)
-        provider_family = self._provider_family(normalized_provider)
+        self._normalize_provider_name(provider_name)
         return {
-            "provider": normalized_provider,
-            "provider_family": provider_family,
+            "provider": "router",
+            "provider_family": "router",
             "prompt": str(prompt or ""),
             "mode": "text_generation",
             "intent": "text_generation",
             "native_tooling": False,
             "tool_prompting_strategy": "disabled",
-            "tool_prompting_family": provider_family,
+            "tool_prompting_family": "router",
             "tool_decision_format": "none",
             "should_include_tool_schema_in_prompt": False,
         }

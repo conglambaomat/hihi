@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CABTA setup verification script.
+AISA setup verification script.
 
 The goal of this script is to reflect the product's actual runtime model:
 - core workflows must work locally with a minimal dependency set
@@ -44,7 +44,7 @@ def render_group(title: str, dependencies: Iterable[Dependency], missing_prefix:
 
 def main() -> None:
     print("=" * 60)
-    print("CABTA - Setup Verification")
+    print("AISA - Setup Verification")
     print("=" * 60)
     print()
 
@@ -58,7 +58,7 @@ def main() -> None:
         ("zipfile", None),
     ]
     recommended_dependencies: list[Dependency] = [
-        # CABTA has graceful fallbacks for both of these.
+        # AISA has graceful fallbacks for both of these.
         ("ssdeep", "ssdeep"),
         ("magic", "python-magic"),
         ("mcp", "mcp"),
@@ -84,18 +84,18 @@ def main() -> None:
     print("=" * 60)
 
     if missing_core:
-        print("[FAIL] CABTA is missing core dependencies.")
+        print("[FAIL] AISA is missing core dependencies.")
         print()
         print("Install with: pip install -r requirements.txt")
         sys.exit(1)
 
-    print("[OK] CABTA core dependencies are installed.")
+    print("[OK] AISA core dependencies are installed.")
 
     if missing_recommended:
         names = ", ".join(module for module, _ in missing_recommended)
         print(f"[WARN] Advanced enrichment will be partially degraded: {names}")
         print(
-            "       CABTA still runs, but fuzzy hashing, libmagic-backed detection, "
+            "       AISA still runs, but fuzzy hashing, libmagic-backed detection, "
             "and built-in MCP playbook servers may be limited."
         )
 

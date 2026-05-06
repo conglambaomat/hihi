@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Report Generation"""
+"""AI Security Assistant - Report Generation"""
 
 from .soc_output_formatter import SOCOutputFormatter
 from .html_report_generator import HTMLReportGenerator

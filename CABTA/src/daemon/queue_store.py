@@ -177,13 +177,34 @@ class DaemonQueueStore:
                 """UPDATE daemon_queue
                    SET status = 'queued', next_run_at = ?, lease_owner = NULL, leased_at = NULL,
                        lease_expires_at = NULL, updated_at = ?, last_transition = 'resumed'
-                   WHERE id = ? AND status IN ('failed', 'cancelled')""",
+                   WHERE id = ? AND status IN ('failed', 'cancelled', 'retry_scheduled')""",
                 (now, now, job_id),
             )
             conn.commit()
             updated = cur.rowcount > 0
             conn.close()
         return updated
+
+    def resume_pending_lifecycle_jobs(self, *, budget_remaining: bool = True) -> int:
+        """Requeue deferred lifecycle checks immediately when retry budget remains."""
+        if not budget_remaining:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """UPDATE daemon_queue
+                   SET status = 'queued', next_run_at = ?, lease_owner = NULL, leased_at = NULL,
+                       lease_expires_at = NULL, updated_at = ?, last_transition = 'resume_lifecycle_requeued'
+                   WHERE status = 'retry_scheduled'
+                     AND attempts < max_attempts
+                     AND COALESCE(last_error, '') LIKE '%agentic investigation session still running%'""",
+                (now, now),
+            )
+            conn.commit()
+            updated = cur.rowcount
+            conn.close()
+        return int(updated or 0)
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         conn = self._connect()

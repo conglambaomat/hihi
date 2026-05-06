@@ -75,6 +75,7 @@ class HeadlessSOCDaemon:
         daemon_cfg = self.daemon_config()
         worker_states = self.worker_states()
         active_workers = [item for item in worker_states if item.get("status") == "running"]
+        investigation_cfg = dict((self.config or {}).get("agentic_investigation", {}) or {})
         return {
             "enabled": self.is_enabled(),
             "runtime_mode": "thread_per_session",
@@ -88,6 +89,15 @@ class HeadlessSOCDaemon:
                 "resume_scope": "queue_state_only",
             },
             "approval_aware": True,
+            "agentic_investigation_runtime": {
+                "gate_enabled": bool(investigation_cfg.get("gate_enabled", investigation_cfg.get("agentic_investigation_gate_enabled", False))),
+                "auto_pivot_enabled": bool(investigation_cfg.get("auto_pivot_enabled", False)),
+                "llm_final_reviewer_enabled": bool(investigation_cfg.get("llm_final_reviewer_enabled", False)),
+                "long_running_resume": True,
+                "completion_statuses": ["blocked_incomplete", "complete", "incomplete_budget_exhausted", "reviewer_rejected"],
+                "not_complete_policy": "keep_session_running_or_retry_until_budget_exhausted",
+                "telemetry_fields": ["investigation_state", "investigation_completion", "final_reviewer"],
+            },
             "bounded_concurrency": {
                 "enabled": True,
                 "max_workers": int(daemon_cfg.get("max_workers", 1) or 1),
@@ -151,6 +161,8 @@ class HeadlessSOCDaemon:
             "execution_mode": "workflow",
             "schedule_name": schedule.get("name"),
             "schedule_id": schedule.get("id") or schedule.get("name") or workflow_id,
+            "agentic_investigation": dict((self.config or {}).get("agentic_investigation", {}) or {}),
+            "resume_token_source": "daemon_queue",
         }
         built_goal = self.workflow_registry.build_goal(workflow_id, goal=goal, params=params)
         runtime_state = self.workflow_service.evaluate_runtime_readiness(
@@ -235,6 +247,23 @@ class HeadlessSOCDaemon:
             except Exception:
                 pass
 
+        investigation_resume = {
+            "schema_version": "daemon-investigation-resume/v2",
+            "requires_agentic_investigation": bool(metadata.get("agentic_investigation")),
+            "completion_policy": "defer_until_terminal_or_explicit_incomplete",
+            "resume_metadata_keys": ["resume_token_source", "agentic_investigation", "schedule_id", "session_id", "case_id"],
+            "incomplete_statuses": ["blocked_incomplete", "incomplete_budget_exhausted", "needs_more_investigation"],
+            "resume_token": metadata.get("daemon_resume_token") or metadata.get("resume_token") or schedule.get("id"),
+            "lifecycle": ["queued", "planning", "executing_action", "reflecting", "reviewing", "completed_or_deferred"],
+            "session_completion_check": {
+                "session_id": session_id,
+                "terminal_statuses": ["completed", "failed", "cancelled"],
+                "defer_statuses": ["active", "running", "waiting_human", "blocked_incomplete"],
+                "resume_strategy": "lease_retry_rehydrates_schedule_and_checks_session_metadata",
+            },
+            "next_action_reason": "queue will re-check session completion and continue required SOC pivots before marking job complete",
+        }
+
         return {
             "status": "running",
             "workflow_id": workflow_id,
@@ -248,6 +277,7 @@ class HeadlessSOCDaemon:
             "runtime_truth": "workflow_runtime_enforcement",
             "headless_execution_eligible": headless_execution_eligible,
             "case_truth_ready": case_truth_ready,
+            "investigation_resume": investigation_resume,
         }
 
     def worker_states(self) -> List[Dict[str, Any]]:
@@ -315,6 +345,7 @@ class HeadlessSOCDaemon:
             released_leases = self.queue_store.release_stale_leases(
                 lease_timeout_seconds=lease_timeout_seconds
             )
+            resumed_lifecycle_jobs = self.queue_store.resume_pending_lifecycle_jobs(budget_remaining=True)
             seeded_jobs = self.queue_store.seed_schedules(self.list_schedules())
             leased_jobs = self.queue_store.lease_due_jobs(
                 worker_id,
@@ -335,6 +366,27 @@ class HeadlessSOCDaemon:
                 results.append(dispatch)
 
                 if dispatch.get("status") == "running":
+                    resume = dispatch.get("investigation_resume") if isinstance(dispatch.get("investigation_resume"), dict) else {}
+                    if resume.get("requires_agentic_investigation"):
+                        dispatch["queue_completion_deferred"] = True
+                        dispatch["queue_completion_reason"] = resume.get("completion_policy")
+                        dispatch["next_action_reason"] = resume.get("next_action_reason")
+                        dispatch["resume_lifecycle"] = {
+                            "state": "deferred_session_incomplete",
+                            "session_id": dispatch.get("session_id"),
+                            "queue_job_id": job["id"],
+                            "resume_token": job.get("resume_token"),
+                            "next_check_after_backoff_seconds": retry_backoff,
+                            "safe_to_resume": True,
+                            "reason": "agentic_investigation_not_terminal",
+                        }
+                        dispatch["queue_retry"] = self.queue_store.fail_job(
+                            job["id"],
+                            "agentic investigation session still running; resume check deferred",
+                            retryable=True,
+                            base_backoff_seconds=retry_backoff,
+                        )
+                        continue
                     self.queue_store.complete_job(job["id"], session_id=dispatch.get("session_id"))
                     continue
 
@@ -356,6 +408,7 @@ class HeadlessSOCDaemon:
                 "started_at": cycle_started_at,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "released_stale_leases": released_leases,
+                "resumed_lifecycle_jobs": resumed_lifecycle_jobs,
                 "seeded_jobs": seeded_jobs,
                 "leased_jobs": len(leased_jobs),
                 "result_count": len(results),

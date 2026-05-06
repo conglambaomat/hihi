@@ -45,6 +45,7 @@ from src.agent.playbook_engine import PlaybookEngine, safe_evaluate_condition, P
 from src.agent.sandbox_orchestrator import SandboxOrchestrator, SandboxType
 from src.agent.mcp_client import MCPClientManager, MCPServerConfig, MCPConnection
 from src.workflows.registry import WorkflowRegistry
+from src.agent.log_query_planner import LogQueryPlanner
 from src.workflows.service import WorkflowService
 from src.case_intelligence.service import CaseIntelligenceService
 from src.daemon.service import HeadlessSOCDaemon
@@ -366,7 +367,7 @@ class TestAgentStore:
         store = AgentStore()
 
         assert init_calls["count"] == 2
-        assert store._db_path == tmp_path / ".cabta-runtime" / "agent.db"
+        assert store._db_path == tmp_path / ".aisa-runtime" / "agent.db"
 
     # ---- MCP Connections ---- #
 
@@ -521,6 +522,29 @@ class TestToolRegistry:
         assert tool_registry.get_tool("remnux.strings") is not None
         assert tool_registry.get_tool("remnux.file_info") is not None
         assert tool_registry.get_tool("remnux.nonexistent") is None
+
+    def test_get_tools_for_llm_sanitizes_mcp_names_and_preserves_lookup(self, tool_registry):
+        tool_registry.register_mcp_tools("splunk-mcp", [
+            {"name": "lookup.ip", "description": "Lookup IP", "inputSchema": {}},
+        ])
+
+        llm_tools = tool_registry.get_tools_for_llm()
+        assert len(llm_tools) == 1
+        assert llm_tools[0]["function"]["name"] == "splunk-mcp_lookup_ip"
+        assert tool_registry.resolve_tool_name("splunk-mcp_lookup_ip") == "splunk-mcp.lookup.ip"
+        assert tool_registry.get_tool("splunk-mcp_lookup_ip") is not None
+
+    def test_get_tools_for_llm_disambiguates_sanitized_name_collisions(self, tool_registry):
+        tool_registry.register_mcp_tools("srv.one", [{"name": "hunt", "description": "A", "inputSchema": {}}])
+        tool_registry.register_mcp_tools("srv", [{"name": "one_hunt", "description": "B", "inputSchema": {}}])
+
+        llm_tools = tool_registry.get_tools_for_llm()
+        llm_names = [tool["function"]["name"] for tool in llm_tools]
+
+        assert "srv_one_hunt" in llm_names
+        assert "srv_one_hunt_3" in llm_names
+        assert tool_registry.resolve_tool_name("srv_one_hunt") == "srv.one.hunt"
+        assert tool_registry.resolve_tool_name("srv_one_hunt_3") == "srv.one_hunt"
 
     def test_list_tools_all(self, tool_registry):
         async def noop(**kw):
@@ -695,7 +719,7 @@ class TestCapabilityCatalog:
             )
         )
         summary = catalog.build_summary(app)
-        assert summary["verdict_authority_owner"] == "cabta_scoring"
+        assert summary["verdict_authority_owner"] == "aisa_scoring"
         assert summary["agent_profile_count"] >= 15
         assert summary["workflow_count"] >= 6
 
@@ -765,7 +789,7 @@ class TestGovernanceStore:
         store = GovernanceStore()
 
         assert init_calls["count"] == 2
-        assert store._db_path == tmp_path / ".cabta-runtime" / "governance.db"
+        assert store._db_path == tmp_path / ".aisa-runtime" / "governance.db"
 
 
 class TestWorkflowService:
@@ -1185,6 +1209,24 @@ class TestCaseIntelligence:
         assert isinstance(result["queries"]["kql"], list)
         assert "snort" in result["queries"]
 
+    def test_log_query_planner_exposes_coverage_and_variants(self):
+        planner = LogQueryPlanner()
+
+        plan = planner.build_plan(
+            focus="alice",
+            analyst_request="Investigate alice login activity",
+            lane="log_identity",
+            unresolved_questions=["Which host, session, and process are tied to alice?"],
+        )
+
+        assert {"user", "host", "session", "process"}.issubset(set(plan["required_facets"]))
+        assert plan["coverage_matrix"]["coverage_status"] == "not_executed"
+        assert plan["query_variants"]
+        assert all(item["fingerprint"] for item in plan["query_variants"])
+        assert all(item["reason"] for item in plan["query_variants"])
+        assert plan["validation"]["schema_version"] == "log_query_plan.v1"
+        assert "not a deterministic verdict" in plan["validation"]["coverage_contract"]
+
     @pytest.mark.asyncio
     async def test_search_logs_returns_honest_manual_status_without_backend(self, tool_registry):
         tool_registry.register_default_tools({})
@@ -1199,6 +1241,8 @@ class TestCaseIntelligence:
         assert result["results_count"] == 0
         assert result["query_count"] == 1
         assert result["queries"]["spl"]
+        assert result["coverage_matrix"]["coverage_status"] == "unknown"
+        assert result["coverage_matrix"]["retry_recommended"] is False
 
     @pytest.mark.asyncio
     async def test_search_logs_delegates_to_connected_splunk_backend(
@@ -1238,11 +1282,202 @@ class TestCaseIntelligence:
         assert result["configured_backends"] == ["splunk"]
         assert result["results_count"] == 1
         assert "185.220.101.45" in result["suspicious_indicators"]
+        assert "network" in result["coverage_matrix"]["covered_facets"]
+        assert result["coverage_matrix"]["question_coverage"] == []
         mock_mcp.call_tool.assert_awaited_once()
 
         decisions = governance_store.list_ai_decisions(session_id="hunt001")
         assert decisions
         assert decisions[0]["decision_type"] == "log_search_execution"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_prefers_investigation_query_plan_variants_over_legacy(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock(
+            return_value={
+                "result": {
+                    "status": "executed",
+                    "backend": "splunk",
+                    "results": [{"process_name": "powershell.exe"}],
+                    "results_count": 1,
+                    "suspicious_executables": ["powershell.exe"],
+                }
+            }
+        )
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 7, "max_results": 25, "max_queries_per_hunt": 1}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"splunk": ["search index=* legacy | head 10"]},
+            timerange="24h",
+            _execution_context={
+                "session_id": "hunt-plan",
+                "log_query_plan": {"query_bundle": {"splunk": ["search index=* legacy_plan | head 10"]}},
+                "investigation_query_plan": {
+                    "objective": "hunt process",
+                    "expected_facets": ["process"],
+                    "query_variants": [
+                        {"variant_id": "v1", "backend": "splunk", "strategy": "process_lineage", "target_facets": ["process"], "query": "search index=endpoint process_name=* alice | head 25"},
+                        {"variant_id": "v2", "backend": "splunk", "strategy": "host_timeline", "target_facets": ["host"], "query": "search index=endpoint host=* alice | head 25"},
+                    ],
+                },
+            },
+        )
+
+        assert result["status"] == "executed"
+        assert result["queries"]["splunk"][0] == "search index=endpoint process_name=* alice | head 25"
+        assert mock_mcp.call_tool.await_args.args[2]["query"] == "search index=endpoint process_name=* alice | head 25"
+        assert result["executed_query_variants"][0]["variant_id"] == "v1"
+        assert result["unexecuted_query_variants"][0]["variant_id"] == "v2"
+        assert result["investigation_query_plan"]["objective"] == "hunt process"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_uses_nested_plan_timerange_over_caller_default(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        historical = "2016-08-24t12:17:43..2016-08-24t12:37:43"
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock(return_value={"result": {"status": "executed", "backend": "splunk", "results": [], "results_count": 0}})
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 365 * 20, "max_results": 25, "max_queries_per_hunt": 1}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"splunk": ["search index=fortigate srcip=188.243.155.61 | head 25"]},
+            timerange="24h",
+            _execution_context={
+                "session_id": "hunt-historical",
+                "investigation_query_plan": {
+                    "objective": "historical FortiGate hunt",
+                    "log_query_plan": {"timerange": historical},
+                    "query_variants": [
+                        {"variant_id": "hist-v1", "backend": "splunk", "query": "search index=fortigate srcip=188.243.155.61 | head 25", "target_facets": ["network"]},
+                    ],
+                },
+            },
+        )
+
+        assert result["requested_timerange"] == "24h"
+        assert result["effective_timerange"] == "2016-08-24T12:17:43..2016-08-24T12:37:43"
+        assert result["timerange_source"] == "investigation_query_plan"
+        assert mock_mcp.call_tool.await_args.args[2]["timerange"] == "2016-08-24T12:17:43..2016-08-24T12:37:43"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_discovers_and_binds_no_hint_wmi_query(self, tool_registry, governance_store):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+
+        async def call_tool(server, tool, payload):
+            if tool == "discover_sources":
+                return {"result": {"status": "executed", "source_profile": {"indexes": ["win"], "sourcetypes": ["XmlWinEventLog:Microsoft-Windows-Sysmon/Operational"]}}}
+            return {"result": {"status": "executed", "backend": "splunk", "results": [], "results_count": 0}}
+
+        mock_mcp.call_tool = AsyncMock(side_effect=call_tool)
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 365 * 20, "max_results": 25, "max_queries_per_hunt": 1}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"splunk": ['search EventCode=1002 "Get-WmiObject" host="HR-WIN-001" | head 25']},
+            timerange="2016-08-24t12:17:43..2016-08-24t12:37:43",
+            _execution_context={
+                "investigation_query_plan": {
+                    "query_variants": [
+                        {"variant_id": "wmi-no-hint", "backend": "splunk", "query": 'search EventCode=1002 "Get-WmiObject" host="HR-WIN-001" | head 25'},
+                    ]
+                }
+            },
+        )
+
+        search_call = mock_mcp.call_tool.await_args_list[-1].args
+        assert result["status"] == "executed"
+        assert result["collection_status"] == "collected"
+        assert result["source_profile"]["indexes"] == ["win"]
+        assert result["discovery"][0]["tool"] == "splunk.discover_sources"
+        assert "index=win" in search_call[2]["query"]
+        assert "XmlWinEventLog" in search_call[2]["query"]
+        assert search_call[2]["timerange"] == "2016-08-24T12:17:43..2016-08-24T12:37:43"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_marks_dispatch_failure_as_collection_failed(self, tool_registry, governance_store):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock(return_value={"result": {"status": "error", "backend": "splunk", "message": "Invalid earliest_time caused dispatch failure", "collection_status": "collection_failed"}})
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 365 * 20, "max_results": 25, "max_queries_per_hunt": 1}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"splunk": ['search index=win EventCode=1002 "Get-WmiObject" | head 25']},
+            timerange="2016-08-24t12:17:43..2016-08-24t12:37:43",
+        )
+
+        assert result["status"] == "collection_failed"
+        assert result["collection_status"] == "collection_failed"
+        assert result["results_count"] == 0
+        assert "failed" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_search_logs_replans_wmi_natural_language_into_bounded_spl(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        prompt = (
+            "investigate WMI system information discovery alert around host, Event ID, command line, and rule context. "
+            "Event ID: 90024 Rule Name: WMI System Information Discovery Alert Time: Jan 11 2025, 4:21 PM "
+            "Alert Details: Get-WmiObject -Class Win32_Bios on HR-WIN-001"
+        )
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock(return_value={"result": {"status": "executed", "backend": "splunk", "results": [], "results_count": 0}})
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 365 * 5, "max_results": 25, "max_queries_per_hunt": 1}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query=prompt,
+            timerange="Jan 11 2025, 4:21 PM",
+            _execution_context={"session_id": "hunt-wmi", "goal": prompt},
+        )
+
+        executed = mock_mcp.call_tool.await_args.args[2]
+        assert executed["query"].lower().startswith("search ")
+        assert "investigate WMI system information discovery" not in executed["query"]
+        assert "HR-WIN-001" in executed["query"]
+        assert "Get-WmiObject" in executed["query"]
+        assert "Win32_Bios" in executed["query"]
+        assert "sysmon" in executed["query"].lower()
+        assert "WinEventLog" in executed["query"] or "PowerShell" in executed["query"]
+        assert executed["timerange"] == "2025-01-11t16:06:00..2025-01-11t16:36:00"
+        assert result["query_planner"]["lane"] == "host_process_log_hunt"
+        assert result["coverage_matrix"]["lane"] == "host_process_log_hunt"
+        assert set(["host", "process", "command_line", "event_code", "source_sourcetype", "backend", "raw_event"]).issubset(result["coverage_matrix"]["required_facets"])
+        assert not result["queries"].get("generic") or all(not q.lower().startswith("investigate wmi system information") for q in result["queries"].get("generic", []))
 
     @pytest.mark.asyncio
     async def test_search_logs_requires_approval_for_broad_raw_query(
@@ -1268,11 +1503,51 @@ class TestCaseIntelligence:
 
         assert result["status"] == "approval_required"
         assert result["approval_id"]
+        assert result["coverage_matrix"]["coverage_status"] == "unknown"
+        assert result["investigation_query_plan"] == {}
         assert mock_mcp.call_tool.await_count == 0
 
         approval = governance_store.get_approval(result["approval_id"])
         assert approval is not None
         assert approval["tool_name"] == "splunk.search_logs"
+
+    @pytest.mark.asyncio
+    async def test_search_logs_preserves_plan_variants_on_blocked_query(
+        self,
+        tool_registry,
+        governance_store,
+    ):
+        mock_mcp = MagicMock()
+        mock_mcp.is_connected.return_value = True
+        mock_mcp.call_tool = AsyncMock()
+        tool_registry.register_default_tools(
+            {"log_hunting": {"max_window_hours": 24 * 7, "max_results": 25}},
+            mcp_client=mock_mcp,
+            governance_store=governance_store,
+        )
+
+        investigation_query_plan = {
+            "objective": "blocked unsafe hunt",
+            "expected_facets": ["host"],
+            "query_variants": [
+                {"variant_id": "blocked-v1", "backend": "splunk", "strategy": "unsafe", "target_facets": ["host"], "query": "index=* | outputlookup bad.csv"},
+                {"variant_id": "manual-v2", "backend": "splunk", "strategy": "safe_followup", "target_facets": ["host"], "query": "search index=endpoint host=* | head 25"},
+            ],
+        }
+
+        result = await tool_registry.execute_local_tool(
+            "search_logs",
+            query={"splunk": ["search index=* legacy | head 10"]},
+            timerange="24h",
+            _execution_context={"session_id": "hunt-blocked", "investigation_query_plan": investigation_query_plan},
+        )
+
+        assert result["status"] == "blocked"
+        assert result["coverage_matrix"]["coverage_status"] == "unknown"
+        assert result["investigation_query_plan"]["objective"] == "blocked unsafe hunt"
+        assert result["unexecuted_query_variants"][0]["variant_id"] == "blocked-v1"
+        assert result["unexecuted_query_variants"][1]["variant_id"] == "manual-v2"
+        assert mock_mcp.call_tool.await_count == 0
 
 
 # ====================================================================== #
@@ -3467,6 +3742,185 @@ class TestAgentLoop:
         assert isinstance(session_id, str) and len(session_id) > 0
         assert session_id in loop._active_sessions
 
+    def test_explicit_splunk_threat_hunt_prefers_search_logs_over_ioc(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+
+        async def search_logs(**kwargs):
+            return {"status": "manual_lookup_required"}
+
+        async def investigate_ioc(**kwargs):
+            return {"status": "executed"}
+
+        loop.tools.register_local_tool(
+            name="search_logs",
+            description="Search logs",
+            parameters={"type": "object", "properties": {"query": {}, "timerange": {"type": "string"}}},
+            category="siem",
+            executor=search_logs,
+        )
+        loop.tools.register_local_tool(
+            name="investigate_ioc",
+            description="Investigate IOC",
+            parameters={"type": "object", "properties": {"ioc": {"type": "string"}}},
+            category="threat_intel",
+            executor=investigate_ioc,
+        )
+        state = AgentState(
+            session_id="sess-splunk-hunt",
+            goal="Use Splunk to threat hunt FortiGate traffic for srcip=188.243.155.61 around the suspicious session",
+            max_steps=5,
+        )
+        state.reasoning_state = {}
+        state.entity_state = {}
+
+        decision = loop._build_next_action_from_context(state)
+
+        assert decision["action"] == "use_tool"
+        assert decision["tool"] == "search_logs"
+        assert decision.get("decision_source") == "explicit_log_hunt_request"
+        assert decision["tool"] != "investigate_ioc"
+
+    def test_log_query_planner_llm_assist_uses_runtime_provider_only_when_enabled(self, tmp_path):
+        response = json.dumps({
+            "candidates": [
+                {
+                    "backend": "splunk",
+                    "query": 'search index=main user="alice" session_id=* | head 50',
+                    "objective": "Find alice session identifiers.",
+                    "expected_facets": ["session", "user"],
+                }
+            ]
+        })
+        enabled_loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {"provider": "router", "api_key": "test-router-key", "model": "test-model"},
+                "api_keys": {"router": "test-router-key"},
+                "log_hunting": {"llm_query_assist_enabled": True, "llm_query_assist_timeout_seconds": 2},
+            },
+        )
+        enabled_loop.router_api_key = "sk-test-router-key-for-unit-tests"
+        provider_calls = []
+
+        async def fake_text(prompt):
+            provider_calls.append(prompt)
+            return response
+
+        enabled_loop._call_llm_text = fake_text
+        enabled_plan = enabled_loop.investigation_query_planner.build_log_hunt_plan(
+            goal="Investigate alice logon activity",
+            lane="log_identity",
+            focus="alice",
+            coverage_matrix={"missing_facets": ["session"], "coverage_targets": ["session"]},
+        )
+
+        assert provider_calls
+        assert enabled_plan["llm_query_assist"]["accepted_count"] == 1
+        assert [item for item in enabled_plan["query_variants"] if item.get("source") == "llm_suggestion"]
+
+        disabled_loop = _make_agent_loop(
+            tmp_path,
+            config_overrides={
+                "llm": {"provider": "router", "api_key": "test-router-key", "model": "test-model"},
+                "api_keys": {"router": "test-router-key"},
+                "log_hunting": {"llm_query_assist_enabled": False},
+            },
+        )
+        disabled_calls = []
+
+        async def disabled_text(prompt):
+            disabled_calls.append(prompt)
+            return response
+
+        disabled_loop._call_llm_text = disabled_text
+        disabled_plan = disabled_loop.investigation_query_planner.build_log_hunt_plan(
+            goal="Investigate alice logon activity",
+            lane="log_identity",
+            focus="alice",
+            coverage_matrix={"missing_facets": ["session"]},
+        )
+
+        assert disabled_calls == []
+        assert disabled_plan["llm_query_assist"]["status"] == "disabled"
+
+    def test_search_logs_two_step_retry_refresh_records_attempts_and_coverage(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        async def fake_search_logs(**_kwargs):
+            return {"status": "executed", "results_count": 0}
+        loop.tools.register_local_tool(
+            "search_logs",
+            "Search logs",
+            {"type": "object", "properties": {"query": {"type": "object"}, "timerange": {"type": "string"}}},
+            "logs",
+            fake_search_logs,
+        )
+        session_id = loop.store.create_session(goal="Investigate alice logon", metadata={"investigation_plan": {"lane": "log_identity"}})
+        state = AgentState(session_id=session_id, goal="Investigate alice logon", max_steps=5, investigation_plan={"lane": "log_identity"})
+        state.reasoning_state = loop.hypothesis_manager.bootstrap(state.goal, session_id, investigation_plan=state.investigation_plan)
+        loop._refresh_reasoning_outputs(session_id, state)
+
+        first_result = {
+            "status": "executed",
+            "results_count": 0,
+            "queries": {"splunk": ["search index=auth user=alice | head 50"]},
+            "investigation_query_plan": {"objective": "hunt identity linkage", "expected_facets": ["user", "process"]},
+            "coverage_matrix": {
+                "coverage_status": "partial",
+                "required_facets": ["user", "process"],
+                "covered_facets": ["user"],
+                "missing_facets": ["process"],
+                "blocking_gaps": [{"facet": "process", "status": "missing", "basis": "no_direct_evidence"}],
+                "retry_recommended": True,
+            },
+        }
+        loop._record_tool_observation(
+            session_id=session_id,
+            state=state,
+            tool_name="search_logs",
+            params={"query": first_result["queries"], "timerange": "24h"},
+            result=first_result,
+            duration_ms=1,
+            specialist_progress_reason="first search",
+        )
+        retry_decision = loop._reasoning_guided_next_action(state)
+        assert retry_decision["tool"] == "search_logs"
+        assert state.reasoning_state["query_attempts"][0]["result_class"] in {"empty_result", "success_partial"}
+        assert state.reasoning_state["retry_state"]["last_remaining_gaps"] == ["process"]
+
+        second_result = {
+            "status": "executed",
+            "results_count": 1,
+            "results": [{"user": "alice", "process_name": "powershell.exe", "host": "WS-12"}],
+            "queries": {"splunk": ["search index=endpoint user=alice process_name=* | head 50"]},
+            "investigation_query_plan": {"objective": "hunt identity linkage", "expected_facets": ["user", "process"]},
+            "coverage_matrix": {
+                "coverage_status": "covered",
+                "required_facets": ["user", "process"],
+                "covered_facets": ["user", "process"],
+                "missing_facets": [],
+                "blocking_gaps": [],
+                "retry_recommended": False,
+            },
+        }
+        loop._record_tool_observation(
+            session_id=session_id,
+            state=state,
+            tool_name="search_logs",
+            params={"query": second_result["queries"], "timerange": "24h"},
+            result=second_result,
+            duration_ms=1,
+            specialist_progress_reason="second search",
+        )
+
+        assert len(state.reasoning_state["query_attempts"]) == 2
+        assert state.reasoning_state["last_query_result_evaluation"]["result_class"] == "success_sufficient"
+        assert state.reasoning_state["last_log_result_coverage"]["covered_facets"] == ["user", "process"]
+        assert state.reasoning_state["coverage_matrix"]["overall_status"] in {"partial", "covered"}
+        prompt = loop._build_reasoning_block(state)
+        assert "Latest query attempt:" in prompt
+        metadata = loop.store.get_session(session_id).get("metadata", {})
+        assert metadata["reasoning_state"]["retry_state"]["last_query_result_evaluation"]["result_class"] == "success_sufficient"
+
     @pytest.mark.asyncio
     async def test_investigate_restores_follow_up_context_from_parent_session(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -4062,45 +4516,6 @@ class TestAgentLoop:
         assert decision is not None
         assert decision["action"] == "final_answer"
 
-    @pytest.mark.asyncio
-    async def test_think_bootstraps_first_tool_when_llm_returns_no_decision(self, tmp_path):
-        loop = _make_agent_loop(tmp_path)
-        state = AgentState(session_id="s1", goal="Investigate domain account-securecheck.com")
-        state.transition(AgentPhase.THINKING)
-
-        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock, return_value=None):
-            decision = await loop._think(state)
-
-        assert decision is not None
-        assert decision["action"] == "use_tool"
-        assert decision["tool"] == "investigate_ioc"
-        assert decision["params"]["ioc"] == "account-securecheck.com"
-
-    @pytest.mark.asyncio
-    async def test_think_correlates_existing_findings_when_llm_returns_no_decision(self, tmp_path):
-        loop = _make_agent_loop(tmp_path)
-        async def correlate_executor(**kwargs):
-            return {"verdict": "SUSPICIOUS"}
-        loop.tools.register_local_tool(
-            name="correlate_findings",
-            description="Correlate findings",
-            parameters={"properties": {}},
-            category="analysis",
-            executor=correlate_executor,
-        )
-
-        state = AgentState(session_id="s1", goal="Investigate suspicious infrastructure")
-        state.transition(AgentPhase.THINKING)
-        state.add_finding({"type": "tool_result", "tool": "investigate_ioc", "result": {"verdict": "SUSPICIOUS"}})
-
-        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock, return_value=None):
-            decision = await loop._think(state)
-
-        assert decision is not None
-        assert decision["action"] == "use_tool"
-        assert decision["tool"] == "correlate_findings"
-        assert isinstance(decision["params"]["findings"], list)
-
     def test_runtime_status_for_provider_falls_back_to_legacy_runtime_status(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
         loop.provider_runtime_status = {
@@ -4163,6 +4578,44 @@ class TestAgentLoop:
 
         state.goal = "Hay dieu tra nhanh domain account-securecheck.com"
         assert loop._chat_prefers_direct_response(state) is False
+
+    def test_chat_prefers_direct_response_when_execution_mode_is_direct(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="ban co phai la nen tang vibesoc that su chua",
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_execution_mode": "direct_response",
+            },
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="ban co phai la nen tang vibesoc that su chua",
+            max_steps=4,
+        )
+
+        assert loop._chat_prefers_direct_response(state) is True
+
+    def test_chat_follow_up_direct_execution_mode_prefers_answer_from_context(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        session_id = loop.store.create_session(
+            goal="Continue the previous analyst conversation about the security investigation.",
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_execution_mode": "direct_response",
+                "chat_user_message": "ban co the nhac lai nhung gi da tim thay khong",
+                "chat_follow_up_requires_fresh_evidence": False,
+            },
+        )
+        state = AgentState(
+            session_id=session_id,
+            goal="Continue the previous analyst conversation about the security investigation.",
+            max_steps=4,
+        )
+
+        assert loop._chat_follow_up_can_answer_from_context(state) is True
 
     def test_chat_follow_up_from_restored_context_prefers_model_written_answer(self, tmp_path):
         loop = _make_agent_loop(tmp_path)
@@ -4359,7 +4812,7 @@ class TestAgentLoop:
                         "Which source host initiated the outbound connection?",
                         "What destination, service, and action were recorded by FortiGate?",
                     ],
-                    "deterministic_verdict_owner": "CABTA deterministic core",
+                    "deterministic_verdict_owner": "AISA deterministic core",
                 }
             ],
             "next_action_signals": [
@@ -4419,7 +4872,7 @@ class TestAgentLoop:
                         "Which account and host are tied to the logon events?",
                         "Did the same source address produce both 4625 and 4624 activity?",
                     ],
-                    "deterministic_verdict_owner": "CABTA deterministic core",
+                    "deterministic_verdict_owner": "AISA deterministic core",
                 }
             ],
             "next_action_signals": [
@@ -4755,7 +5208,11 @@ class TestAgentLoop:
         loop = _make_agent_loop(tmp_path)
         session_id = loop.store.create_session(
             goal="Hello, what can you help me investigate in SOC workflows?",
-            metadata={"chat_mode": True, "response_style": "conversational"},
+            metadata={
+                "chat_mode": True,
+                "response_style": "conversational",
+                "chat_execution_mode": "direct_response",
+            },
         )
         state = AgentState(
             session_id=session_id,
@@ -4770,10 +5227,15 @@ class TestAgentLoop:
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        with patch.object(loop, "_chat_with_tools", new_callable=AsyncMock) as chat_with_tools:
+        with patch.object(
+            loop,
+            "_chat_with_tools",
+            new_callable=AsyncMock,
+            return_value="Provider model is currently unavailable. AISA did not fall back to another model.",
+        ) as chat_with_tools:
             decision = await loop._think(state)
 
-        chat_with_tools.assert_not_called()
+        assert chat_with_tools.await_count == 1
         assert decision["action"] == "final_answer"
         assert "did not fall back to another model" in decision["answer"]
 
@@ -5005,7 +5467,7 @@ class TestAgentLoop:
             "answer": (
                 "NVIDIA Build model deepseek-ai/deepseek-v3.2 is currently unavailable "
                 "(NVIDIA Build direct chat request timed out after 8s). "
-                "CABTA did not fall back to another model. "
+                "AISA did not fall back to another model. "
                 "Evidence-backed outcome: CLEAN. "
                 "Key evidence: 8.8.8.8 classified as CLEAN with threat_score=10. "
                 "This summary was generated directly from the collected evidence so the analyst can continue without losing context."
@@ -5408,6 +5870,28 @@ class TestAgentLoop:
         assert result["action"] == "use_tool"
         assert result["tool"] == "investigate_ioc"
         assert result["params"] == {"ioc": "8.8.8.8"}
+
+    def test_parse_tool_call_response_resolves_sanitized_mcp_name(self, tmp_path):
+        loop = _make_agent_loop(tmp_path)
+        loop.tools.register_mcp_tools(
+            "splunk-mcp",
+            [{"name": "lookup.ip", "description": "Lookup IP", "inputSchema": {}}],
+        )
+        sanitized_name = loop.tools.get_tools_for_llm()[0]["function"]["name"]
+        raw = {
+            "tool_calls": [{
+                "function": {
+                    "name": sanitized_name,
+                    "arguments": "{\"ip\": \"8.8.8.8\"}",
+                }
+            }]
+        }
+
+        result = loop._parse_tool_call_response(raw)
+
+        assert result["action"] == "use_tool"
+        assert result["tool"] == "splunk-mcp.lookup.ip"
+        assert result["params"] == {"ip": "8.8.8.8"}
 
 
 # ====================================================================== #

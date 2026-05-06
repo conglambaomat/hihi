@@ -321,12 +321,12 @@ def test_build_plan_emits_fortigate_outbound_triage_contracts():
 
     assert plan["lane"] == "log_identity"
     assert plan["incident_type"] == "fortigate_outbound_monitoring"
-    assert plan["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert plan["deterministic_verdict_owner"] == "AISA deterministic core"
     assert any("fortigate egress attribution" in item.lower() for item in plan["evidence_gaps"])
     assert any("validate the strongest observable first" in item.lower() for item in plan["first_pivots"])
     assert any(signal["signal_type"] == "fortigate_outbound" for signal in plan["next_action_signals"])
     fortigate_contract = next(item for item in plan["triage_contracts"] if item["contract_id"] == "fortigate_outbound_monitoring")
-    assert fortigate_contract["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert fortigate_contract["deterministic_verdict_owner"] == "AISA deterministic core"
     assert "policy_context" in fortigate_contract["required_fields"]
     assert any("source host" in question.lower() for question in fortigate_contract["analyst_questions"])
     assert any("beacon-like recurrence" in hook.lower() for hook in fortigate_contract["escalation_hooks"])
@@ -348,12 +348,12 @@ def test_build_plan_emits_windows_logon_triage_contracts():
 
     assert plan["lane"] == "log_identity"
     assert plan["incident_type"] == "windows_logon_monitoring"
-    assert plan["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert plan["deterministic_verdict_owner"] == "AISA deterministic core"
     assert any("windows logon attribution" in item.lower() for item in plan["evidence_gaps"])
     assert any("validate the strongest observable first" in item.lower() for item in plan["first_pivots"])
     assert any(signal["signal_type"] == "windows_logon" for signal in plan["next_action_signals"])
     windows_contract = next(item for item in plan["triage_contracts"] if item["contract_id"] == "windows_logon_monitoring")
-    assert windows_contract["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert windows_contract["deterministic_verdict_owner"] == "AISA deterministic core"
     assert "event_sequence" in windows_contract["required_fields"]
     assert any("4625 and 4624" in question for question in windows_contract["analyst_questions"])
     assert any("password spray" in hook.lower() for hook in windows_contract["escalation_hooks"])
@@ -375,7 +375,7 @@ def test_build_plan_emits_phishing_email_triage_contracts():
 
     assert plan["lane"] == "email"
     phishing_contract = next(item for item in plan["triage_contracts"] if item["contract_id"] == "phishing_email_triage")
-    assert phishing_contract["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert phishing_contract["deterministic_verdict_owner"] == "AISA deterministic core"
     assert "auth_results" in phishing_contract["required_fields"]
     assert any("dmarc" in question.lower() for question in phishing_contract["analyst_questions"])
     assert any("impersonation" in hook.lower() or "bec" in hook.lower() for hook in phishing_contract["escalation_hooks"])
@@ -397,7 +397,7 @@ def test_build_plan_emits_ioc_triage_contracts():
 
     assert plan["lane"] == "ioc"
     ioc_contract = next(item for item in plan["triage_contracts"] if item["contract_id"] == "ioc_triage")
-    assert ioc_contract["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert ioc_contract["deterministic_verdict_owner"] == "AISA deterministic core"
     assert "ownership" in ioc_contract["required_fields"]
     assert any("reputation" in question.lower() for question in ioc_contract["analyst_questions"])
     assert any("case linkage" in hook.lower() or "attribution" in hook.lower() for hook in ioc_contract["escalation_hooks"])
@@ -431,10 +431,12 @@ def test_normalize_existing_preserves_next_action_signals_shape():
 
     assert plan["goal"] == "Investigate secure-payroll-check.com"
     assert plan["triage_contracts"] == []
-    assert plan["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert plan["deterministic_verdict_owner"] == "AISA deterministic core"
     assert plan["next_action_signals"] == [
         {
             "tool": "analyze_email",
+            "capability": "email.analyze",
+            "capability_id": "email.analyze",
             "priority": 100,
             "reason": "Validate the email first.",
             "signal_type": "plan_pivot",

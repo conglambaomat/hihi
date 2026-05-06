@@ -1,5 +1,5 @@
 """
-Author: Ugur AtesIOC extraction utilities for Blue Team Assistant."""
+Author: Ugur AtesIOC extraction utilities for AI Security Assistant."""
 
 import re
 import hashlib

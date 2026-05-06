@@ -55,8 +55,31 @@ class RootCauseEngine:
             ),
             reverse=True,
         )
+        coverage_gaps: List[str] = []
+        coverage_matrix = (reasoning_state or {}).get("coverage_matrix", {}) if isinstance(reasoning_state, dict) else {}
+        if isinstance(coverage_matrix, dict):
+            for gap in coverage_matrix.get("blocking_gaps", []) or []:
+                if isinstance(gap, dict) and gap.get("facet"):
+                    metadata = gap.get("metadata") if isinstance(gap.get("metadata"), dict) else {}
+                    if metadata.get("cell_type") == "hypothesis_required_evidence":
+                        coverage_gaps.append(
+                            "Hypothesis evidence contract gap remains for "
+                            f"{metadata.get('hypothesis_type') or gap.get('facet')}: "
+                            f"{', '.join(str(item) for item in (gap.get('missing_fields') or [])[:4]) or 'required evidence'}."
+                        )
+                    else:
+                        coverage_gaps.append(f"Coverage gap remains for required facet: {gap.get('facet')}.")
+            if not coverage_gaps:
+                coverage_gaps.extend(
+                    f"Coverage gap remains for required facet: {facet}."
+                    for facet in coverage_matrix.get("missing_facets", []) or []
+                )
+        retry_state = (reasoning_state or {}).get("retry_state", {}) if isinstance(reasoning_state, dict) else {}
+        retry_gap = self._retry_gap_message(retry_state, coverage_matrix)
         missing = self._dedupe(
             [
+                *([retry_gap] if retry_gap else []),
+                *coverage_gaps,
                 *(unresolved_questions or []),
                 *((reasoning_state or {}).get("missing_evidence", []) if isinstance(reasoning_state, dict) else []),
                 *((reasoning_state or {}).get("open_questions", []) if isinstance(reasoning_state, dict) else []),
@@ -903,6 +926,26 @@ class RootCauseEngine:
         if len(missing) >= 2:
             return 0.62
         return 0.4
+
+    @staticmethod
+    def _retry_gap_message(retry_state: Any, coverage_matrix: Any) -> str:
+        if not isinstance(retry_state, dict):
+            return ""
+        stop_reason = str(retry_state.get("stop_reason") or (retry_state.get("last_decision") or {}).get("stop_reason") or "").strip()
+        result_class = str(retry_state.get("last_result_class") or retry_state.get("result_class") or "").strip()
+        if stop_reason.endswith("retry_budget_exhausted"):
+            return "Log coverage remains incomplete because the bounded retry budget was exhausted; this is a telemetry limitation, not a verdict."
+        if result_class == "backend_unavailable":
+            return "Log coverage remains incomplete because the backend was unavailable."
+        if result_class == "manual_required":
+            return "Log coverage remains incomplete because generated queries require manual analyst execution."
+        if result_class == "approval_required":
+            return "Log coverage remains incomplete because a query requires analyst approval before execution."
+        if result_class == "blocked_by_policy":
+            return "Log coverage remains incomplete because a query was blocked by safety policy."
+        if isinstance(coverage_matrix, dict) and coverage_matrix.get("coverage_status") in {"missing", "partial", "unknown"}:
+            return "Log coverage remains incomplete for required facets."
+        return ""
 
     @staticmethod
     def _typed_evidence_gap_message(lane: str) -> str:

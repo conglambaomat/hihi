@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 
 class WorkflowService:
-    """Bridge workflow definitions to existing CABTA sessions and playbooks."""
+    """Bridge workflow definitions to existing AISA sessions and playbooks."""
 
     def __init__(self, workflow_registry, agent_store, case_store=None, governance_store=None):
         self.workflow_registry = workflow_registry
@@ -40,7 +40,7 @@ class WorkflowService:
     def _runtime_truth_contract(*, dependency_status: Any = "unknown") -> Dict[str, Any]:
         return {
             "contract_version": "workflow-runtime-contract/v2",
-            "deterministic_verdict_owner": "CABTA deterministic core",
+            "deterministic_verdict_owner": "AISA deterministic core",
             "dependency_status": str(dependency_status or "unknown"),
             "runtime_truth": "workflow_registry_plus_runtime_enforcement",
             "governance_contract_version": "governance-contract/v2",
@@ -69,9 +69,9 @@ class WorkflowService:
                     "observed_fields": observed_fields,
                     "ready": ready,
                     "deterministic_verdict_owner": str(
-                        contract.get("deterministic_verdict_owner") or "CABTA deterministic core"
+                        contract.get("deterministic_verdict_owner") or "AISA deterministic core"
                     ).strip()
-                    or "CABTA deterministic core",
+                    or "AISA deterministic core",
                 }
             )
         return {
@@ -292,7 +292,7 @@ class WorkflowService:
             "stop_condition_contract": stop_condition_contract,
             "governance_contract": {
                 "contract_version": governance_contract.get("contract_version", "governance-contract/v2"),
-                "deterministic_verdict_owner": governance_contract.get("deterministic_verdict_owner", "CABTA deterministic core"),
+                "deterministic_verdict_owner": governance_contract.get("deterministic_verdict_owner", "AISA deterministic core"),
                 "decision_logging_supported": bool(governance_contract.get("decision_logging_supported", True)),
                 "feedback_logging_supported": bool(governance_contract.get("feedback_logging_supported", True)),
                 "approvals_required": bool(
@@ -331,7 +331,7 @@ class WorkflowService:
             "approvals_supported": True,
             "decision_logging_supported": True,
             "feedback_logging_supported": True,
-            "deterministic_verdict_owner": "CABTA deterministic core",
+            "deterministic_verdict_owner": "AISA deterministic core",
             "contract_version": "governance-contract/v2",
         }
         runtime_truth_contract = self._runtime_truth_contract(
@@ -339,7 +339,7 @@ class WorkflowService:
         )
         fact_contract = {
             "contract_version": "workflow-runtime-contract/v2",
-            "deterministic_verdict_owner": "CABTA deterministic core",
+            "deterministic_verdict_owner": "AISA deterministic core",
             "typed_observation_contract": "observation-contract/v2",
             "fact_family_schema_count": len(workflow_contract.get("fact_family_schemas", {}) or {}),
             "required_soc_lanes": list(workflow.get("required_soc_lanes", []) or []),
@@ -577,7 +577,7 @@ class WorkflowService:
                 "governed": True,
                 "case_truth_ready": int(evidence_quality_summary.get("observation_count", 0) or 0) > 0,
                 "deterministic_verdict_owner": str(
-                    investigation_plan.get("deterministic_verdict_owner") or "CABTA deterministic core"
+                    investigation_plan.get("deterministic_verdict_owner") or "AISA deterministic core"
                 ),
                 "runtime_truth": "workflow_registry_plus_session_metadata",
                 "contract_version": "workflow-runtime-contract/v2",
@@ -588,7 +588,7 @@ class WorkflowService:
             "typed_fact_contract": {
                 "contract_version": "workflow-runtime-contract/v2",
                 "observation_contract_version": "observation-contract/v2",
-                "deterministic_verdict_owner": "CABTA deterministic core",
+                "deterministic_verdict_owner": "AISA deterministic core",
                 "observation_count": int(evidence_quality_summary.get("observation_count", 0) or 0),
                 "observation_lanes": dict(evidence_quality_summary.get("observation_lanes", {}) or {}),
                 "fact_family_schemas": sorted(fact_family_schemas.keys()),

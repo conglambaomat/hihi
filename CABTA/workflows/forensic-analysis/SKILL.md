@@ -50,7 +50,7 @@ trigger-examples:
 
 # Forensic Analysis Skill
 
-This skill brings Vigil's forensic workflow idea into AISA without moving verdict authority away from CABTA.
+This skill brings Vigil's forensic workflow idea into AISA without moving verdict authority away from AISA.
 
 It emphasizes:
 

@@ -59,7 +59,7 @@ trigger-examples:
 This skill is the closest AISA equivalent to a Vigil-style end-to-end investigation workflow.
 
 It does not let the model improvise unsupported findings.
-It forces the investigation through real CABTA tools, analysis outputs, timelines, and case artifacts.
+It forces the investigation through real AISA tools, analysis outputs, timelines, and case artifacts.
 
 ## Operating Model
 

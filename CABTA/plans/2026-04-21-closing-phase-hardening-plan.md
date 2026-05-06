@@ -1,4 +1,4 @@
-# CABTA Closing-Phase Hardening Plan
+# AISA Closing-Phase Hardening Plan
 
 **Date:** 2026-04-21
 **Status:** Active hardening baseline (updated after reasoning-competition tranche, chat-orchestrator shrink tranche, tool-observation bookkeeping shrink tranche, evidence-first reasoning calibration tranche, lifecycle-contract propagation tranche, workflow/daemon/case-reasoning truth tranche, snapshot-derived memory-contract unification tranche, runtime-truth / authoritative-memory precedence hardening tranche, case-reasoning memory-boundary truth fallback tranche, queued thread-command payload truth tranche, authoritative case-memory boundary precedence tranche, workflow run/runtime payload truth tranche, daemon runtime truth fallback hardening tranche, thread-snapshot boundary contract propagation tranche, case-memory snapshot contract propagation tranche, matched-session root-cause contract reuse tranche, workflow case-truth readiness hardening tranche, and agent-session restored-chat metadata surfacing tranche)
@@ -18,11 +18,11 @@ It is grounded in the current CABTA repository state, especially:
 - the implemented code and tests under `src/agent/`, `src/web/`, `src/workflows/`, and `tests/`
 
 This is not a greenfield roadmap.
-It is the most accurate next-phase plan for upgrading CABTA from the state the codebase is already in.
+It is the most accurate next-phase plan for upgrading AISA from the state the codebase is already in.
 
 ## Executive Direction
 
-CABTA is no longer mainly a tool-router prototype.
+AISA is no longer mainly a tool-router prototype.
 The current codebase already implements most of the structural seams that the earlier upgrade plans proposed:
 
 - explicit investigation planning
@@ -227,7 +227,7 @@ The following items from the older plans should no longer be framed as net-new a
 These already exist and are integrated.
 The remaining work is refinement, contract tightening, and behavior hardening.
 
-### Drop any framing that CABTA lacks a meaningful test surface
+### Drop any framing that AISA lacks a meaningful test surface
 
 This is outdated.
 The repository already has broad focused coverage across the upgraded agentic architecture.
@@ -361,7 +361,7 @@ The most accurate next upgrade strategy from the current state is:
 4. keep deterministic verdict authority and evidence-first design as the non-negotiable center
 5. only expand optional runtime planes such as daemonized automation or live MCP hunting after truth semantics and recovery behavior are hardened
 
-In practical terms, CABTA should now upgrade by becoming:
+In practical terms, AISA should now upgrade by becoming:
 
 - more explicit
 - more auditable
@@ -372,7 +372,7 @@ not by becoming radically more complex.
 
 ## Explicit Non-Goals For This Closing Phase
 
-- no rewrite of CABTA's deterministic scoring or verdict authority
+- no rewrite of AISA's deterministic scoring or verdict authority
 - no replacement of the current seam-based architecture with a new framework
 - no graph database or heavyweight persistence migration
 - no UI-first redesign

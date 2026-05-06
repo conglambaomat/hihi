@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - Standardized data models.
+AI Security Assistant - Standardized data models.
 Author: Ugur Ates
 """
 

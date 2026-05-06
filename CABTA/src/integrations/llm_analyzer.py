@@ -1,5 +1,4 @@
-"""
-Author: Ugur AtesLLM-powered intelligent analysis using Local (Ollama) or Cloud (Anthropic) models."""
+"""LLM-powered AISA analysis via the canonical OpenAI-compatible router."""
 
 import aiohttp
 import json
@@ -11,26 +10,19 @@ import logging
 from ..utils.api_key_validator import get_valid_key
 
 logger = logging.getLogger(__name__)
+
+
+class LLMProviderError(RuntimeError):
+    """Raised when the canonical LLM router cannot produce an analysis."""
+
+
 class LLMAnalyzer:
-    """
-    LLM-powered threat analysis using LOCAL (Ollama) or CLOUD (Anthropic) models.
-    
-    **LOCAL-FIRST APPROACH** (Recommended for Aviation/Critical Infrastructure):
-    - Uses Ollama for local, private analysis
-    - No data leaves your infrastructure
-    - Free, unlimited usage
-    - Supports: Llama 3.1, Mistral, Qwen, DeepSeek, etc.
-    
-    **CLOUD OPTION** (Optional):
-    - Uses Anthropic Claude API
-    - Requires API key and costs money
-    - Only use for non-sensitive data
-    
-    Provides:
-    - Intelligent threat scoring
-    - Context-aware analysis
-    - Natural language summaries
-    - Actionable recommendations
+    """LLM-powered threat interpretation using AISA's single router runtime.
+
+    The LLM layer remains assistive only:
+    - deterministic analyzers and scoring stay authoritative
+    - router degradation must be reported honestly
+    - all runtime traffic uses one OpenAI-compatible endpoint
     """
     
     def __init__(self, config: Dict):
@@ -42,73 +34,16 @@ class LLMAnalyzer:
         """
         self.config = config
         
-        # Determine LLM provider (local/cloud)
         llm_config = config.get('llm', {})
-        self.provider = llm_config.get('provider', 'openrouter')
-        
-        # Ollama settings
-        self.ollama_endpoint = llm_config.get('ollama_endpoint', llm_config.get('base_url', 'http://localhost:11434'))
-        self.ollama_model = llm_config.get('ollama_model', llm_config.get('model', 'llama3.1:8b'))
-        
-        # Anthropic settings (fallback)
-        self.anthropic_key = get_valid_key(config.get('api_keys', {}), 'anthropic') or ''
-        self.anthropic_model = llm_config.get('anthropic_model', llm_config.get('model', 'claude-sonnet-4-20250514'))
-
-        # Groq settings (OpenAI-compatible API for open-weight/open-source models)
-        self.groq_key = (
-            get_valid_key(config.get('api_keys', {}), 'groq')
+        self.provider = 'router'
+        self.router_base_url = str(llm_config.get('base_url', 'http://localhost:20128/v1')).rstrip('/')
+        self.router_model = str(llm_config.get('model', 'cx/gpt-5.4')).strip() or 'cx/gpt-5.4'
+        self.router_api_key = (
+            get_valid_key(config.get('api_keys', {}), 'router')
             or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
         )
-        self.groq_endpoint = llm_config.get('groq_endpoint', llm_config.get('base_url', 'https://api.groq.com/openai/v1')).rstrip('/')
-        self.groq_model = llm_config.get('groq_model', llm_config.get('model', 'openai/gpt-oss-20b'))
 
-        # Gemini settings (Google OpenAI-compatible endpoint)
-        self.gemini_key = (
-            get_valid_key(config.get('api_keys', {}), 'gemini')
-            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
-        )
-        self.gemini_endpoint = llm_config.get(
-            'gemini_endpoint',
-            llm_config.get('base_url', 'https://generativelanguage.googleapis.com/v1beta/openai'),
-        ).rstrip('/')
-        self.gemini_model = llm_config.get('gemini_model', llm_config.get('model', 'gemini-2.5-flash'))
-
-        # NVIDIA Build settings (OpenAI-compatible endpoint)
-        self.nvidia_key = (
-            get_valid_key(config.get('api_keys', {}), 'nvidia')
-            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
-        )
-        self.nvidia_endpoint = llm_config.get(
-            'nvidia_endpoint',
-            llm_config.get('base_url', 'https://integrate.api.nvidia.com/v1'),
-        ).rstrip('/')
-        self.nvidia_model = llm_config.get('nvidia_model', llm_config.get('model', 'deepseek-ai/deepseek-v3.2'))
-
-        # OpenRouter settings (OpenAI-compatible endpoint)
-        self.openrouter_key = (
-            get_valid_key(config.get('api_keys', {}), 'openrouter')
-            or (llm_config.get('api_key', '') if get_valid_key({'api_key': llm_config.get('api_key', '')}, 'api_key') else '')
-        )
-        self.openrouter_endpoint = llm_config.get(
-            'openrouter_endpoint',
-            llm_config.get('base_url', 'https://openrouter.ai/api/v1'),
-        ).rstrip('/')
-        self.openrouter_model = llm_config.get(
-            'openrouter_model',
-            llm_config.get('model', 'arcee-ai/trinity-large-preview:free'),
-        )
-        self.auto_failover = bool(llm_config.get('auto_failover', False))
-
-        configured_fallbacks = llm_config.get('fallback_providers', llm_config.get('fallback_order', []))
-        if isinstance(configured_fallbacks, str):
-            configured_fallbacks = [configured_fallbacks]
-        self.fallback_providers = [
-            str(provider).strip().lower()
-            for provider in (configured_fallbacks or [])
-            if str(provider).strip()
-        ]
-
-        self.timeout = aiohttp.ClientTimeout(total=120)  # Longer timeout for local LLM
+        self.timeout = aiohttp.ClientTimeout(total=120)
         self.provider_runtime_status = {
             "provider": self.provider,
             "available": None,
@@ -220,12 +155,23 @@ Keep it concise and factual."""
             
             if response_data:
                 return response_data
-            else:
-                return {'error': 'Failed to get LLM response', 'provider': self.provider}
+            raise LLMProviderError(f"Failed to get LLM response from {self.provider}")
         
+        except LLMProviderError as e:
+            status = self.provider_runtime_statuses.get(self.provider) or self.provider_runtime_status
+            if isinstance(status, dict) and int(status.get('http_status') or 0) == 429:
+                return {
+                    'provider': self.provider,
+                    'model': self._resolved_provider_model(self.provider),
+                    'rate_limited': True,
+                    'note': 'Router rate limit encountered; did not fall back to another provider.',
+                    'error': str(e),
+                }
+            logger.error(f"[LLM] Analysis failed: {e}")
+            raise
         except Exception as e:
             logger.error(f"[LLM] Analysis failed: {e}")
-            return {'error': str(e)}
+            raise
     
     async def analyze_email(self, email_data: Dict) -> Dict:
         """
@@ -319,12 +265,13 @@ Based on the above tool analysis, provide your professional assessment in JSON f
 Be specific and reference the tool findings in your analysis."""
             
             response_data = await self._call_provider_api(prompt)
-            
-            return response_data if response_data else {'error': 'Failed to analyze'}
+            if response_data:
+                return response_data
+            raise LLMProviderError(f"Failed to get LLM email analysis from {self.provider}")
         
         except Exception as e:
             logger.error(f"[LLM] Email analysis failed: {e}")
-            return {'error': str(e)}
+            raise
     
     async def analyze_file(self, file_data: Dict) -> Dict:
         """
@@ -393,12 +340,13 @@ Be specific and reference the tool findings in your analysis."""
                 prompt = self._build_standard_file_prompt(file_data, context)
 
             response_data = await self._call_provider_api(prompt)
-
-            return response_data if response_data else {'error': 'Failed to analyze'}
+            if response_data:
+                return response_data
+            raise LLMProviderError(f"Failed to get LLM file analysis from {self.provider}")
 
         except Exception as e:
             logger.error(f"[LLM] File analysis failed: {e}")
-            return {'error': str(e)}
+            raise
 
     def _build_text_file_prompt(self, file_data: Dict, context: Dict) -> str:
         """Build LLM prompt for text files with C2/IOC indicators."""
@@ -540,73 +488,23 @@ Based on the above tool analysis, provide your professional assessment in JSON f
 The deterministic system verdict is authoritative. Your JSON verdict must not be less severe than the system verdict when the composite score already indicates MALICIOUS or SUSPICIOUS. Explain the evidence; do not silently downgrade it."""
     
     def _normalize_provider(self, provider: Optional[str]) -> str:
-        """Return a normalized provider name."""
-        return str(provider or self.provider or 'openrouter').strip().lower() or 'openrouter'
+        """Return the canonical runtime provider name."""
+        return 'router'
 
     def _provider_display_name(self, provider: Optional[str] = None) -> str:
-        provider_name = self._normalize_provider(provider)
-        if provider_name == 'nvidia':
-            return 'NVIDIA Build'
-        return provider_name.title()
-
-    def _is_groq_summary_model_compatible(self, model_name: str) -> bool:
-        """Reject moderation / guard models for analyst-summary chat use."""
-        normalized = str(model_name or '').strip().lower()
-        if not normalized:
-            return False
-        incompatible_tokens = ('prompt-guard', 'safeguard', 'moderation')
-        return not any(token in normalized for token in incompatible_tokens)
+        return 'LLM Router'
 
     def _resolved_provider_model(self, provider: Optional[str] = None) -> str:
-        """Resolve the effective model for a provider, correcting obvious misconfigurations."""
-        provider_name = self._normalize_provider(provider)
-        if provider_name == 'anthropic':
-            return self.anthropic_model
-        if provider_name == 'groq':
-            if self._is_groq_summary_model_compatible(self.groq_model):
-                return self.groq_model
-            return 'openai/gpt-oss-20b'
-        if provider_name == 'gemini':
-            return self.gemini_model
-        if provider_name == 'nvidia':
-            return self.nvidia_model
-        if provider_name == 'openrouter':
-            return self.openrouter_model
-        return self.ollama_model
+        """Resolve the effective model for the canonical router."""
+        return self.router_model
 
     def _provider_is_configured(self, provider: Optional[str]) -> bool:
-        """Return True when the provider has the credentials required for a live call."""
-        provider_name = self._normalize_provider(provider)
-        if provider_name == 'anthropic':
-            return bool(self.anthropic_key)
-        if provider_name == 'groq':
-            return bool(self.groq_key)
-        if provider_name == 'gemini':
-            return bool(self.gemini_key)
-        if provider_name == 'nvidia':
-            return bool(self.nvidia_key)
-        if provider_name == 'openrouter':
-            return bool(self.openrouter_key)
-        if provider_name == 'ollama':
-            return bool(self.ollama_endpoint)
-        return False
+        """Return True when the router has the credentials required for a live call."""
+        return bool(self.router_api_key)
 
     def _candidate_providers(self) -> List[str]:
-        """Build the ordered provider list for a single summary attempt."""
-        candidates = [self.provider]
-        if self._normalize_provider(self.provider) == 'nvidia':
-            return candidates
-        if not self.auto_failover:
-            return candidates
-
-        for provider in self.fallback_providers:
-            normalized = self._normalize_provider(provider)
-            if normalized in candidates:
-                continue
-            if not self._provider_is_configured(normalized):
-                continue
-            candidates.append(normalized)
-        return candidates
+        """Return the single active router provider for telemetry consistency."""
+        return ['router']
 
     def _provider_attempt_summary(self, provider: str) -> Dict:
         """Return a compact status summary for provider-attempt telemetry."""
@@ -621,16 +519,16 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         }
 
     def _format_failover_reason(self, provider: str) -> str:
-        """Human-readable reason why the primary provider was bypassed."""
+        """Human-readable reason why the router is unavailable."""
         status = self.provider_runtime_statuses.get(provider) or {}
-        error = str(status.get('error') or 'provider unavailable').strip()
+        error = str(status.get('error') or 'router unavailable').strip()
         http_status = status.get('http_status')
         compact = error.replace('\n', ' ').strip()
         if http_status == 429:
-            return f"{provider.title()} quota or rate limit reached"
+            return 'Router quota or rate limit reached'
         if compact:
             return compact[:180]
-        return f"{provider.title()} unavailable"
+        return 'Router unavailable'
 
     def _build_provider_error_result(
         self,
@@ -656,18 +554,17 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         if rate_limited:
             note = (
                 f"{provider_label} model {model} is rate-limited for the current API key. "
-                "CABTA did not fall back to another model."
+                "AISA did not fall back to another model."
             )
         elif http_status == 403 or 'authorization failed' in lowered or 'forbidden' in lowered:
             note = (
                 f"{provider_label} model {model} rejected the current API key. "
-                "Verify the key, model entitlement, and any required third-party terms acceptance. "
-                "CABTA did not fall back to another model."
+                "Verify the router key and model access. AISA did not fall back to another model."
             )
         else:
             note = (
                 f"{provider_label} model {model} is unavailable. "
-                "CABTA did not fall back to another model."
+                "AISA did not fall back to another model."
             )
         return {
             'error': raw_error,
@@ -677,7 +574,7 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
             'provider': provider_name,
             'model': model,
             'provider_attempts': attempts,
-            'fallback_blocked': not self.auto_failover,
+            'fallback_blocked': True,
         }
 
     def _attach_provider_metadata(
@@ -695,17 +592,6 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         enriched.setdefault('model', actual_model)
         enriched['provider_attempts'] = attempts
 
-        if fallback_from and provider != fallback_from:
-            failover_note = (
-                f"Primary provider {fallback_from} was unavailable ({self._format_failover_reason(fallback_from)}); "
-                f"used {provider} fallback."
-            )
-            existing_note = str(enriched.get('note') or '').strip()
-            enriched['note'] = f"{failover_note} {existing_note}".strip()
-            enriched['provider_failover'] = True
-            enriched['fallback_from'] = fallback_from
-            enriched['fallback_provider'] = provider
-
         return enriched
 
     def _active_model_name(self, provider: Optional[str] = None) -> str:
@@ -713,55 +599,24 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         return self._resolved_provider_model(provider)
 
     async def _call_provider_api(self, prompt: str) -> Optional[Dict]:
-        """Dispatch prompt to the configured LLM provider."""
+        """Dispatch prompt to the canonical router provider."""
         primary_provider = self.provider
         attempts: List[Dict] = []
-        last_error = None
+        result = await self._call_router_api(prompt)
+        attempts.append(self._provider_attempt_summary(primary_provider))
 
-        for provider in self._candidate_providers():
-            result = await self._call_single_provider(provider, prompt)
-            attempts.append(self._provider_attempt_summary(provider))
+        if isinstance(result, dict) and not result.get('error'):
+            return self._attach_provider_metadata(
+                result,
+                provider=primary_provider,
+                attempts=attempts,
+            )
 
-            if isinstance(result, dict) and not result.get('error'):
-                return self._attach_provider_metadata(
-                    result,
-                    provider=provider,
-                    attempts=attempts,
-                    fallback_from=primary_provider if provider != primary_provider else None,
-                )
-
-            if isinstance(result, dict) and result.get('error'):
-                last_error = str(result.get('error'))
-            else:
-                last_error = str((self.provider_runtime_statuses.get(provider) or {}).get('error') or last_error or '')
-
-        logger.error("[LLM] All configured providers failed. Attempts: %s", attempts)
-        primary_status = self.provider_runtime_statuses.get(primary_provider) or {}
-        return self._build_provider_error_result(
-            provider=primary_provider,
-            attempts=attempts,
-            error=last_error or f'Failed to get LLM response from {primary_provider}',
-            http_status=primary_status.get('http_status'),
+        last_error = str(result.get('error')) if isinstance(result, dict) and result.get('error') else str(
+            (self.provider_runtime_statuses.get(primary_provider) or {}).get('error') or ''
         )
-
-    async def _call_single_provider(self, provider: str, prompt: str) -> Optional[Dict]:
-        """Call exactly one provider."""
-        provider_name = self._normalize_provider(provider)
-        if provider_name == 'ollama':
-            return await self._call_ollama_api(prompt)
-        if provider_name == 'anthropic':
-            return await self._call_anthropic_api(prompt)
-        if provider_name == 'groq':
-            return await self._call_groq_api(prompt)
-        if provider_name == 'gemini':
-            return await self._call_gemini_api(prompt)
-        if provider_name == 'nvidia':
-            return await self._call_nvidia_api(prompt)
-        if provider_name == 'openrouter':
-            return await self._call_openrouter_api(prompt)
-
-        logger.error("[LLM] Unsupported provider configured: %s", provider_name)
-        return {'error': f'Unsupported LLM provider: {provider_name}'}
+        logger.error("[LLM] Router request failed. Attempts: %s", attempts)
+        raise LLMProviderError(last_error or f'Failed to get LLM response from {primary_provider}')
 
     def _parse_json_response_text(self, response_text: str) -> Dict:
         """Best-effort JSON extraction for provider responses."""
@@ -788,106 +643,26 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
         logger.warning("[LLM] Could not parse JSON from %s response", self.provider)
         return {'raw_response': response_text}
 
-    async def _call_ollama_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call Ollama local LLM API.
-        
-        Args:
-            prompt: Analysis prompt
-        
-        Returns:
-            Parsed JSON response or None
-        """
-        try:
-            model = self._resolved_provider_model('ollama')
-            logger.info(f"[LLM] Calling Ollama ({model})...")
-            
-            payload = {
-                'model': model,
-                'prompt': prompt,
-                'stream': False,
-                'format': 'json'  # Request JSON output
-            }
-            
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    f'{self.ollama_endpoint}/api/generate',
-                    json=payload
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self._record_runtime_status(
-                            provider='ollama',
-                            model=model,
-                            available=True,
-                            http_status=response.status,
-                        )
-                        response_text = data.get('response', '')
-                        
-                        return self._parse_json_response_text(response_text)
-                    else:
-                        body = await response.text()
-                        self._record_runtime_status(
-                            provider='ollama',
-                            model=model,
-                            available=False,
-                            error=f'Ollama HTTP {response.status}: {body[:200]}',
-                            http_status=response.status,
-                        )
-                        logger.error(f"[LLM] Ollama API error {response.status}: {body[:200]}")
-                        return None
-
-        except aiohttp.ClientConnectorError:
+    async def _call_router_api(self, prompt: str) -> Optional[Dict]:
+        """Call the canonical OpenAI-compatible router chat completions API."""
+        if not self.router_api_key:
             self._record_runtime_status(
-                provider='ollama',
-                model=self._resolved_provider_model('ollama'),
+                provider='router',
+                model=self._resolved_provider_model('router'),
                 available=False,
-                error=f'Ollama not reachable at {self.ollama_endpoint}',
+                error='Router API key not configured',
             )
-            logger.error(
-                f"[LLM] Cannot connect to Ollama at {self.ollama_endpoint}. "
-                "Is Ollama running? Start it with: ollama serve"
-            )
-            return None
-        except Exception as e:
-            self._record_runtime_status(
-                provider='ollama',
-                model=self._resolved_provider_model('ollama'),
-                available=False,
-                error=f'Ollama request failed: {e}',
-            )
-            logger.error(f"[LLM] Ollama API call failed: {e}")
-            return None
-
-    async def _call_groq_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call Groq's OpenAI-compatible chat completions API.
-
-        Args:
-            prompt: Analysis prompt
-
-        Returns:
-            Parsed JSON response or None
-        """
-        if not self.groq_key:
-            self._record_runtime_status(
-                provider='groq',
-                model=self._resolved_provider_model('groq'),
-                available=False,
-                error='Groq API key not configured',
-            )
-            logger.warning("[LLM] No Groq API key configured")
-            return {'error': 'No Groq API key configured'}
+            logger.warning("[LLM] No router API key configured")
+            raise LLMProviderError('Router API key not configured')
 
         try:
-            model = self._resolved_provider_model('groq')
-            logger.info(f"[LLM] Calling Groq ({model})...")
+            model = self._resolved_provider_model('router')
+            logger.info(f"[LLM] Calling router ({model})...")
 
             headers = {
-                'Authorization': f'Bearer {self.groq_key}',
+                'Authorization': f'Bearer {self.router_api_key}',
                 'Content-Type': 'application/json',
             }
-
             payload = {
                 'model': model,
                 'messages': [
@@ -899,14 +674,14 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
 
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(
-                    f'{self.groq_endpoint}/chat/completions',
+                    f'{self.router_base_url}/chat/completions',
                     headers=headers,
-                    json=payload
+                    json=payload,
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
                         self._record_runtime_status(
-                            provider='groq',
+                            provider='router',
                             model=model,
                             available=True,
                             http_status=response.status,
@@ -915,354 +690,31 @@ The deterministic system verdict is authoritative. Your JSON verdict must not be
                         message = choices[0].get('message', {}) if choices else {}
                         response_text = message.get('content', '')
                         if not response_text:
-                            logger.warning("[LLM] Groq returned an empty response")
-                            return None
+                            logger.warning("[LLM] Router returned an empty response")
+                            raise LLMProviderError('Router returned an empty response')
                         return self._parse_json_response_text(response_text)
 
                     body = await response.text()
                     self._record_runtime_status(
-                        provider='groq',
+                        provider='router',
                         model=model,
                         available=False,
-                        error=f'Groq HTTP {response.status}: {body[:200]}',
+                        error=f'Router HTTP {response.status}: {body[:200]}',
                         http_status=response.status,
                     )
-                    logger.error(f"[LLM] Groq API error {response.status}: {body[:200]}")
-                    return None
+                    logger.error(f"[LLM] Router API error {response.status}: {body[:200]}")
+                    raise LLMProviderError(f'Router HTTP {response.status}: {body[:200]}')
 
         except Exception as e:
             self._record_runtime_status(
-                provider='groq',
-                model=self._resolved_provider_model('groq'),
+                provider='router',
+                model=self._resolved_provider_model('router'),
                 available=False,
-                error=f'Groq request failed: {e}',
+                error=f'Router request failed: {e}',
             )
-            logger.error(f"[LLM] Groq API call failed: {e}")
-            return None
+            logger.error(f"[LLM] Router API call failed: {e}")
+            raise LLMProviderError(f'Router request failed: {e}') from e
 
-    async def _call_nvidia_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call NVIDIA Build's OpenAI-compatible chat completions API.
-
-        Args:
-            prompt: Analysis prompt
-
-        Returns:
-            Parsed JSON response or None
-        """
-        if not self.nvidia_key:
-            self._record_runtime_status(
-                provider='nvidia',
-                model=self._resolved_provider_model('nvidia'),
-                available=False,
-                error='NVIDIA Build API key not configured',
-            )
-            logger.warning("[LLM] No NVIDIA Build API key configured")
-            return {'error': 'NVIDIA Build API key not configured'}
-
-        try:
-            model = self._resolved_provider_model('nvidia')
-            logger.info(f"[LLM] Calling NVIDIA Build ({model})...")
-
-            headers = {
-                'Authorization': f'Bearer {self.nvidia_key}',
-                'Content-Type': 'application/json',
-            }
-
-            payload = {
-                'model': model,
-                'messages': [
-                    {'role': 'user', 'content': prompt}
-                ],
-                'temperature': 0.2,
-                'stream': False,
-            }
-
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    f'{self.nvidia_endpoint}/chat/completions',
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self._record_runtime_status(
-                            provider='nvidia',
-                            model=model,
-                            available=True,
-                            http_status=response.status,
-                        )
-                        choices = data.get('choices', [])
-                        message = choices[0].get('message', {}) if choices else {}
-                        response_text = message.get('content', '')
-                        if not response_text:
-                            logger.warning("[LLM] NVIDIA Build returned an empty response")
-                            return None
-                        return self._parse_json_response_text(response_text)
-
-                    body = await response.text()
-                    self._record_runtime_status(
-                        provider='nvidia',
-                        model=model,
-                        available=False,
-                        error=f'NVIDIA Build HTTP {response.status}: {body[:200]}',
-                        http_status=response.status,
-                    )
-                    logger.error(f"[LLM] NVIDIA Build API error {response.status}: {body[:200]}")
-                    return None
-
-        except Exception as e:
-            self._record_runtime_status(
-                provider='nvidia',
-                model=self._resolved_provider_model('nvidia'),
-                available=False,
-                error=f'NVIDIA Build request failed: {e}',
-            )
-            logger.error(f"[LLM] NVIDIA Build API call failed: {e}")
-            return None
-
-    async def _call_openrouter_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call OpenRouter's OpenAI-compatible chat completions API.
-
-        Args:
-            prompt: Analysis prompt
-
-        Returns:
-            Parsed JSON response or None
-        """
-        if not self.openrouter_key:
-            self._record_runtime_status(
-                provider='openrouter',
-                model=self._resolved_provider_model('openrouter'),
-                available=False,
-                error='OpenRouter API key not configured',
-            )
-            logger.warning("[LLM] No OpenRouter API key configured")
-            return {'error': 'No OpenRouter API key configured'}
-
-        try:
-            model = self._resolved_provider_model('openrouter')
-            logger.info(f"[LLM] Calling OpenRouter ({model})...")
-
-            headers = {
-                'Authorization': f'Bearer {self.openrouter_key}',
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://localhost',
-                'X-Title': 'CABTA',
-            }
-
-            payload = {
-                'model': model,
-                'messages': [
-                    {'role': 'user', 'content': prompt}
-                ],
-                'temperature': 0.2,
-                'stream': False,
-            }
-
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    f'{self.openrouter_endpoint}/chat/completions',
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self._record_runtime_status(
-                            provider='openrouter',
-                            model=model,
-                            available=True,
-                            http_status=response.status,
-                        )
-                        choices = data.get('choices', [])
-                        message = choices[0].get('message', {}) if choices else {}
-                        response_text = message.get('content', '')
-                        if not response_text:
-                            logger.warning("[LLM] OpenRouter returned an empty response")
-                            return None
-                        return self._parse_json_response_text(response_text)
-
-                    body = await response.text()
-                    self._record_runtime_status(
-                        provider='openrouter',
-                        model=model,
-                        available=False,
-                        error=f'OpenRouter HTTP {response.status}: {body[:200]}',
-                        http_status=response.status,
-                    )
-                    logger.error(f"[LLM] OpenRouter API error {response.status}: {body[:200]}")
-                    return None
-
-        except Exception as e:
-            self._record_runtime_status(
-                provider='openrouter',
-                model=self._resolved_provider_model('openrouter'),
-                available=False,
-                error=f'OpenRouter request failed: {e}',
-            )
-            logger.error(f"[LLM] OpenRouter API call failed: {e}")
-            return None
-
-    async def _call_gemini_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call Google's Gemini API through the OpenAI-compatible chat completions endpoint.
-
-        Args:
-            prompt: Analysis prompt
-
-        Returns:
-            Parsed JSON response or None
-        """
-        if not self.gemini_key:
-            self._record_runtime_status(
-                provider='gemini',
-                model=self._resolved_provider_model('gemini'),
-                available=False,
-                error='Gemini API key not configured',
-            )
-            logger.warning("[LLM] No Gemini API key configured")
-            return {'error': 'No Gemini API key configured'}
-
-        try:
-            model = self._resolved_provider_model('gemini')
-            logger.info(f"[LLM] Calling Gemini ({model})...")
-
-            headers = {
-                'Authorization': f'Bearer {self.gemini_key}',
-                'Content-Type': 'application/json',
-            }
-
-            payload = {
-                'model': model,
-                'messages': [
-                    {'role': 'user', 'content': prompt}
-                ],
-                'stream': False,
-            }
-
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    f'{self.gemini_endpoint}/chat/completions',
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self._record_runtime_status(
-                            provider='gemini',
-                            model=model,
-                            available=True,
-                            http_status=response.status,
-                        )
-                        choices = data.get('choices', [])
-                        message = choices[0].get('message', {}) if choices else {}
-                        response_text = message.get('content', '')
-                        if not response_text:
-                            logger.warning("[LLM] Gemini returned an empty response")
-                            return None
-                        return self._parse_json_response_text(response_text)
-
-                    body = await response.text()
-                    self._record_runtime_status(
-                        provider='gemini',
-                        model=model,
-                        available=False,
-                        error=f'Gemini HTTP {response.status}: {body[:200]}',
-                        http_status=response.status,
-                    )
-                    logger.error(f"[LLM] Gemini API error {response.status}: {body[:200]}")
-                    return None
-
-        except Exception as e:
-            self._record_runtime_status(
-                provider='gemini',
-                model=self._resolved_provider_model('gemini'),
-                available=False,
-                error=f'Gemini request failed: {e}',
-            )
-            logger.error(f"[LLM] Gemini API call failed: {e}")
-            return None
-    
-    async def _call_anthropic_api(self, prompt: str) -> Optional[Dict]:
-        """
-        Call Anthropic Claude API.
-        
-        Args:
-            prompt: Analysis prompt
-        
-        Returns:
-            Parsed JSON response or None
-        """
-        if not self.anthropic_key:
-            self._record_runtime_status(
-                provider='anthropic',
-                model=self._resolved_provider_model('anthropic'),
-                available=False,
-                error='Anthropic API key not configured',
-            )
-            logger.warning("[LLM] No Anthropic API key configured")
-            return {'error': 'No Anthropic API key configured'}
-        
-        try:
-            model = self._resolved_provider_model('anthropic')
-            logger.info(f"[LLM] Calling Anthropic ({model})...")
-            
-            headers = {
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-                'x-api-key': self.anthropic_key
-            }
-            
-            payload = {
-                'model': model,
-                'max_tokens': 2000,
-                'messages': [
-                    {'role': 'user', 'content': prompt}
-                ]
-            }
-            
-            async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.post(
-                    'https://api.anthropic.com/v1/messages',
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        self._record_runtime_status(
-                            provider='anthropic',
-                            model=model,
-                            available=True,
-                            http_status=response.status,
-                        )
-                        content = data.get('content', [])
-                        
-                        if content and content[0].get('type') == 'text':
-                            text = content[0].get('text', '')
-                            
-                            # Extract JSON from response
-                            return self._parse_json_response_text(text)
-                    else:
-                        self._record_runtime_status(
-                            provider='anthropic',
-                            model=model,
-                            available=False,
-                            error=f'Anthropic HTTP {response.status}',
-                            http_status=response.status,
-                        )
-                        logger.error(f"[LLM] Anthropic API error: {response.status}")
-                        return None
-
-        except Exception as e:
-            self._record_runtime_status(
-                provider='anthropic',
-                model=self._resolved_provider_model('anthropic'),
-                available=False,
-                error=f'Anthropic request failed: {e}',
-            )
-            logger.error(f"[LLM] Anthropic API call failed: {e}")
-            return None
     
     def _ensure_list(self, value) -> list:
         """

@@ -1,8 +1,8 @@
-# CABTA Feature Truth Matrix
+# AISA Feature Truth Matrix
 
-Last updated: 2026-04-14
+Last updated: 2026-04-28
 
-This file is the operational audit baseline for CABTA after the current stabilization pass.
+This file is the operational audit baseline for AISA after the current stabilization pass.
 
 Use it to answer:
 
@@ -37,7 +37,7 @@ Use it to answer:
 | History | Yes | Yes | N/A | Stable | Uses normalized job wrapper |
 | Cases | Yes | Yes | N/A | Stable | Live cases no longer get polluted by seeded demo cases once user data exists; case tools now support create/link/note/status updates from agent and workflow flows |
 | Reports | Yes | Yes | N/A | Stable | Report pages render from normalized job/result contracts |
-| Agent chat | Yes | Partial | Partial | Optional | Agent loop exists and web surface loads; specialist roles, ATT&CK coverage tools, case-management helpers, workflow-backed handoffs, and explicit specialist task supervision are now available to agent/tool orchestration |
+| Agent chat | Yes | Partial | Partial | Optional | Agent loop exists and web surface loads; specialist roles, workdir mirroring/resume payloads, ATT&CK coverage tools, case-management helpers, workflow-backed handoffs, explicit specialist task supervision, and non-authoritative query coverage/retry/hypothesis metadata mirrors are available to agent/tool orchestration |
 | Playbooks | Yes | Partial | Partial | Stable | Prior fixes remain in place; branching/input contract issues already addressed |
 | Workflows | Yes | Yes | No | Stable | Markdown workflows now load from both `WORKFLOW.md` and `SKILL.md`; new full-investigation and forensic-analysis skills are available through the orchestration plane, and workflow sessions now expose specialist teams, active specialist, handoff history, and explicit specialist task records |
 | Approvals | Yes | Yes | N/A | Stable | Governance approval queue is now first-class with list/detail/review APIs and a dedicated web surface |
@@ -45,8 +45,8 @@ Use it to answer:
 | Case intelligence | Yes | Partial | N/A | Stable | Graph and timeline are generated from stored analyses, workflow sessions, approvals, decisions, notes, and case events |
 | Headless SOC daemon | Yes | Partial | N/A | Optional | Optional daemon config/status scaffolding now includes a durable queue, lease recovery, retry/backoff, and queue-backed workflow dispatch; continuous background execution is still not enabled by default |
 | MCP management | Yes | Partial | No | Optional | Client is present; no server is currently connected on this host |
-| Splunk log hunting | Yes | Partial | No | Optional but wired | `search_logs` can now delegate to a read-only Splunk MCP backend with policy checks, audit logs, and approval-required results for broad hunts |
-| Config / health endpoints | Yes | Yes | N/A | Stable | `/api/config/health` now reports mode and initialized subsystem checks |
+| Splunk log hunting | Yes | Partial | No | Optional but wired | `search_logs` can now delegate to a read-only Splunk MCP backend with policy checks, audit logs, approval-required results for broad hunts, coverage deltas, bounded retry audit events, and compact graph/workdir mirrors for non-authoritative SOC reasoning metadata |
+| Config / health endpoints | Yes | Yes | N/A | Stable | `/api/config/health` reports mode and initialized subsystem checks; LLM runtime is normalized to a single OpenAI-compatible router endpoint/key/model contract |
 | Sandbox status | Yes | Yes | Partial | Honest | Status now reports Docker/VM/local_static/cloud adapters instead of empty output |
 
 ## Critical Path Outcome
@@ -84,14 +84,17 @@ There are currently no known `P0` issues on the main localhost web path:
 
 ## Remaining Honest Limitations
 
-- URLScan key storage exists, but CABTA does not yet call URLScan in the live IOC enrichment pipeline.
+- URLScan key storage exists, but AISA does not yet call URLScan in the live IOC enrichment pipeline.
 - On this Windows host, dynamic sandbox detonation is not currently available:
   - Docker is not available on PATH
   - VM staging is not configured
   - no cloud sandbox adapters are registered
 - Headless daemon mode now has durable queue and retry semantics, but it is still not yet a continuously running scheduler service with full worker supervision.
 - MCP exists as optional infrastructure, but there are no connected servers in the current runtime.
+- LLM router runtime is optional/degraded when no router API key or reachable router service is configured; legacy provider keys are compatibility aliases only, not separate active call paths.
+- Investigation workdirs are local audit/export/resume mirrors; they do not replace deterministic analyzer/scoring verdict authority, and retention delete/prune helpers should be run deliberately rather than as implicit cleanup.
 - Splunk-backed live hunting is now implemented, but it still requires an actual Splunk MCP server configuration with working credentials before the agent can pivot into live logs.
+- Query coverage, retry diagnosis, hypothesis requirement coverage, and graph/workdir metadata are orchestration aids only; they do not change deterministic verdict or score authority.
 - Live verification in this pass focused on the highest-value configured integrations rather than every possible external source.
 
 ## Acceptance Snapshot
@@ -113,7 +116,7 @@ There are currently no known `P0` issues on the main localhost web path:
 ## Recommended Next Pass
 
 1. Wire URLScan into the IOC enrichment pipeline or downgrade it further in UI copy until it is implemented.
-2. Decide whether CABTA should support Docker detonation, VM staging, or cloud adapter submission as the primary dynamic sandbox path on Windows localhost.
+2. Decide whether AISA should support Docker detonation, VM staging, or cloud adapter submission as the primary dynamic sandbox path on Windows localhost.
 3. Add the same “truthful status” treatment to more optional integrations beyond the currently verified core set.
 
 ## Unresolved Questions

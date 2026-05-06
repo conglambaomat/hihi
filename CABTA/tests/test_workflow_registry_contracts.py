@@ -103,7 +103,7 @@ headless-ready: true
     assert description["execution_contract"]["plan_contract"]["planner"] == "InvestigationPlanner"
     assert description["execution_contract"]["plan_contract"]["pivot_signals_supported"] is True
     assert description["execution_contract"]["governance_contract"]["contract_version"] == "governance-contract/v2"
-    assert description["execution_contract"]["governance_contract"]["deterministic_verdict_owner"] == "CABTA deterministic core"
+    assert description["execution_contract"]["governance_contract"]["deterministic_verdict_owner"] == "AISA deterministic core"
     assert description["execution_contract"]["fallback_paths"][0].startswith("Continue with manual hunt-query guidance")
     assert "Stop when required dependencies are blocked." in description["execution_contract"]["stop_conditions"]
     warning_messages = [item["message"] for item in description["validation"]["warnings"]]

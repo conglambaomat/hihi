@@ -1,5 +1,5 @@
 """
-Author: Ugur AtesMITRE ATT&CK Framework Mapper for Blue Team Assistant."""
+Author: Ugur AtesMITRE ATT&CK Framework Mapper for AI Security Assistant."""
 
 from typing import Dict, List
 import re

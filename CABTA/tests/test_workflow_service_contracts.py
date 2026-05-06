@@ -74,7 +74,7 @@ class StubWorkflowRegistry:
                 },
                 "governance_contract": {
                     "contract_version": "governance-contract/v2",
-                    "deterministic_verdict_owner": "CABTA deterministic core",
+                    "deterministic_verdict_owner": "AISA deterministic core",
                     "decision_logging_supported": True,
                     "feedback_logging_supported": True,
                     "approvals_required": True,
@@ -128,7 +128,7 @@ class StubAgentStore:
                             {
                                 "contract_id": "windows_logon_monitoring",
                                 "required_fields": ["account", "host", "source_ip"],
-                                "deterministic_verdict_owner": "CABTA deterministic core",
+                                "deterministic_verdict_owner": "AISA deterministic core",
                             }
                         ],
                     },
@@ -225,7 +225,7 @@ def test_describe_workflow_runtime_merges_contract_dependencies_and_runs():
     assert payload["runtime_enforcement"]["status"] == "blocked"
     assert payload["runtime_truth_contract"] == {
         "contract_version": "workflow-runtime-contract/v2",
-        "deterministic_verdict_owner": "CABTA deterministic core",
+        "deterministic_verdict_owner": "AISA deterministic core",
         "dependency_status": "degraded",
         "runtime_truth": "workflow_registry_plus_runtime_enforcement",
         "governance_contract_version": "governance-contract/v2",
@@ -333,7 +333,7 @@ def test_evaluate_runtime_readiness_requires_plan_evidence_and_governance_contra
                     {
                         "contract_id": "windows_logon_monitoring",
                         "required_fields": ["account", "host"],
-                        "deterministic_verdict_owner": "CABTA deterministic core",
+                        "deterministic_verdict_owner": "AISA deterministic core",
                     }
                 ],
             },
@@ -356,7 +356,7 @@ def test_evaluate_runtime_readiness_requires_plan_evidence_and_governance_contra
     assert ready["stop_condition_contract"]["triggered"] == ["interactive_runtime_required"]
     assert ready["runtime_truth_contract"] == {
         "contract_version": "workflow-runtime-contract/v2",
-        "deterministic_verdict_owner": "CABTA deterministic core",
+        "deterministic_verdict_owner": "AISA deterministic core",
         "dependency_status": "degraded",
         "runtime_truth": "workflow_registry_plus_runtime_enforcement",
         "governance_contract_version": "governance-contract/v2",

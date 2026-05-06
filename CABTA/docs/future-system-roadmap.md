@@ -1,17 +1,17 @@
-# CABTA Future System Roadmap
+# AISA Future System Roadmap
 
 ## Purpose
 
-This roadmap describes how CABTA should evolve after studying `vigil-main`.
+This roadmap describes how AISA should evolve after studying `vigil-main`.
 
 It is not a generic wishlist.
-It is a phased implementation guide for turning CABTA from a strong local-first analysis platform into a stronger AI SOC assistant without breaking its current strengths.
+It is a phased implementation guide for turning AISA from a strong local-first analysis platform into a stronger AI SOC assistant without breaking its current strengths.
 
-Legacy naming note: older strategic material may still refer to the same product direction as `AISA` / `AI Security Assistant`. For implementation, architecture, UI, and new docs, treat `CABTA` as the canonical product name.
+Legacy naming note: older strategic material may still refer to the same product direction as `AISA` / `AI Security Assistant`. For implementation, architecture, UI, and new docs, treat `AISA` as the canonical product name.
 
 ## Current Position
 
-CABTA already has meaningful depth in:
+AISA already has meaningful depth in:
 
 - IOC investigation
 - malware and file analysis
@@ -37,24 +37,24 @@ The most useful lessons from Vigil are:
 - stronger integration control plane
 - optional daemonized autonomous operations
 
-These should be adapted into CABTA in phases.
+These should be adapted into AISA in phases.
 
 ## Integration Direction
 
 The integration direction is:
 
-- CABTA keeps the analysis core and verdict governance
+- AISA keeps the analysis core and verdict governance
 - Vigil-inspired features provide the orchestration plane
 
 That means:
 
-- CABTA scoring remains the source of truth for verdicts
+- AISA scoring remains the source of truth for verdicts
 - workflows and specialist agents must call real tools for evidence
 - approval and daemon capabilities wrap around the core instead of replacing it
 
 ## Non-Negotiable Direction
 
-Future CABTA must remain:
+Future AISA must remain:
 
 - local-first
 - evidence-first
@@ -62,7 +62,7 @@ Future CABTA must remain:
 - usable with partial configuration
 - transparent about degraded states
 
-Future CABTA must avoid becoming:
+Future AISA must avoid becoming:
 
 - a cloud-required SOC product
 - an LLM-only analyst replacement
@@ -85,12 +85,12 @@ Future CABTA must avoid becoming:
 
 ## Phase 0: Architectural Alignment and Contract Cleanup
 
-**Goal:** prepare CABTA to absorb Vigil-inspired capabilities safely.
+**Goal:** prepare AISA to absorb Vigil-inspired capabilities safely.
 
 ### Outcomes
 
 - docs align on the two-plane model: analysis plane plus investigation plane
-- CABTA identity is consistent in product docs
+- AISA identity is consistent in product docs
 - core result contracts and capability states are explicit enough to support deeper orchestration
 
 ### Workstreams
@@ -159,7 +159,7 @@ Future CABTA must avoid becoming:
 - workflow UI and API
 - workflow-to-agent role mapping
 - explicit evidence-source declarations for workflow steps
-- enforcement that verdict-bearing steps route through CABTA analysis tools
+- enforcement that verdict-bearing steps route through AISA analysis tools
 
 ### Exit Criteria
 
@@ -169,7 +169,7 @@ Future CABTA must avoid becoming:
 
 ## Phase 3: Case Intelligence, Graph, and Timeline
 
-**Goal:** make CABTA investigations cumulative and navigable.
+**Goal:** make AISA investigations cumulative and navigable.
 
 ### Outcomes
 
@@ -195,8 +195,8 @@ Future CABTA must avoid becoming:
 ### Exit Criteria
 
 - related IPs, hosts, users, hashes, domains, and findings can be explored from one investigation context
-- CABTA supports "what happened and how is it connected?" better than isolated artifact screens
-- CABTA can answer "have we seen something like this before?" with structured evidence
+- AISA supports "what happened and how is it connected?" better than isolated artifact screens
+- AISA can answer "have we seen something like this before?" with structured evidence
 
 ## Phase 4: Governance, Approval, and AI Decision Logging
 
@@ -258,13 +258,13 @@ Partial implementation now in place:
 
 ### Exit Criteria
 
-- CABTA can say exactly which tools and integrations are available, optional, manual, degraded, or not configured
+- AISA can say exactly which tools and integrations are available, optional, manual, degraded, or not configured
 - agent and workflow selection improve because tool truth is explicit
 - operational telemetry and logs do not casually leak sensitive material
 
 ## Phase 6: Detection and Hunt Intelligence Expansion
 
-**Goal:** combine CABTA's artifact-analysis strengths with a stronger hunt and detection engineering layer.
+**Goal:** combine AISA's artifact-analysis strengths with a stronger hunt and detection engineering layer.
 
 ### Outcomes
 
@@ -286,7 +286,7 @@ Partial implementation now in place:
 
 ### Exit Criteria
 
-- CABTA supports proactive hunt workflows better, not only reactive analysis
+- AISA supports proactive hunt workflows better, not only reactive analysis
 - detection engineering becomes a structured output, not only an afterthought
 
 ## Phase 7: Optional Daemon and Background Operations
@@ -375,7 +375,7 @@ Why:
 
 Why:
 
-- converts CABTA from analysis toolkit to investigation platform
+- converts AISA from analysis toolkit to investigation platform
 
 ### Epic 4: approval and AI decision logging
 
@@ -415,13 +415,13 @@ The best practical order is:
 7. partial Phase 6
 8. partial Phase 7
 
-This order gives CABTA the structure to absorb later complexity safely.
+This order gives AISA the structure to absorb later complexity safely.
 
 ## Roadmap Guardrail
 
 At every phase, preserve this rule:
 
-- CABTA core decides verdicts
+- AISA core decides verdicts
 - Vigil-inspired orchestration coordinates workflows and actions
 
 If a proposed feature weakens that separation, it should be redesigned before implementation.

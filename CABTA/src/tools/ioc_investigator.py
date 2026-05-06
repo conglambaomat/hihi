@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - IOC Investigation Tool
+AI Security Assistant - IOC Investigation Tool
 
 Multi-source threat intelligence lookup for IPs, domains, URLs, and hashes.
 
@@ -186,22 +186,18 @@ class IOCInvestigator:
 
         verdict = determine_verdict(threat_score)
 
-        # Get LLM analysis if enabled (non-blocking: failure is OK)
+        # Get LLM analysis; enabled LLM failures are hard failures, not weak summaries.
         llm_analysis = {}
         llm_enabled = self.config.get('analysis', {}).get('enable_llm', True)
         if include_llm is not None:
             llm_enabled = include_llm
 
         if llm_enabled:
-            try:
-                llm_analysis = await self.llm_analyzer.analyze_ioc_results(ioc, ioc_type, intel_results)
-                if llm_analysis is None:
-                    llm_analysis = {'note': 'LLM unavailable - results based on threat intelligence only'}
-            except Exception as llm_err:
-                logger.warning(f"[IOC] LLM analysis failed (non-fatal): {llm_err}")
-                llm_analysis = {'note': f'LLM analysis failed: {llm_err}'}
+            llm_analysis = await self.llm_analyzer.analyze_ioc_results(ioc, ioc_type, intel_results)
+            if llm_analysis is None:
+                raise RuntimeError('LLM IOC analysis returned no response')
         else:
-            llm_analysis = {'note': 'LLM skipped for tool-only IOC investigation'}
+            llm_analysis = {'note': 'LLM intentionally skipped for tool-only IOC investigation'}
 
         # Generate detection rules
         detection_rules = RuleGenerator.generate_ioc_rules(ioc, ioc_type, {'verdict': verdict})

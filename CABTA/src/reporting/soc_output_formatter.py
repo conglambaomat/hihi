@@ -28,6 +28,30 @@ class SOCOutputFormatter:
     BOX_SINGLE_BOT = "└────────────────────────────────────────────────────────────────────────────┘"
     
     SECTION_SEP = "══════════════════════════════════════════════════════════════════════════════"
+
+    @classmethod
+    def format_evidence_chips_section(cls, result: Dict) -> List[str]:
+        """Render final-answer claim/evidence chips for SOC reports."""
+        gate = result.get("final_answer_gate", {}) if isinstance(result.get("final_answer_gate"), dict) else {}
+        chips = result.get("evidence_chips", []) if isinstance(result.get("evidence_chips"), list) else gate.get("evidence_chips", [])
+        unsupported = result.get("unsupported_claims", []) if isinstance(result.get("unsupported_claims"), list) else gate.get("downgraded_claims", [])
+        if not chips and not unsupported:
+            return []
+        lines = [cls.SECTION_SEP, " CLAIM EVIDENCE CHIPS", cls.SECTION_SEP, ""]
+        for chip in list(chips or [])[:12]:
+            if not isinstance(chip, dict):
+                continue
+            refs = chip.get("evidence_refs", []) if isinstance(chip.get("evidence_refs"), list) else []
+            lines.append(f"  [{str(chip.get('status') or 'claim').upper()}] {chip.get('sentence') or chip.get('claim') or ''}")
+            if refs:
+                lines.append("      Evidence refs: " + ", ".join(str(ref.get("ref") or ref.get("id") or ref.get("tool_name") or "evidence") for ref in refs[:4] if isinstance(ref, dict)))
+        for item in list(unsupported or [])[:8]:
+            if isinstance(item, dict):
+                lines.append(f"  [UNSUPPORTED] {item.get('claim') or item.get('sentence') or ''}")
+                if item.get("reason") or item.get("limitation"):
+                    lines.append(f"      Reason: {item.get('reason') or item.get('limitation')}")
+        lines.append("")
+        return lines
     
     @classmethod
     def format_email_report(cls, result: Dict, email_path: str) -> str:
@@ -735,7 +759,7 @@ class SOCOutputFormatter:
         lines.append(cls.SECTION_SEP)
         lines.append("")
         lines.append(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        lines.append("Blue Team Assistant Version: 1.0.0")
+        lines.append("AI Security Assistant Version: 1.0.0")
         lines.append("")
         
         return '\n'.join(lines)
@@ -1736,7 +1760,7 @@ class SOCOutputFormatter:
         lines.append(cls.SECTION_SEP)
         lines.append("")
         lines.append(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        lines.append("Blue Team Assistant Version: 1.0.0")
+        lines.append("AI Security Assistant Version: 1.0.0")
         lines.append("")
         
         return '\n'.join(lines)
@@ -1921,7 +1945,7 @@ class SOCOutputFormatter:
         lines.append(cls.SECTION_SEP)
         lines.append("")
         lines.append(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        lines.append("Blue Team Assistant Version: 1.0.0")
+        lines.append("AI Security Assistant Version: 1.0.0")
         lines.append("")
         
         return '\n'.join(lines)

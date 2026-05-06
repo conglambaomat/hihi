@@ -1,17 +1,17 @@
-# CABTA — product operating model (vibe coding)
+# AISA — product operating model (vibe coding)
 
-This file is **CABTA-only**: how the product balances deterministic analysis, agents, workflows, and governance.
+This file is **AISA-only**: how the product balances deterministic analysis, agents, workflows, and governance.
 
 **Workspace-wide** habits (plan / cook / fix / quality gates, progressive disclosure) live in the repo root: [`docs/vibe-coding-operating-model.md`](../../docs/vibe-coding-operating-model.md).
 
 ## Naming
 
-- **Canonical product name:** `CABTA` (code, UI, new documentation). Expanded: Cyan Agent Blue Team Assistant.
+- **Canonical product name:** `AISA` (code, UI, new documentation). Expanded: AI Security Assistant.
 - **`AISA`** may appear in older strategic docs (e.g. `project-overview-pdr.md`) as a historical or narrative alias for the same direction — **do not** introduce new “second product names” in code or user-facing strings. When in doubt, follow [`AGENTS.md`](../AGENTS.md).
 
 ## Why this exists
 
-CABTA combines a deterministic analysis core with specialist agents, workflow orchestration, case intelligence, and MCP-driven expansion. Without clear lanes, AI-assisted coding drifts across boundaries.
+AISA combines a deterministic analysis core with specialist agents, workflow orchestration, case intelligence, and MCP-driven expansion. Without clear lanes, AI-assisted coding drifts across boundaries.
 
 ## Core thesis
 
@@ -30,11 +30,11 @@ CABTA combines a deterministic analysis core with specialist agents, workflow or
 ## Verdict-bearing flows
 
 - Analyzers extract; integrations enrich; **scoring decides**; LLM explains; workflows orchestrate.
-- Workflows must **call tools for evidence** when CABTA has a real tool path — do not “complete” an investigation step with pure model speculation.
+- Workflows must **call tools for evidence** when AISA has a real tool path — do not “complete” an investigation step with pure model speculation.
 
 ## Local-first
 
-Do not make core CABTA value depend on mandatory cloud inference, mandatory Docker for basic IOC/file/email analysis, or mandatory Redis/Postgres for those core paths.
+Do not make core AISA value depend on mandatory cloud inference, mandatory Docker for basic IOC/file/email analysis, or mandatory Redis/Postgres for those core paths.
 
 ## Honest degradation
 
@@ -46,7 +46,7 @@ Treat Vigil as a **pattern library**. Adopt ideas and boundaries; avoid transpla
 
 **Asymmetric model (default):**
 
-- CABTA owns analysis core and verdict governance.
+- AISA owns analysis core and verdict governance.
 - Vigil-inspired layers own orchestration, specialist roles, approvals, optional daemon behavior.
 
 ## Work lanes (one at a time)
@@ -71,8 +71,8 @@ Goal, owning lane, affected planes, impacted files, contract risks, acceptance c
 
 ## Vigil feature checklist (before coding)
 
-1. Does this call **real CABTA tools** for evidence where applicable?
-2. Does it preserve **CABTA scoring** as verdict source of truth?
+1. Does this call **real AISA tools** for evidence where applicable?
+2. Does it preserve **AISA scoring** as verdict source of truth?
 
 If either is “no”, redesign before merging.
 

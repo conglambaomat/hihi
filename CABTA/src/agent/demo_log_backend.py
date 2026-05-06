@@ -9,6 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from .log_query_coverage import evaluate_log_result_coverage
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEMO_LOG_HUNT_DIR = PROJECT_ROOT / "data" / "demo" / "log_hunts"
 
@@ -175,6 +177,7 @@ def execute_demo_log_hunt(
     *,
     timerange: str = "24h",
     max_results: int = 100,
+    query_plan: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute a seeded log-hunt query bundle against a deterministic fixture."""
     now = datetime.now(timezone.utc)
@@ -301,7 +304,7 @@ def execute_demo_log_hunt(
     if not combined_results:
         message = "Seeded demo log hunt completed without matches."
 
-    return {
+    result = {
         "status": status,
         "mode": "demo_fixture",
         "dataset": dataset,
@@ -321,3 +324,9 @@ def execute_demo_log_hunt(
             "description": payload.get("description", ""),
         },
     }
+    result["coverage_matrix"] = evaluate_log_result_coverage(
+        query_plan=query_plan,
+        result=result,
+        executed=True,
+    )
+    return result

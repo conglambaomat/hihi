@@ -130,6 +130,18 @@ class CaseSyncService:
                 snapshot_lifecycle=checkpoint_payload.get("snapshot_lifecycle"),
                 checkpoint_metrics=checkpoint_payload["checkpoint_metrics"],
                 checkpoint_summary=checkpoint_payload["checkpoint_summary"],
+                context_pack_summary=getattr(state, "context_pack_summary_latest", {}),
+                context_ledger_summary=(
+                    {
+                        "ledger_id": getattr(state, "context_ledger_latest", {}).get("ledger_id"),
+                        "objective": getattr(state, "context_ledger_latest", {}).get("objective"),
+                        "included_count": len(getattr(state, "context_ledger_latest", {}).get("included", []) or []),
+                        "excluded_count": len(getattr(state, "context_ledger_latest", {}).get("excluded", []) or []),
+                        "authoritative_for_verdict": False,
+                    }
+                    if isinstance(getattr(state, "context_ledger_latest", {}), dict)
+                    else {}
+                ),
             )
             return
 

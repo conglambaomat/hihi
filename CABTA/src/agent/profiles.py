@@ -1,7 +1,7 @@
-"""Specialist agent profiles for the CABTA orchestration plane.
+"""Specialist agent profiles for the AISA orchestration plane.
 
 These profiles are inspired by Vigil's role-specialized orchestration model,
-but they are explicitly scoped so CABTA remains the source of truth for
+but they are explicitly scoped so AISA remains the source of truth for
 analysis and verdict governance.
 """
 
@@ -63,7 +63,7 @@ class AgentProfile:
             lines.append("Role guidance: " + self.system_guidance)
         lines.append(
             "Verdict boundary: you may recommend or summarize, but final verdict "
-            "authority belongs to CABTA scoring and evidence correlation."
+            "authority belongs to AISA scoring and evidence correlation."
         )
         return "\n".join(lines)
 
@@ -120,7 +120,7 @@ class AgentProfileRegistry:
                 primary_capabilities=["evidence collection", "cross-source correlation", "timeline reconstruction"],
                 preferred_categories=["analysis", "forensics", "threat_intel"],
                 preferred_tools=["correlate_findings", "recall_ioc", "generate_rules"],
-                system_guidance="Prefer deterministic CABTA analyzers before using narrative explanation.",
+                system_guidance="Prefer deterministic AISA analyzers before using narrative explanation.",
             ),
             AgentProfile(
                 profile_id="threat_hunter",
@@ -145,7 +145,7 @@ class AgentProfileRegistry:
             AgentProfile(
                 profile_id="threat_intel_analyst",
                 name="Threat Intelligence Analyst",
-                description="Enrich indicators, campaigns, and actor clues using CABTA integrations and MCP intelligence sources.",
+                description="Enrich indicators, campaigns, and actor clues using AISA integrations and MCP intelligence sources.",
                 methodology="Normalize indicators first, then compare source credibility, recency, and corroboration depth.",
                 primary_capabilities=["IOC enrichment", "campaign tracking", "actor context"],
                 preferred_categories=["threat_intel"],

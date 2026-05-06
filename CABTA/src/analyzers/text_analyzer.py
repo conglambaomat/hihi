@@ -1,5 +1,5 @@
 """
-Author: CABTA
+Author: AISA
 Text File Analyzer - Metin dosyalarından (txt, log, csv, conf, cfg, ini, json, xml, yaml)
 zararlı göstergeleri (IOC) çıkarır ve C2 iletişim kalıplarını tespit eder.
 
@@ -277,7 +277,7 @@ class TextFileAnalyzer:
         tail = self._read_with_fallback(file_path, max_bytes=tail_bytes, offset=tail_offset)
 
         marker = (
-            "\n\n[... CABTA TEXT ANALYZER TRUNCATED MIDDLE CONTENT FOR INTERACTIVE SCAN ...]\n\n"
+            "\n\n[... AISA TEXT ANALYZER TRUNCATED MIDDLE CONTENT FOR INTERACTIVE SCAN ...]\n\n"
         )
         content = head + marker + tail
         scanned_bytes = min(total_bytes, head_bytes + tail_bytes)

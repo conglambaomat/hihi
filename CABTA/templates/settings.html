@@ -96,7 +96,7 @@
                         </button>
                     </div>
                     <div class="small text-muted mt-2">
-                        CABTA is pinned to OpenRouter for hosted LLM access. NVIDIA Build and Groq settings have been removed from the runtime configuration.
+                        AISA is pinned to OpenRouter for hosted LLM access. NVIDIA Build and Groq settings have been removed from the runtime configuration.
                     </div>
                 </div>
 
@@ -124,7 +124,7 @@
                             placeholder="e.g. arcee-ai/trinity-large-preview:free"
                             style="background:var(--bg-tertiary);border-color:var(--border-color);color:var(--text-primary);">
                         <div class="small text-muted mt-2">
-                            OpenRouter uses an OpenAI-compatible API. CABTA is configured to use a non-NVIDIA OpenRouter model for both agent chat and analysis summaries.
+                            OpenRouter uses an OpenAI-compatible API. AISA is configured to use a non-NVIDIA OpenRouter model for both agent chat and analysis summaries.
                         </div>
                     </div>
                 </div>
@@ -147,13 +147,13 @@
                 <div class="mb-3">
                     <div class="range-label">
                         <label class="form-label mb-0">Max Steps</label>
-                        <span class="range-value" id="maxStepsValue">25</span>
+                        <span class="range-value" id="maxStepsValue">1000</span>
                     </div>
-                    <input type="range" class="form-range" id="maxSteps" min="1" max="100" value="25"
+                    <input type="range" class="form-range" id="maxSteps" min="1" max="1000" value="1000"
                         oninput="document.getElementById('maxStepsValue').textContent=this.value">
                     <div class="d-flex justify-content-between">
                         <small class="text-muted">1</small>
-                        <small class="text-muted">100</small>
+                        <small class="text-muted">1000</small>
                     </div>
                 </div>
 
@@ -333,7 +333,7 @@ var Settings = (function() {
 
                 // Agent settings
                 var agent = cfg.agent || {};
-                var maxSteps = agent.max_steps || 25;
+                var maxSteps = agent.max_steps || 1000;
                 document.getElementById('maxSteps').value = maxSteps;
                 document.getElementById('maxStepsValue').textContent = maxSteps;
                 document.getElementById('sandboxType').value = normalizeSandboxType(agent.default_sandbox || 'none');
@@ -456,7 +456,7 @@ var Settings = (function() {
         var requireApproval = document.getElementById('requireApproval').checked;
         var payload = {
             agent: {
-                max_steps: parseInt(document.getElementById('maxSteps').value) || 25,
+                max_steps: parseInt(document.getElementById('maxSteps').value) || 1000,
                 default_sandbox: normalizeSandboxType(document.getElementById('sandboxType').value),
                 require_approval: requireApproval,
                 require_approval_for: requireApproval ? ['sandbox_submit'] : [],

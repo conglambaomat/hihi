@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - Domain Age Checker
+AI Security Assistant - Domain Age Checker
 
 WHOIS-based domain age analysis for threat intelligence enrichment.
 Newly registered domains are a strong indicator of malicious infrastructure.

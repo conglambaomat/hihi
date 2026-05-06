@@ -4,6 +4,7 @@ Tests cover: analysis_manager, case_store, models, API endpoints.
 """
 
 import json
+import time
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
@@ -298,13 +299,13 @@ class TestFastAPIEndpoints:
             **self.app.state.config,
             'analysis': {**self.app.state.config.get('analysis', {}), 'enable_sandbox': True},
             'llm': {
-                'provider': 'groq',
-                'groq_endpoint': 'https://api.groq.com/openai/v1',
-                'groq_model': 'openai/gpt-oss-20b',
+                'provider': 'router',
+                'base_url': 'http://localhost:20128/v1',
+                'model': 'cx/gpt-5.4',
             },
             'api_keys': {
                 **self.app.state.config.get('api_keys', {}),
-                'groq': 'gsk-test-key',
+                'router': 'sk-router-test-key',
             },
         }
         self.app.state.web_provider.config = self.app.state.config
@@ -320,14 +321,14 @@ class TestFastAPIEndpoints:
         assert r.status_code == 200
         data = r.json()
         assert data['status'] == 'degraded'
-        assert data['capabilities']['llm_runtime']['provider'] == 'openrouter'
+        assert data['capabilities']['llm_runtime']['provider'] == 'router'
         assert any('Sandboxing is enabled' in issue for issue in data['issues'])
 
     def test_system_info(self):
         r = self.client.get('/api/config/info')
         assert r.status_code == 200
         data = r.json()
-        assert data['app'] == 'CABTA'
+        assert data['app'] == 'AISA'
         assert data['mode'] in ('live', 'demo')
         assert 'demo_enabled' in data
 
@@ -421,7 +422,7 @@ class TestFastAPIEndpoints:
         r = self.client.get('/api/agent/capabilities')
         assert r.status_code == 200
         data = r.json()
-        assert data['verdict_authority']['owner'] == 'cabta_scoring'
+        assert data['verdict_authority']['owner'] == 'aisa_scoring'
         assert data['agent_profiles']['count'] >= 1
 
     def test_workflows_list_endpoint(self):
@@ -471,7 +472,7 @@ class TestFastAPIEndpoints:
                         {
                             'contract_id': 'fortigate_outbound_monitoring',
                             'required_fields': ['host', 'dest_ip'],
-                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                            'deterministic_verdict_owner': 'AISA deterministic core',
                         }
                     ],
                 },
@@ -504,7 +505,7 @@ class TestFastAPIEndpoints:
                         {
                             'contract_id': 'ioc_triage',
                             'required_fields': ['ioc', 'ioc_type'],
-                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                            'deterministic_verdict_owner': 'AISA deterministic core',
                         }
                     ],
                 },
@@ -542,7 +543,7 @@ class TestFastAPIEndpoints:
                         {
                             'contract_id': 'windows_logon_monitoring',
                             'required_fields': ['account', 'host'],
-                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                            'deterministic_verdict_owner': 'AISA deterministic core',
                         }
                     ],
                 },
@@ -568,7 +569,7 @@ class TestFastAPIEndpoints:
                         {
                             'contract_id': 'ioc_triage',
                             'required_fields': ['ioc', 'ioc_type'],
-                            'deterministic_verdict_owner': 'CABTA deterministic core',
+                            'deterministic_verdict_owner': 'AISA deterministic core',
                         }
                     ],
                 },
@@ -632,7 +633,123 @@ class TestFastAPIEndpoints:
         assert kwargs['metadata']['chat_mode'] is True
         assert kwargs['metadata']['ui_mode'] == 'chat'
         assert kwargs['metadata']['response_style'] == 'conversational'
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
+        assert kwargs['metadata']['chat_intent'] == 'investigation_request'
         assert kwargs['metadata']['chat_user_message'] == 'Investigate suspicious domain activity'
+
+    def test_chat_new_pasted_splunk_stream_tcp_log_starts_investigation_not_email_gap(self):
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
+        message = (
+            'Analyze this based on Splunk\n'
+            'host=splunk-02 source=stream:tcp sourcetype=stream:tcp '
+            'src_ip=192.168.250.100 dest_ip=192.168.250.40 dest_port=8089 '
+            'protocol=tcp transport=ssl ssl_subject_common_name=SplunkServerDefaultCert '
+            'ssl_issuer_common_name=SplunkCommonCA'
+        )
+
+        r = self.client.post('/api/chat', json={'message': message})
+
+        assert r.status_code == 200
+        args, kwargs = self.app.state.agent_loop.investigate.await_args
+        assert args[0] == message
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
+        assert kwargs['metadata']['chat_has_observable'] is True
+        assert kwargs['metadata']['chat_looks_like_artifact'] is True
+        assert kwargs['metadata']['chat_user_message'] == message
+
+    def test_chat_new_request_metadata_keeps_primary_interpreter_mode_available(self):
+        self.app.state.config = {
+            **self.app.state.config,
+            'agent': {
+                **self.app.state.config.get('agent', {}),
+                'llm_request_interpreter': {'mode': 'primary'},
+            },
+        }
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
+
+        r = self.client.post('/api/chat', json={
+            'message': 'Please investigate suspicious outbound callbacks',
+        })
+
+        assert r.status_code == 200
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
+        assert kwargs['metadata']['chat_user_message'] == 'Please investigate suspicious outbound callbacks'
+
+    def test_chat_new_identity_question_routes_to_direct_response_mode(self):
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
+
+        r = self.client.post('/api/chat', json={
+            'message': 'bạn có phải là nền tảng vibesoc thật sự chưa',
+        })
+
+        assert r.status_code == 200
+        args = self.app.state.agent_loop.investigate.await_args.args
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert args[0] == 'bạn có phải là nền tảng vibesoc thật sự chưa'
+        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
+        assert kwargs['metadata']['chat_intent'] == 'capability_question'
+        assert kwargs['metadata']['chat_has_observable'] is False
+        assert kwargs['metadata']['chat_looks_like_artifact'] is False
+        assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
+
+    @pytest.mark.parametrize("message", [
+        "hello bạn có thể làm được gì",
+        "hi what can you do?",
+    ])
+    def test_chat_live_capability_help_returns_direct_help_without_investigation_gap(self, message):
+        r = self.client.post('/api/chat', json={'message': message})
+
+        assert r.status_code == 200
+        payload = r.json()
+        session_id = payload['session_id']
+        soc_progress = payload.get('soc_progress') or {}
+        assert soc_progress.get('objective_summary') == message
+
+        session_payload = None
+        for _ in range(30):
+            session_response = self.client.get(f'/api/chat/sessions/{session_id}')
+            assert session_response.status_code == 200
+            session_payload = session_response.json()
+            if session_payload.get('status') in {'completed', 'failed'}:
+                break
+            time.sleep(0.05)
+
+        assert session_payload is not None
+        assert session_payload.get('status') == 'completed'
+        metadata = session_payload.get('metadata') or {}
+        assert metadata.get('chat_execution_mode') == 'direct_response'
+        assert metadata.get('chat_intent') in {'capability_question', 'greeting'}
+        assert metadata.get('chat_has_observable') is False
+        assert metadata.get('chat_looks_like_artifact') is False
+
+        reasoning_state = session_payload.get('reasoning_state') or {}
+        soc_task = reasoning_state.get('soc_task_state') or {}
+        assert soc_task.get('answer_mode') == 'direct_help'
+        assert soc_task.get('lane') == 'config'
+        assert soc_task.get('intent') == 'config_capability_question'
+        assert soc_task.get('required_capabilities') == ['config.capability.explain']
+        assert any(
+            event.get('event') == 'direct_help_short_circuit'
+            and event.get('capability_id') == 'config.capability.explain'
+            for event in soc_task.get('progress_events', [])
+            if isinstance(event, dict)
+        )
+
+        steps = session_payload.get('steps') or []
+        assert not any(step.get('step_type') == 'tool_call' for step in steps)
+        final_steps = [step for step in steps if step.get('step_type') == 'final_answer']
+        assert final_steps
+        final_payload = json.loads(final_steps[-1]['content'])
+        answer = final_payload.get('answer', '')
+        assert 'AISA' in answer
+        assert 'IOC triage' in answer
+        assert 'log/Splunk-style hunts' in answer
+        assert 'insufficient' not in answer.lower()
+        assert 'UNKNOWN' not in answer
+        assert final_payload.get('answer_mode') == 'direct_help'
+        assert final_payload.get('capability_id') == 'config.capability.explain'
+        assert final_payload.get('skip_final_answer_gate') is True
 
     def test_chat_follow_up_uses_structured_context_and_preserves_profile(self):
         original_session = self.app.state.agent_store.create_session(
@@ -701,6 +818,7 @@ class TestFastAPIEndpoints:
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Only use tools if the current evidence is insufficient.' in args[0]
+        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
         assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
 
     def test_chat_follow_up_builder_handles_legacy_context_without_snapshot(self):
@@ -735,6 +853,7 @@ class TestFastAPIEndpoints:
         assert 'Previous investigation goal:\nInvestigate suspicious sign-in activity)' in args[0]
         assert 'Previous evidence snapshot:' in args[0]
         assert 'Only use tools if the current evidence is insufficient.' in args[0]
+        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
         assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
 
     def test_chat_follow_up_while_active_queues_thread_command(self):
@@ -753,10 +872,11 @@ class TestFastAPIEndpoints:
         payload = r.json()
         assert payload['status'] == 'active'
         assert payload['queued_command_id']
-        assert payload['queued_intent'] == 'new_pivot'
+        assert payload['queued_intent'] == 'investigation_request'
         assert payload['queued_requires_fresh_evidence'] is True
         assert payload['queued_command_payload'] == {
-            'intent': 'new_pivot',
+            'intent': 'investigation_request',
+            'execution_mode': 'investigation',
             'requires_fresh_evidence': True,
             'queued_while_active': True,
         }
@@ -825,8 +945,10 @@ class TestFastAPIEndpoints:
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Latest root-cause state:' in args[0]
         assert 'Published case memory facts:' in args[0]
-        assert 'Answer from the published case memory' in args[0]
+        assert 'Execution mode: direct_response.' in args[0]
+        assert 'Treat this as a direct conversational follow-up.' in args[0]
         assert 'Do not present published case truth as more authoritative than this lifecycle allows.' in args[0]
+        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
         assert 'Restored memory contract: memory_scope=published, memory_kind=authoritative_case_truth, publication_scope=published, memory_is_authoritative=true' in args[0]
         assert "memory_boundary={'case_id': 'CASE-42', 'thread_id': 'case-thread-1', 'session_id': 'sess-case-memory', 'publication_scope': 'published'}" in args[0]
         assert kwargs['metadata']['thread_id'] == 'case-thread-1'
@@ -880,6 +1002,83 @@ class TestFastAPIEndpoints:
         assert payload['publication_scope'] == 'published'
         assert payload['authoritative_memory_scope'] == 'published'
         assert payload['memory_boundary']['publication_scope'] == 'published'
+
+    def test_agent_session_investigation_progress_route_exposes_agentic_state(self):
+        session_id = self.app.state.agent_store.create_session(
+            goal='Investigate suspicious lateral movement.',
+            metadata={
+                'reasoning_state': {
+                    'investigation_state': {
+                        'milestones': ['scope', 'timeline', 'root_cause'],
+                        'completed_milestones': ['scope'],
+                        'completion': {
+                            'status': 'blocked',
+                            'missing_milestones': ['timeline'],
+                            'pending_actions': [{'tool': 'search_logs', 'reason': 'Need endpoint telemetry'}],
+                        },
+                    },
+                    'investigation_telemetry': {
+                        'latest_progress': {
+                            'completion_status': 'needs_more_evidence',
+                            'missing_milestones': ['root_cause'],
+                            'pending_required_actions': [{'tool': 'enrich_ioc'}],
+                            'planned_actions': [{'tool': 'search_logs'}],
+                        },
+                        'metrics': {'tool_calls': 2},
+                    },
+                    'progress_events': [{'step': i, 'status': 'collecting'} for i in range(30)],
+                    'final_reviewer': {'status': 'pending', 'required_sections': ['timeline']},
+                }
+            },
+        )
+
+        r = self.client.get(f'/api/agent/sessions/{session_id}/investigation-progress')
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload['schema_version'] == 'investigation-progress/v1'
+        assert payload['session_id'] == session_id
+        assert payload['completion_status'] == 'needs_more_evidence'
+        assert payload['milestones'] == ['scope', 'timeline', 'root_cause']
+        assert payload['completed_milestones'] == ['scope']
+        assert payload['open_gaps'] == ['root_cause']
+        assert payload['pending_required_actions'] == [{'tool': 'enrich_ioc'}]
+        assert payload['planned_actions'] == [{'tool': 'search_logs'}]
+        assert len(payload['progress_events']) == 25
+        assert payload['progress_events'][0]['step'] == 5
+        assert payload['final_reviewer']['status'] == 'pending'
+        assert payload['metrics'] == {'tool_calls': 2}
+        assert payload['progress_metrics']['report_readiness_percent'] >= 0
+        assert payload['progress_metrics']['action_queue_total'] == 2
+
+    def test_agentic_investigation_cockpit_page_renders_shell(self):
+        session_id = self.app.state.agent_store.create_session(goal='Investigate cockpit rendering.')
+
+        r = self.client.get(f'/agent/investigations/{session_id}/cockpit')
+
+        assert r.status_code == 200
+        body = r.text
+        assert 'id="agenticCockpit"' in body
+        assert 'id="milestoneMap"' in body
+        assert 'id="actionQueue"' in body
+        assert 'id="reviewerPanel"' in body
+        assert 'id="progressTimeline"' in body
+        assert '/static/js/agentic_cockpit.js' in body
+
+    def test_agentic_cockpit_static_js_uses_safe_dom_rendering(self):
+        js_path = Path(__file__).resolve().parents[1] / 'static' / 'js' / 'agentic_cockpit.js'
+        script = js_path.read_text(encoding='utf-8')
+
+        assert 'initAgenticCockpit' in script
+        assert 'textContent' in script
+        assert 'innerHTML' not in script
+        assert '/investigation-progress' in script
+        assert '/api/agent/action-connectors' in script
+
+    def test_agent_session_investigation_progress_route_returns_404_for_unknown_session(self):
+        r = self.client.get('/api/agent/sessions/no-such-session/investigation-progress')
+
+        assert r.status_code == 404
 
     def test_agent_session_payload_flattens_restored_chat_memory_contract_metadata(self):
         session_id = self.app.state.agent_store.create_session(

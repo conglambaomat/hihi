@@ -1,6 +1,6 @@
 """
 Author: Ugur Ates
-FastAPI Application Factory - CABTA Web Dashboard.
+FastAPI Application Factory - AISA Web Dashboard.
 
 Usage::
 
@@ -49,24 +49,19 @@ def _load_config(config_file: Path | None = None) -> dict:
                 snapshot_config(active_config_file, reason="startup snapshot")
             except Exception as history_exc:
                 logger.warning("[WEB] Config history snapshot skipped: %s", history_exc)
-        logger.info("[WEB] Configuration loaded for CABTA")
+        logger.info("[WEB] Configuration loaded for AISA")
         return cfg
     except Exception as exc:
         logger.warning("[WEB] Failed to load config.yaml: %s", exc)
 
     return {
         'llm': {
-            'provider': 'openrouter',
-            'auto_failover': False,
-            'fallback_providers': [],
-            'openrouter_endpoint': 'https://openrouter.ai/api/v1',
-            'openrouter_model': 'arcee-ai/trinity-large-preview:free',
-            'ollama_endpoint': 'http://localhost:11434',
-            'ollama_model': 'llama3.1:8b',
-            'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
-            'gemini_model': 'gemini-2.5-flash',
+            'provider': 'router',
+            'base_url': 'http://localhost:20128/v1',
+            'model': 'cx/gpt-5.4',
+            'api_key': '',
         },
-        'agent': {'max_steps': 50},
+        'agent': {'max_steps': 1000},
         'api_keys': {},
         'web': {
             'demo_mode': {
@@ -110,8 +105,8 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     active_config_file = Path(config_file).expanduser().resolve() if config_file else CONFIG_FILE
 
     app = FastAPI(
-        title='CABTA',
-        description='CABTA localhost SOC triage and investigation platform',
+        title='AISA',
+        description='AISA localhost SOC triage and investigation platform',
         version='2.0.0',
         docs_url='/api/docs',
         redoc_url='/api/redoc',
@@ -139,8 +134,8 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     app.state.case_store = CaseStore()
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.state.templates.env.globals.update({
-        'product_name': 'CABTA',
-        'product_full_name': 'Cyan Agent Blue Team Assistant',
+        'product_name': 'AISA',
+        'product_full_name': 'AI Security Assistant',
     })
 
     # Agent components (lazy-initialized; set to None so routes can check availability)
@@ -150,6 +145,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     app.state.mcp_client = None
     app.state.playbook_engine = None
     app.state.tool_registry = None
+    app.state.investigation_workdir_service = None
 
     # Load configuration
     config = apply_runtime_config_bridges(_load_config(active_config_file))
@@ -219,6 +215,14 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
         logger.info("[WEB] CaseMemoryService initialized")
     except Exception as exc:
         logger.warning(f"[WEB] CaseMemoryService not available: {exc}")
+
+    try:
+        from src.agent.investigation_workdir import InvestigationWorkdirService
+        app.state.investigation_workdir_service = InvestigationWorkdirService()
+        logger.info("[WEB] InvestigationWorkdirService initialized")
+    except Exception as exc:
+        app.state.investigation_workdir_service = None
+        logger.warning(f"[WEB] InvestigationWorkdirService not available: {exc}")
 
     # Tool instances (used by ToolRegistry)
     app.state.ioc_investigator = None
@@ -348,6 +352,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
             case_store=app.state.case_store,
             thread_store=app.state.thread_store,
             case_memory_service=app.state.case_memory_service,
+            investigation_workdir_service=app.state.investigation_workdir_service,
         )
         logger.info("[WEB] AgentLoop initialized")
     except Exception as exc:
@@ -419,7 +424,7 @@ def create_app(config_file: str | Path | None = None) -> FastAPI:
     # Page routes (HTML templates)
     _register_page_routes(app)
 
-    logger.info("[WEB] CABTA Web Dashboard initialized")
+    logger.info("[WEB] AISA Web Dashboard initialized")
     return app
 
 
@@ -528,6 +533,25 @@ def _register_page_routes(app: FastAPI) -> None:
     @app.get('/agent/chat', response_class=HTMLResponse, include_in_schema=False)
     async def agent_chat_page(request: Request):
         return templates.TemplateResponse(request, 'agent_chat.html', page_context(request))
+
+    @app.get('/agent/investigations/{session_id}/cockpit', response_class=HTMLResponse, include_in_schema=False)
+    async def agent_investigation_cockpit_page(request: Request, session_id: str):
+        session = None
+        if app.state.agent_store:
+            session = app.state.agent_store.get_session(session_id)
+        if not session:
+            return HTMLResponse('<h3>Investigation session not found</h3>', status_code=404)
+        decorated = session
+        try:
+            from src.web.routes.agent import _decorate_session_payload
+            decorated = _decorate_session_payload(session)
+        except Exception:
+            decorated = session
+        return templates.TemplateResponse(
+            request,
+            'agentic_investigation_cockpit.html',
+            page_context(request, session_id=session_id, session=decorated),
+        )
 
     @app.get('/agent/investigations', response_class=HTMLResponse, include_in_schema=False)
     async def agent_investigations_page(request: Request):

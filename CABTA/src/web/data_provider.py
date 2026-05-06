@@ -1,4 +1,4 @@
-"""CABTA web data provider for live and demo modes."""
+"""AISA web data provider for live and demo modes."""
 
 from __future__ import annotations
 
@@ -101,9 +101,9 @@ class WebDataProvider:
         )
 
     def feature_status(self, app: Any) -> Dict[str, Dict[str, Any]]:
-        from ..utils.config import enforce_openrouter_only
-
-        cfg = enforce_openrouter_only(self.config or {})
+        from ..utils.config import enforce_router_only
+ 
+        cfg = enforce_router_only(self.config or {})
         llm = cfg.get("llm", {})
         analysis = cfg.get("analysis", {})
         agent_enabled = bool(getattr(app.state, "agent_loop", None))
@@ -115,13 +115,13 @@ class WebDataProvider:
         daemon_meta = daemon.build_status(app) if daemon is not None else {}
         mcp_meta = self._mcp_status(app)
         provider = str(llm.get("provider") or "").strip().lower()
-
+ 
         if not provider:
-            llm_status = {"status": "disabled", "label": "Disabled"}
+            llm_status = {"status": "error", "label": "LLM Router (provider missing)"}
         else:
             llm_status = {
-                "status": "configured" if self._has_api_key("openrouter") else "degraded",
-                "label": "OpenRouter" if self._has_api_key("openrouter") else "OpenRouter (key missing)",
+                "status": "configured" if self._has_api_key("router") else "error",
+                "label": "LLM Router" if self._has_api_key("router") else "LLM Router (key missing)",
             }
 
         sandbox_enabled = bool(
@@ -344,6 +344,61 @@ class WebDataProvider:
                 return normalize_job(job, mode="demo", case_links=self._case_links(app, job_id))
         return None
 
+    def investigation_progress_from_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        """Expose agentic investigation progress for UI/API consumers."""
+        metadata = session.get("metadata", {}) if isinstance(session, dict) else {}
+        reasoning = metadata.get("reasoning_state", {}) if isinstance(metadata, dict) else {}
+        telemetry = reasoning.get("investigation_telemetry", {}) if isinstance(reasoning, dict) else {}
+        progress = telemetry.get("latest_progress", {}) if isinstance(telemetry, dict) else {}
+        investigation_state = reasoning.get("investigation_state", {}) if isinstance(reasoning, dict) else {}
+        completion = investigation_state.get("completion", {}) if isinstance(investigation_state, dict) else {}
+        missing = list(progress.get("missing_milestones") or completion.get("missing_milestones") or [])
+        pending = list(progress.get("pending_required_actions") or completion.get("pending_actions") or [])
+        coverage = completion.get("coverage", {}) if isinstance(completion, dict) else {}
+        connector_registry = progress.get("connector_registry") or investigation_state.get("connector_registry") or {}
+        milestones = list(investigation_state.get("milestone_statuses") or progress.get("milestone_statuses") or [])
+        raw_milestones = (investigation_state.get("milestones") or []) if isinstance(investigation_state, dict) else []
+        completed_milestones = (investigation_state.get("completed_milestones") or []) if isinstance(investigation_state, dict) else []
+        if not milestones:
+            milestones = [
+                {"milestone_id": item, "name": str(item).replace("_", " ").title(), "status": "satisfied" if item in completed_milestones else "not_started"}
+                for item in raw_milestones
+            ]
+        metrics = dict(telemetry.get("metrics") or {}) if isinstance(telemetry, dict) else {}
+        progress_events = list(reasoning.get("progress_events") or [])[-25:] if isinstance(reasoning, dict) else []
+        progress_metrics = dict(metrics)
+        progress_metrics.setdefault("investigation_milestones_total", len(raw_milestones))
+        progress_metrics.setdefault("investigation_milestones_completed", len(completed_milestones))
+        progress_metrics.setdefault("investigation_pending_actions_total", len(pending))
+        progress_metrics.setdefault("investigation_connectors_available", int((connector_registry or {}).get("available_count") or 0) if isinstance(connector_registry, dict) else 0)
+        progress_metrics.setdefault("investigation_connectors_unavailable", int((connector_registry or {}).get("unavailable_count") or 0) if isinstance(connector_registry, dict) else 0)
+        report_readiness = 0
+        total_milestones = len(raw_milestones) or len(milestones)
+        if total_milestones:
+            report_readiness = round((len(completed_milestones) / total_milestones) * 100)
+        if missing:
+            report_readiness = max(0, report_readiness - min(30, len(missing) * 5))
+        progress_metrics.setdefault("report_readiness_percent", report_readiness)
+        progress_metrics.setdefault("open_gap_total", len(missing))
+        progress_metrics.setdefault("action_queue_total", len(pending) + len(progress.get("planned_actions") or []))
+        return {
+            "schema_version": "investigation-progress/v1",
+            "session_id": session.get("id") or session.get("session_id"),
+            "completion_status": progress.get("completion_status") or completion.get("status") or "unknown",
+            "milestones": raw_milestones,
+            "milestone_statuses": milestones,
+            "completed_milestones": completed_milestones,
+            "open_gaps": missing,
+            "pending_required_actions": pending,
+            "planned_actions": list(progress.get("planned_actions") or []),
+            "connector_registry": connector_registry if isinstance(connector_registry, dict) else {},
+            "final_report_shape": coverage.get("final_report_shape", {}),
+            "progress_events": progress_events,
+            "final_reviewer": dict(reasoning.get("final_reviewer") or {}) if isinstance(reasoning.get("final_reviewer"), dict) else {},
+            "metrics": metrics,
+            "progress_metrics": progress_metrics,
+        }
+
     def get_dashboard_stats(self, app: Any) -> Dict[str, Any]:
         stats = dict(app.state.analysis_manager.get_stats())
         stats.setdefault("daily_counts", [0, 0, 0, 0, 0, 0, 0])
@@ -399,8 +454,8 @@ class WebDataProvider:
         )
         context = {
             "request": request,
-            "product_name": "CABTA",
-            "product_full_name": "Cyan Agent Blue Team Assistant",
+            "product_name": "AISA",
+            "product_full_name": "AI Security Assistant",
             "app_mode": self.app_mode(),
             "demo_enabled": self.is_demo_mode(),
             "feature_status": self.feature_status(app),

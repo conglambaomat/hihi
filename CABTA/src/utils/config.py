@@ -1,6 +1,6 @@
 """
 Author: Ugur Ates
-Configuration loader for CABTA.
+Configuration loader for AISA.
 """
 
 import os
@@ -13,46 +13,45 @@ from .runtime_paths import legacy_home, runtime_cache_dir, runtime_home
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_ONLY_MODEL = 'arcee-ai/trinity-large-preview:free'
-OPENROUTER_ONLY_ENDPOINT = 'https://openrouter.ai/api/v1'
+ROUTER_PROVIDER = 'router'
+ROUTER_DEFAULT_MODEL = 'cx/gpt-5.4'
+ROUTER_DEFAULT_BASE_URL = 'http://localhost:20128/v1'
 
 
-def enforce_openrouter_only(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize config so CABTA uses OpenRouter as the only active LLM path."""
+def enforce_router_only(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize config so AISA uses one OpenAI-compatible router runtime only."""
     normalized = dict(config or {})
     llm = dict(normalized.get('llm', {}) or {})
     api_keys = dict(normalized.get('api_keys', {}) or {})
 
-    legacy_model = str(llm.get('model') or '').strip()
-    if legacy_model and not str(llm.get('openrouter_model') or '').strip():
-        llm['openrouter_model'] = legacy_model
+    legacy_api_key = (
+        llm.get('api_key')
+        or api_keys.get('router')
+        or api_keys.get('openrouter')
+        or api_keys.get('openai')
+        or ''
+    )
+    legacy_model = llm.get('model') or llm.get('openrouter_model') or llm.get('openai_model') or ROUTER_DEFAULT_MODEL
+    legacy_base_url = llm.get('base_url') or llm.get('router_base_url') or ROUTER_DEFAULT_BASE_URL
+    legacy_timeout_seconds = llm.get('timeout_seconds') or llm.get('request_timeout') or llm.get('router_timeout_seconds')
 
-    llm['provider'] = 'openrouter'
-    llm['auto_failover'] = False
-    llm['fallback_providers'] = []
-    llm['openrouter_endpoint'] = str(
-        llm.get('openrouter_endpoint') or llm.get('base_url') or OPENROUTER_ONLY_ENDPOINT
-    ).rstrip('/')
-    llm['openrouter_model'] = str(
-        llm.get('openrouter_model') or OPENROUTER_ONLY_MODEL
-    ).strip() or OPENROUTER_ONLY_MODEL
+    llm.clear()
+    llm.update({
+        'provider': ROUTER_PROVIDER,
+        'base_url': str(legacy_base_url or ROUTER_DEFAULT_BASE_URL).rstrip('/'),
+        'model': str(legacy_model or ROUTER_DEFAULT_MODEL).strip() or ROUTER_DEFAULT_MODEL,
+        'api_key': str(legacy_api_key or '').strip(),
+    })
+    if legacy_timeout_seconds is not None:
+        llm['timeout_seconds'] = legacy_timeout_seconds
 
-    for stale_key in (
-        'base_url',
-        'model',
-        'nvidia_endpoint',
-        'nvidia_model',
-        'groq_endpoint',
-        'groq_model',
-    ):
-        llm.pop(stale_key, None)
-
-    for stale_key in ('nvidia', 'groq'):
-        api_keys.pop(stale_key, None)
+    api_keys['router'] = llm['api_key']
 
     normalized['llm'] = llm
     normalized['api_keys'] = api_keys
     return normalized
+
+
 
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
@@ -131,18 +130,42 @@ def get_default_config() -> Dict[str, Any]:
             # Legacy
             'ip2proxy': os.environ.get('IP2PROXY_API_KEY', ''),
             
-            # LLM (optional)
-            'anthropic': os.environ.get('ANTHROPIC_API_KEY', ''),
-            'gemini': os.environ.get('GEMINI_API_KEY', ''),
-            'openrouter': os.environ.get('OPENROUTER_API_KEY', ''),
+            # LLM router (optional)
+            'router': (
+                os.environ.get('LLM_API_KEY', '')
+                or os.environ.get('ROUTER_API_KEY', '')
+                or os.environ.get('OPENAI_API_KEY', '')
+                or os.environ.get('OPENROUTER_API_KEY', '')
+            ),
         },
         'agent': {
-            'max_steps': 50,
+            'max_steps': 1000,
             'auto_enrich_timeout_seconds': 12,
             'chat_tool_cap': 14,
             'chat_prompt_findings_limit': 5,
             'chat_auto_enrich_limit': 1,
-            'chat_response_timeout_seconds': 15,
+            'chat_response_timeout_seconds': 120,
+            'context': {
+                'enabled': True,
+                'context_window_tokens': 32000,
+                'reserved_output_tokens': 4096,
+                'safety_margin_tokens': 1024,
+                'hard_prompt_budget_ratio': 0.92,
+                'compaction_threshold_ratio': 0.85,
+                'max_context_pack_bytes': 200000,
+                'max_ledger_items': 120,
+                'section_budgets': {
+                    'system_rules': 0.10,
+                    'goal': 0.06,
+                    'reasoning': 0.20,
+                    'evidence': 0.24,
+                    'entities': 0.10,
+                    'hypotheses': 0.12,
+                    'coverage': 0.08,
+                    'tools': 0.06,
+                    'workflow': 0.04,
+                },
+            },
         },
         'rate_limits': {
             'virustotal': {'requests_per_minute': 4},
@@ -169,16 +192,16 @@ def get_default_config() -> Dict[str, Any]:
             'text_max_scan_mb': 3,
         },
         'llm': {
-            'provider': 'openrouter',
-            'auto_failover': False,
-            'fallback_providers': [],
-            'ollama_endpoint': 'http://localhost:11434',
-            'ollama_model': 'llama3.1:8b',
-            'anthropic_model': 'claude-sonnet-4-20250514',
-            'gemini_endpoint': 'https://generativelanguage.googleapis.com/v1beta/openai',
-            'gemini_model': 'gemini-2.5-flash',
-            'openrouter_endpoint': OPENROUTER_ONLY_ENDPOINT,
-            'openrouter_model': OPENROUTER_ONLY_MODEL,
+            'provider': ROUTER_PROVIDER,
+            'base_url': ROUTER_DEFAULT_BASE_URL,
+            'model': ROUTER_DEFAULT_MODEL,
+            'timeout_seconds': 120,
+            'api_key': (
+                os.environ.get('LLM_API_KEY', '')
+                or os.environ.get('ROUTER_API_KEY', '')
+                or os.environ.get('OPENAI_API_KEY', '')
+                or os.environ.get('OPENROUTER_API_KEY', '')
+            ),
         },
         'output': {
             'report_format': 'html',
@@ -205,10 +228,13 @@ def get_default_config() -> Dict[str, Any]:
             'max_window_hours': 24 * 7,
             'max_results': 200,
             'max_queries_per_hunt': 3,
-            'demo_backend': {
-                'enabled': False,
-                'dataset': 'playbook_log_hunt',
-            },
+            'max_retry_attempts': 3,
+            'max_attempts_per_gap': 2,
+            'max_attempts_per_objective': 3,
+            'max_attempts_per_session': 6,
+            'llm_query_assist_enabled': False,
+            'llm_query_assist_max_candidates': 3,
+            'llm_query_assist_require_validation': True,
         },
         'logging': {
             'level': 'INFO',
@@ -238,7 +264,7 @@ def merge_with_defaults(config: Dict[str, Any], *, normalize_llm: bool = True) -
         return result
     
     merged = deep_merge(defaults, config)
-    return enforce_openrouter_only(merged) if normalize_llm else merged
+    return enforce_router_only(merged) if normalize_llm else merged
 def get_api_key(config: Dict[str, Any], service: str) -> Optional[str]:
     """
     Get API key for a service.

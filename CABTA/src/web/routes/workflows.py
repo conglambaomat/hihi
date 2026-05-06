@@ -1,4 +1,4 @@
-"""Workflow API routes for the CABTA orchestration plane."""
+"""Workflow API routes for the AISA orchestration plane."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class WorkflowRunRequest(BaseModel):
         validation_alias=AliasChoices('params', 'inputs'),
     )
     case_id: Optional[str] = None
-    max_steps: Optional[int] = Field(None, ge=1, le=500)
+    max_steps: Optional[int] = Field(None, ge=1, le=1000)
 
 
 def _require_workflow_registry(request: Request):

@@ -5,10 +5,14 @@ Agent API routes - Investigation management.
 
 import json
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+
+from src.agent.investigation_workdir import InvestigationWorkdirError, UnsafeWorkdirPathError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -20,7 +24,7 @@ class InvestigateRequest(BaseModel):
     playbook_id: Optional[str] = None
     agent_profile_id: Optional[str] = None
     workflow_id: Optional[str] = None
-    max_steps: Optional[int] = Field(None, ge=1, le=500, description="Maximum investigation steps")
+    max_steps: Optional[int] = Field(None, ge=1, le=1000, description="Maximum investigation steps")
 
 
 class ApprovalRequest(BaseModel):
@@ -28,11 +32,36 @@ class ApprovalRequest(BaseModel):
     comment: str = ""
 
 
+class WorkdirReviewRequest(BaseModel):
+    decision: str = Field("pending", description="pending, accepted, needs_rework, or rejected")
+    reviewer: str = "analyst"
+    notes: str = ""
+
+
+class WorkdirResumeStartRequest(BaseModel):
+    goal: Optional[str] = None
+    case_id: Optional[str] = None
+    max_steps: Optional[int] = Field(None, ge=1, le=1000)
+
+
 def _require_agent_loop(request: Request):
     loop = request.app.state.agent_loop
     if loop is None:
         raise HTTPException(503, "Agent loop not initialized")
     return loop
+
+
+def _reject_unsafe_artifact_path(artifact_path: str) -> None:
+    candidate = Path(str(artifact_path or ""))
+    if candidate.is_absolute() or any(part in {"..", ""} for part in candidate.parts):
+        raise HTTPException(400, "Unsafe artifact path")
+
+
+def _require_workdir_service(request: Request):
+    service = getattr(request.app.state, 'investigation_workdir_service', None)
+    if service is None:
+        raise HTTPException(503, "Investigation workdir service not initialized")
+    return service
 
 
 def _require_agent_store(request: Request):
@@ -96,6 +125,7 @@ def _decorate_session_payload(session: Dict) -> Dict:
         'agentic_explanation',
         'agentic_explanation_output',
         'root_cause_assessment',
+        'investigation_workdir',
     ):
         if payload.get(field) is None:
             if metadata.get(field) is not None:
@@ -206,13 +236,20 @@ async def start_investigation(request: Request, body: InvestigateRequest):
             "workflow_id": body.workflow_id,
         },
     )
-    return {
+    payload = {
         "session_id": session_id,
         "status": "active",
         "goal": body.goal,
         "agent_profile_id": body.agent_profile_id,
         "workflow_id": body.workflow_id,
     }
+    store = getattr(request.app.state, 'agent_store', None)
+    if store is not None:
+        session = store.get_session(session_id) or {}
+        metadata = session.get('metadata', {}) if isinstance(session.get('metadata'), dict) else {}
+        if metadata.get('investigation_workdir') is not None:
+            payload["investigation_workdir"] = metadata.get('investigation_workdir')
+    return payload
 
 
 @router.get('/stats')
@@ -247,6 +284,21 @@ async def list_tools(request: Request, category: Optional[str] = None):
         raise HTTPException(503, "Tool registry not initialized")
     tools = tool_registry.list_tools(category=category)
     return {"tools": [t.to_dict() for t in tools]}
+
+
+@router.get('/action-connectors')
+async def action_connector_catalog(request: Request):
+    """Expose NextActionSignal-to-tool connector mappings and availability."""
+    tool_registry = request.app.state.tool_registry
+    if tool_registry is None:
+        raise HTTPException(503, "Tool registry not initialized")
+    catalog = tool_registry.action_connector_catalog() if hasattr(tool_registry, 'action_connector_catalog') else {"connectors": []}
+    catalog["availability"] = [
+        tool_registry.resolve_action_connector({"action_type": item.get("action_type")})
+        for item in catalog.get("connectors", [])
+        if isinstance(item, dict) and hasattr(tool_registry, 'resolve_action_connector')
+    ]
+    return catalog
 
 
 @router.get('/profiles')
@@ -347,6 +399,57 @@ async def list_sessions(request: Request, limit: int = 50, status: Optional[str]
     return {"sessions": [_decorate_session_payload(s) for s in sessions]}
 
 
+@router.get('/connectors/availability')
+async def connector_availability(request: Request):
+    """Return stable availability for live/local action connector bridges."""
+    registry = getattr(request.app.state, 'tool_registry', None)
+    if registry is None or not hasattr(registry, 'connector_availability'):
+        raise HTTPException(503, "Tool registry not initialized")
+    return registry.connector_availability()
+
+
+@router.get('/sessions/{session_id}/investigation-progress')
+async def get_session_investigation_progress(request: Request, session_id: str):
+    """Return agentic investigation progress extracted from persisted session metadata."""
+    store = _require_agent_store(request)
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    provider = getattr(request.app.state, 'web_provider', None)
+    if provider is None or not hasattr(provider, 'investigation_progress_from_session'):
+        raise HTTPException(503, "Web data provider not initialized")
+    return provider.investigation_progress_from_session(_decorate_session_payload(session))
+
+
+@router.get('/sessions/{session_id}/context-ledger')
+async def get_session_context_ledger(request: Request, session_id: str):
+    """Return non-authoritative context ledger history and latest context pack metadata."""
+    store = _require_agent_store(request)
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    metadata = session.get('metadata', {}) if isinstance(session.get('metadata'), dict) else {}
+    latest_ledger = metadata.get('context_ledger_latest') if isinstance(metadata.get('context_ledger_latest'), dict) else {}
+    ledgers = metadata.get('context_ledgers') if isinstance(metadata.get('context_ledgers'), list) else []
+    latest_pack = metadata.get('context_pack_latest') if isinstance(metadata.get('context_pack_latest'), dict) else {}
+    return {
+        "schema_version": "context-ledger-history/v1",
+        "session_id": session_id,
+        "authority": "context_audit_metadata_non_authoritative",
+        "authoritative_for_verdict": False,
+        "latest_ledger": latest_ledger,
+        "ledgers": [item for item in ledgers if isinstance(item, dict)],
+        "latest_context_pack_summary": metadata.get('context_pack_summary_latest') if isinstance(metadata.get('context_pack_summary_latest'), dict) else {},
+        "latest_context_pack": latest_pack,
+        "latest_budget": metadata.get('context_budget_latest') if isinstance(metadata.get('context_budget_latest'), dict) else {},
+        "workdir_artifacts": {
+            "context_pack_latest": f"/api/agent/sessions/{session_id}/workdir/artifacts/context_pack_latest.json",
+            "context_ledger_latest": f"/api/agent/sessions/{session_id}/workdir/artifacts/context_ledger_latest.json",
+            "context_ledgers": f"/api/agent/sessions/{session_id}/workdir/artifacts/context_ledgers.json",
+        },
+    }
+
+
 @router.get('/sessions/{session_id}')
 async def get_session(request: Request, session_id: str):
     """Get session details with all steps."""
@@ -367,6 +470,211 @@ async def get_session(request: Request, session_id: str):
         if live_state:
             session['live_state'] = live_state
     return session
+
+
+def _session_workdir_id(store, service, session_id: str) -> tuple[Dict, str]:
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    metadata = session.get('metadata', {}) if isinstance(session.get('metadata'), dict) else {}
+    workdir = metadata.get('investigation_workdir') if isinstance(metadata.get('investigation_workdir'), dict) else None
+    investigation_id = str((workdir or {}).get('investigation_id') or metadata.get('investigation_id') or session_id)
+    if not service.exists(investigation_id):
+        raise HTTPException(404, "Investigation workdir not found")
+    return session, investigation_id
+
+
+@router.get('/sessions/{session_id}/workdir')
+async def get_session_workdir_summary(request: Request, session_id: str):
+    """Return safe workdir summary metadata for an agent session."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        return service.summarize(investigation_id)
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir unavailable: {exc}") from exc
+
+
+@router.get('/sessions/{session_id}/workdir/validation')
+async def validate_session_workdir(request: Request, session_id: str):
+    """Validate required workdir files and artifact integrity."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        return service.validate_manifest(investigation_id)
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir validation unavailable: {exc}") from exc
+
+
+@router.get('/sessions/{session_id}/workdir/review')
+async def get_session_workdir_review_state(request: Request, session_id: str):
+    """Return persisted analyst workdir review state."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        return service.get_review_state(investigation_id)
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put('/sessions/{session_id}/workdir/review')
+async def update_session_workdir_review_state(request: Request, session_id: str, body: WorkdirReviewRequest):
+    """Persist analyst review metadata without changing evidence/verdict files."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        review = service.update_review_state(
+            investigation_id,
+            decision=body.decision,
+            reviewer=body.reviewer,
+            notes=body.notes,
+        )
+        summary = service.summarize(investigation_id)
+        store.update_session_metadata(session_id, {"investigation_workdir": summary}, merge=True)
+        return review
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/sessions/{session_id}/workdir/resume')
+async def get_session_workdir_resume_payload(request: Request, session_id: str):
+    """Return a validated, non-authoritative workdir resume payload."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        return service.build_session_resume_payload(investigation_id)
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir resume unavailable: {exc}") from exc
+
+
+@router.post('/sessions/{session_id}/workdir/resume/start')
+async def start_session_from_workdir_resume(request: Request, session_id: str, body: WorkdirResumeStartRequest):
+    """Start a new agent session hydrated from validated workdir context."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    agent_loop = _require_agent_loop(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        result = await agent_loop.resume_from_workdir(
+            investigation_id,
+            goal=body.goal,
+            case_id=body.case_id,
+            max_steps=body.max_steps,
+        )
+        return result
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir resume unavailable: {exc}") from exc
+
+
+@router.get('/sessions/{session_id}/workdir/artifacts')
+async def list_session_workdir_artifacts(request: Request, session_id: str):
+    """List registered artifacts for an agent session workdir."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        index = service.read_json(investigation_id, "artifacts/index.json", default={"artifacts": []})
+        artifacts = index.get('artifacts', []) if isinstance(index, dict) else []
+        return {"session_id": session_id, "investigation_id": service.normalize_investigation_id(investigation_id), "artifacts": artifacts}
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get('/sessions/{session_id}/workdir/artifacts/{artifact_path:path}')
+async def read_session_workdir_artifact(request: Request, session_id: str, artifact_path: str):
+    """Read a safe text or JSON artifact from an agent session workdir."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    _reject_unsafe_artifact_path(artifact_path)
+    _session, investigation_id = _session_workdir_id(store, service, session_id)
+    suffix = Path(artifact_path).suffix.lower()
+    if suffix not in {'.json', '.jsonl', '.md', '.txt'}:
+        raise HTTPException(415, "Only text, markdown, JSON, and JSONL artifacts can be read inline")
+    try:
+        if suffix == '.json':
+            return {
+                "session_id": session_id,
+                "investigation_id": service.normalize_investigation_id(investigation_id),
+                "relative_path": artifact_path,
+                "content_type": "application/json",
+                "content": service.read_json(investigation_id, artifact_path),
+            }
+        media_type = "application/jsonl" if suffix == '.jsonl' else "text/markdown" if suffix == '.md' else "text/plain"
+        return Response(service.read_text(investigation_id, artifact_path), media_type=f"{media_type}; charset=utf-8")
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Artifact not found") from exc
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except UnicodeDecodeError as exc:
+        raise HTTPException(415, "Artifact is not valid UTF-8 text") from exc
+
+
+@router.post('/sessions/{session_id}/workdir/archive')
+async def archive_session_workdir(request: Request, session_id: str):
+    """Create a zip archive for an agent session workdir and return its metadata."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        archive_path = service.archive(investigation_id)
+        if archive_path is None:
+            raise HTTPException(404, "Investigation workdir not found")
+        summary = service.summarize(investigation_id)
+        store.update_session_metadata(session_id, {"investigation_workdir": summary}, merge=True)
+        return {"session_id": session_id, "investigation_id": summary.get('investigation_id'), "archive": {"filename": archive_path.name, "relative_path": archive_path.relative_to(service.get_path(investigation_id)).as_posix(), "size_bytes": archive_path.stat().st_size}}
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir archive failed: {exc}") from exc
+
+
+@router.get('/sessions/{session_id}/workdir/archive/download')
+async def download_session_workdir_archive(request: Request, session_id: str):
+    """Download the latest zip archive for an agent session workdir, creating one if needed."""
+    service = _require_workdir_service(request)
+    store = _require_agent_store(request)
+    try:
+        _session, investigation_id = _session_workdir_id(store, service, session_id)
+        root = service.get_path(investigation_id)
+        archive_dir = root / "_archive"
+        archives = sorted(archive_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True) if archive_dir.exists() else []
+        archive_path = archives[0] if archives else service.archive(investigation_id)
+        if archive_path is None or not archive_path.exists():
+            raise HTTPException(404, "Investigation workdir archive not found")
+        return FileResponse(str(archive_path), media_type="application/zip", filename=archive_path.name)
+    except HTTPException:
+        raise
+    except (InvestigationWorkdirError, UnsafeWorkdirPathError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, f"Investigation workdir archive unavailable: {exc}") from exc
 
 
 @router.get('/sessions/{session_id}/specialists')

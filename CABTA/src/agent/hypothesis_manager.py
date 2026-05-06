@@ -57,6 +57,18 @@ class Hypothesis:
     priority: float = 0.0
     ranking_score: float = 0.0
     competition_score: float = 0.0
+    schema_version: str = "hypothesis/v3"
+    origin: str = "legacy_seed"
+    hypothesis_type: str = "generic_incident"
+    attack_path: List[str] = field(default_factory=list)
+    trigger_observation_ids: List[str] = field(default_factory=list)
+    trigger_entity_ids: List[str] = field(default_factory=list)
+    required_evidence: List[Dict[str, Any]] = field(default_factory=list)
+    generation_reason: str = ""
+    generator_version: str = ""
+    reason_codes: List[str] = field(default_factory=list)
+    score_breakdown: Dict[str, Any] = field(default_factory=dict)
+    audit_events: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -104,9 +116,12 @@ class RootCauseAssessment:
 
 
 class HypothesisManager:
-    """Own structured reasoning state for one CABTA investigation session."""
+    """Own structured reasoning state for one AISA investigation session."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
+    MAX_ACTIVE_HYPOTHESES = 7
+    MAX_STAGED_CANDIDATES = 12
+    MAX_HYPOTHESIS_EVENTS = 100
     _IOC_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b")
 
     def bootstrap(
@@ -152,6 +167,10 @@ class HypothesisManager:
             "open_questions": session_questions,
             "missing_evidence": seeded_missing[:8],
             "recent_evidence_refs": [],
+            "candidate_hypotheses": [],
+            "suppressed_hypotheses": [],
+            "hypothesis_events": [],
+            "hypothesis_generation_summary": {},
             "competition": {},
             "created_at": _now_iso(),
             "last_updated_at": _now_iso(),
@@ -223,7 +242,26 @@ class HypothesisManager:
                 recent_ref_payload["confidence"] = round(max(float(recent_ref_payload.get("confidence", 0.0) or 0.0), strongest_strength), 3)
             recent_refs.append(recent_ref_payload)
 
-        ranked_hypotheses = self._rank_hypotheses(hypotheses)
+        ranked_hypotheses = self._rank_hypotheses(hypotheses)[: self.MAX_ACTIVE_HYPOTHESES]
+        existing_events = [item for item in state.get("hypothesis_events", []) if isinstance(item, dict)]
+        seen_events = {str(item.get("event_id") or "") for item in existing_events}
+        for hypothesis in ranked_hypotheses:
+            for event in hypothesis.audit_events[-4:]:
+                if isinstance(event, dict) and event.get("event_id") not in seen_events:
+                    existing_events.append({
+                        "event_id": event.get("event_id"),
+                        "event_type": event.get("event_type"),
+                        "hypothesis_id": event.get("hypothesis_id"),
+                        "observation_id": event.get("observation_id"),
+                        "reason_codes": event.get("reason_codes", []),
+                        "before_confidence": event.get("before_confidence"),
+                        "after_confidence": event.get("after_confidence"),
+                        "delta": event.get("delta"),
+                        "summary": event.get("summary"),
+                        "created_at": event.get("timestamp") or _now_iso(),
+                    })
+                    seen_events.add(str(event.get("event_id") or ""))
+        state["hypothesis_events"] = existing_events[-self.MAX_HYPOTHESIS_EVENTS:]
         state["hypotheses"] = [item.to_dict() for item in ranked_hypotheses]
         state["recent_evidence_refs"] = recent_refs[-16:]
         state["open_questions"] = self._dedupe(question_accumulator)[:10]
@@ -281,7 +319,76 @@ class HypothesisManager:
             "reasoning_status": state.get("status", "collecting_evidence"),
             "entity_summary": self._entity_summary(entity_state),
             "hypotheses": [item.to_dict() for item in hypotheses[:5]],
+            "candidate_hypotheses": list(state.get("candidate_hypotheses", []) or [])[:5],
+            "hypothesis_events": list(state.get("hypothesis_events", []) or [])[-5:],
         }
+
+    def merge_candidates(
+        self,
+        reasoning_state: Optional[Dict[str, Any]],
+        candidates: Optional[List[Dict[str, Any]]],
+        *,
+        session_id: str,
+        entity_state: Optional[Dict[str, Any]] = None,
+        evidence_state: Optional[Dict[str, Any]] = None,
+        generation_events: Optional[List[Dict[str, Any]]] = None,
+        generation_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        state = self._normalize_reasoning_state(dict(reasoning_state or {}), session_id=session_id, goal=str((reasoning_state or {}).get("goal_focus") or ""))
+        hypotheses = [self._normalize_hypothesis(item) for item in state.get("hypotheses", [])]
+        staged_existing = list(state.get("candidate_hypotheses", []) or [])
+        suppressed = list(state.get("suppressed_hypotheses", []) or [])
+        events = [item for item in list(state.get("hypothesis_events", []) or []) if isinstance(item, dict)]
+        events.extend([item for item in (generation_events or []) if isinstance(item, dict)])
+
+        existing_keys = {self._hypothesis_dedupe_key(item) for item in hypotheses}
+        staged_keys = {str(item.get("dedupe_key") or self._candidate_dedupe_key(item)) for item in staged_existing if isinstance(item, dict)}
+        promoted_count = 0
+        for raw_candidate in candidates or []:
+            if not isinstance(raw_candidate, dict):
+                continue
+            candidate_key = str(raw_candidate.get("dedupe_key") or self._candidate_dedupe_key(raw_candidate))
+            if candidate_key in existing_keys:
+                suppressed.append({**raw_candidate, "promotion_status": "duplicate", "suppressed_reason": "active_duplicate"})
+                events.append(self._hypothesis_event("hypothesis_merged", raw_candidate, summary="Dynamic candidate matched an active hypothesis and was not promoted twice."))
+                continue
+            if candidate_key in staged_keys:
+                suppressed.append({**raw_candidate, "promotion_status": "duplicate", "suppressed_reason": "staged_duplicate"})
+                continue
+            verification = raw_candidate.get("verification", {}) if isinstance(raw_candidate.get("verification"), dict) else {}
+            if verification.get("status") == "promotable" and len(hypotheses) < self.MAX_ACTIVE_HYPOTHESES:
+                hypothesis = self._hypothesis_from_candidate(raw_candidate)
+                hypotheses.append(hypothesis)
+                existing_keys.add(candidate_key)
+                promoted_count += 1
+                events.append(self._hypothesis_event("candidate_promoted", raw_candidate, hypothesis_id=hypothesis.id))
+            else:
+                staged_existing.append({**raw_candidate, "promotion_status": verification.get("status") or "staged"})
+                staged_keys.add(candidate_key)
+                events.append(self._hypothesis_event("candidate_staged", raw_candidate, summary="Dynamic candidate remains non-authoritative until evidence gates pass."))
+
+        ranked = self._rank_hypotheses(hypotheses)[: self.MAX_ACTIVE_HYPOTHESES]
+        state["hypotheses"] = [item.to_dict() for item in ranked]
+        state["candidate_hypotheses"] = staged_existing[-self.MAX_STAGED_CANDIDATES:]
+        state["suppressed_hypotheses"] = suppressed[-24:]
+        state["hypothesis_events"] = events[-self.MAX_HYPOTHESIS_EVENTS:]
+        state["hypothesis_generation_summary"] = {
+            **dict(generation_summary or {}),
+            "promoted_count": promoted_count,
+            "active_hypothesis_count": len(ranked),
+            "staged_candidate_count": len(state["candidate_hypotheses"]),
+        }
+        state["competition"] = self._competition_state(ranked)
+        state["missing_evidence"] = self._derive_missing_evidence(
+            ranked,
+            entity_state=entity_state,
+            evidence_state=evidence_state,
+            lane=str(state.get("investigation_lane") or ""),
+            plan=state.get("plan"),
+        )
+        state["open_questions"] = self._dedupe([*state.get("open_questions", []), *state.get("missing_evidence", [])])[:10]
+        state["last_updated_at"] = _now_iso()
+        return state
 
     def _normalize_reasoning_state(self, raw: Dict[str, Any], *, session_id: str, goal: str) -> Dict[str, Any]:
         state = dict(raw)
@@ -294,6 +401,10 @@ class HypothesisManager:
         state.setdefault("open_questions", [])
         state.setdefault("missing_evidence", [])
         state.setdefault("recent_evidence_refs", [])
+        state.setdefault("candidate_hypotheses", [])
+        state.setdefault("suppressed_hypotheses", [])
+        state.setdefault("hypothesis_events", [])
+        state.setdefault("hypothesis_generation_summary", {})
         state.setdefault("competition", {})
         state.setdefault("created_at", _now_iso())
         state.setdefault("last_updated_at", _now_iso())
@@ -322,6 +433,18 @@ class HypothesisManager:
             priority=float(payload.get("priority") or 0.0),
             ranking_score=float(payload.get("ranking_score") or payload.get("priority") or 0.0),
             competition_score=float(payload.get("competition_score") or 0.0),
+            schema_version=str(payload.get("schema_version") or "hypothesis/v3"),
+            origin=str(payload.get("origin") or "legacy_seed"),
+            hypothesis_type=str(payload.get("hypothesis_type") or payload.get("type") or "generic_incident"),
+            attack_path=self._dedupe(list(payload.get("attack_path", [])))[:8],
+            trigger_observation_ids=self._dedupe(list(payload.get("trigger_observation_ids", [])))[:12],
+            trigger_entity_ids=self._dedupe(list(payload.get("trigger_entity_ids", [])))[:12],
+            required_evidence=list(payload.get("required_evidence", [])) if isinstance(payload.get("required_evidence", []), list) else [],
+            generation_reason=str(payload.get("generation_reason") or ""),
+            generator_version=str(payload.get("generator_version") or ""),
+            reason_codes=self._dedupe(list(payload.get("reason_codes", [])))[:12],
+            score_breakdown=dict(payload.get("score_breakdown", {})) if isinstance(payload.get("score_breakdown"), dict) else {},
+            audit_events=list(payload.get("audit_events", payload.get("audit_trail", []))) if isinstance(payload.get("audit_events", payload.get("audit_trail", [])), list) else [],
         )
 
     def _seed_hypotheses(self, goal: str, lane: str, investigation_plan: Optional[Dict[str, Any]]) -> List[Hypothesis]:
@@ -348,6 +471,9 @@ class HypothesisManager:
                     open_questions=self._open_questions_for_topics(topics),
                     priority=confidence,
                     ranking_score=confidence,
+                    origin="plan_seed" if investigation_plan else "legacy_seed",
+                    hypothesis_type="benign_noise" if "benign" in statement.lower() else "generic_incident",
+                    reason_codes=["PLAN_SEED" if investigation_plan else "LEGACY_SEED"],
                 )
             )
         return hypotheses
@@ -566,6 +692,7 @@ class HypothesisManager:
         )
 
     def _apply_support(self, hypothesis: Hypothesis, evidence: Dict[str, Any], assessment: ObservationAssessment) -> None:
+        before_confidence = float(hypothesis.confidence)
         support_gain = self._support_gain(assessment)
         evidence = self._scored_evidence_ref(
             evidence,
@@ -574,14 +701,27 @@ class HypothesisManager:
             weighted_key="weighted_support",
             weighted_value=support_gain,
         )
-        hypothesis.supporting_evidence_refs.append(evidence)
+        hypothesis.supporting_evidence_refs = self._dedupe_evidence_refs([*hypothesis.supporting_evidence_refs, evidence])
+        hypothesis.reason_codes = self._dedupe([*hypothesis.reason_codes, "EVIDENCE_SUPPORT_APPLIED"])
+        hypothesis.score_breakdown = {**hypothesis.score_breakdown, "last_support_gain": round(float(support_gain), 3)}
         hypothesis.confidence = min(0.99, hypothesis.confidence + support_gain * (1 - hypothesis.confidence))
+        after_confidence = float(hypothesis.confidence)
         hypothesis.evidence_score += support_gain
         hypothesis.priority = self._priority_score(hypothesis)
         hypothesis.updated_at = _now_iso()
         hypothesis.last_updated_at = hypothesis.updated_at
+        hypothesis.audit_events = [*hypothesis.audit_events, self._confidence_delta_event(
+            event_type="hypothesis_confidence_supported",
+            hypothesis=hypothesis,
+            evidence=evidence,
+            assessment=assessment,
+            before_confidence=before_confidence,
+            after_confidence=after_confidence,
+            reason_codes=self._confidence_delta_reason_codes("supports", evidence, assessment),
+        )][-self.MAX_HYPOTHESIS_EVENTS:]
 
     def _apply_contradiction(self, hypothesis: Hypothesis, evidence: Dict[str, Any], assessment: ObservationAssessment) -> None:
+        before_confidence = float(hypothesis.confidence)
         contradiction_loss = self._contradiction_loss(assessment)
         evidence = self._scored_evidence_ref(
             evidence,
@@ -590,12 +730,87 @@ class HypothesisManager:
             weighted_key="weighted_contradiction",
             weighted_value=contradiction_loss,
         )
-        hypothesis.contradicting_evidence_refs.append(evidence)
+        hypothesis.contradicting_evidence_refs = self._dedupe_evidence_refs([*hypothesis.contradicting_evidence_refs, evidence])
+        hypothesis.reason_codes = self._dedupe([*hypothesis.reason_codes, "EVIDENCE_CONTRADICTION_APPLIED"])
+        hypothesis.score_breakdown = {**hypothesis.score_breakdown, "last_contradiction_loss": round(float(contradiction_loss), 3)}
         hypothesis.confidence = max(0.01, hypothesis.confidence - contradiction_loss * hypothesis.confidence)
+        after_confidence = float(hypothesis.confidence)
         hypothesis.contradiction_score += contradiction_loss
         hypothesis.priority = self._priority_score(hypothesis)
         hypothesis.updated_at = _now_iso()
         hypothesis.last_updated_at = hypothesis.updated_at
+        hypothesis.audit_events = [*hypothesis.audit_events, self._confidence_delta_event(
+            event_type="hypothesis_confidence_contradicted",
+            hypothesis=hypothesis,
+            evidence=evidence,
+            assessment=assessment,
+            before_confidence=before_confidence,
+            after_confidence=after_confidence,
+            reason_codes=self._confidence_delta_reason_codes("contradicts", evidence, assessment),
+        )][-self.MAX_HYPOTHESIS_EVENTS:]
+
+    def _confidence_delta_event(
+        self,
+        *,
+        event_type: str,
+        hypothesis: Hypothesis,
+        evidence: Dict[str, Any],
+        assessment: ObservationAssessment,
+        before_confidence: float,
+        after_confidence: float,
+        reason_codes: List[str],
+    ) -> Dict[str, Any]:
+        delta = after_confidence - before_confidence
+        event_id_basis = f"{event_type}|{hypothesis.id}|{evidence.get('observation_id')}|{before_confidence:.6f}|{after_confidence:.6f}"
+        return {
+            "event_id": f"hyp-delta-{uuid.uuid5(uuid.NAMESPACE_URL, event_id_basis).hex[:10]}",
+            "event_type": event_type,
+            "hypothesis_id": hypothesis.id,
+            "observation_id": evidence.get("observation_id"),
+            "before_confidence": round(before_confidence, 3),
+            "after_confidence": round(after_confidence, 3),
+            "delta": round(delta, 3),
+            "reason_codes": reason_codes,
+            "evidence_ref": {
+                "summary": evidence.get("summary"),
+                "source_kind": evidence.get("source_kind"),
+                "source_path": evidence.get("source_path"),
+                "tool_name": evidence.get("tool_name"),
+                "result_path": evidence.get("result_path"),
+            },
+            "assessment_factors": {
+                "evidence_strength": round(float(assessment.evidence_strength), 3),
+                "typed_signal_strength": round(float(assessment.typed_signal_strength), 3),
+                "heuristic_dependence": round(float(assessment.heuristic_dependence), 3),
+                "entity_coverage": round(float(assessment.entity_coverage), 3),
+                "causal_relevance": round(float(assessment.causal_relevance), 3),
+                "tool_reliability": round(float(assessment.tool_reliability), 3),
+                "evidence_quality": round(float(assessment.evidence_quality), 3),
+            },
+            "threshold_profile": dict(assessment.threshold_profile or {}),
+            "timestamp": _now_iso(),
+            "authoritative": False,
+            "summary": f"{event_type} changed {hypothesis.id} confidence by {delta:+.3f}.",
+        }
+
+    def _confidence_delta_reason_codes(self, stance: str, evidence: Dict[str, Any], assessment: ObservationAssessment) -> List[str]:
+        codes = ["EVIDENCE_SUPPORT_APPLIED" if stance == "supports" else "EVIDENCE_CONTRADICTION_APPLIED"]
+        if assessment.typed_signal_strength >= assessment.threshold_profile.get("typed_support_floor", 0.58):
+            codes.append("TYPED_THRESHOLD_MET")
+        if assessment.causal_relevance >= 0.72:
+            codes.append("CAUSAL_RELEVANCE_STRONG")
+        if assessment.entity_coverage >= 0.72:
+            codes.append("ENTITY_COVERAGE_STRONG")
+        if assessment.heuristic_dependence >= 0.58:
+            codes.append("HEURISTIC_DEPENDENCE_PRESENT")
+        blob = jsonish(evidence).lower()
+        if any(token in blob for token in ("malicious", "suspicious", "high")):
+            codes.append("MALICIOUS_VERDICT_OR_SEVERITY")
+        if any(token in blob for token in ("benign", "clean", "low", "known good")):
+            codes.append("BENIGN_OR_CLEAN_CONTRADICTION")
+        if assessment.entity_coverage >= 0.9:
+            codes.append("RELATION_SIGNAL_EXPLICIT_OR_STRONG")
+        return self._dedupe(codes)[:10]
 
     def _scored_evidence_ref(
         self,
@@ -727,6 +942,16 @@ class HypothesisManager:
 
             if len(timeline) < 2:
                 missing.append("Build a clearer timeline with at least two corroborating observations.")
+
+        for hypothesis in ranked[:5]:
+            for contract in hypothesis.required_evidence:
+                if not isinstance(contract, dict):
+                    continue
+                for obs_type in contract.get("required_observation_types", []) or []:
+                    missing.append(f"Dynamic hypothesis '{hypothesis.hypothesis_type}' requires evidence type: {obs_type}.")
+                for entity_type in contract.get("required_entities", []) or []:
+                    if entity_type not in entity_types:
+                        missing.append(f"Dynamic hypothesis '{hypothesis.hypothesis_type}' requires entity type: {entity_type}.")
 
         if not explicit_relationships:
             missing.append("Need at least one explicit relationship rather than co-observation alone.")
@@ -1606,6 +1831,93 @@ class HypothesisManager:
                     entities.append({"type": entity_type, "value": str(value)})
                     break
         return entities
+
+    def _hypothesis_from_candidate(self, candidate: Dict[str, Any]) -> Hypothesis:
+        verification = candidate.get("verification", {}) if isinstance(candidate.get("verification"), dict) else {}
+        missing = [str(item) for item in verification.get("missing_evidence", []) if str(item).strip()]
+        trigger_ids = self._dedupe(list(candidate.get("trigger_observation_ids", [])))[:12]
+        required_evidence = list(candidate.get("required_evidence", [])) if isinstance(candidate.get("required_evidence"), list) else []
+        confidence = min(0.48, max(0.24, float(candidate.get("confidence_prior", candidate.get("confidence", 0.34)) or 0.34)))
+        now = _now_iso()
+        return Hypothesis(
+            id=self._new_hypothesis_id(),
+            statement=str(candidate.get("statement") or "Dynamic evidence hypothesis"),
+            status="open",
+            confidence=confidence,
+            topics=self._dedupe(list(candidate.get("topics", [])))[:8],
+            open_questions=missing[:6] or ["What evidence directly supports or contradicts this dynamic hypothesis?"],
+            evidence_score=0.0,
+            contradiction_score=0.0,
+            created_at=now,
+            updated_at=now,
+            last_updated_at=now,
+            priority=confidence,
+            ranking_score=confidence,
+            origin=str(candidate.get("origin") or "dynamic_evidence"),
+            hypothesis_type=str(candidate.get("hypothesis_type") or candidate.get("type") or "generic_incident"),
+            attack_path=self._dedupe(list(candidate.get("attack_path", [])))[:8],
+            trigger_observation_ids=trigger_ids,
+            trigger_entity_ids=self._dedupe(list(candidate.get("trigger_entity_ids", [])))[:12],
+            required_evidence=required_evidence,
+            generation_reason=str(candidate.get("generation_reason") or ""),
+            generator_version=str(candidate.get("generator_version") or ""),
+            reason_codes=self._dedupe(list(candidate.get("reason_codes", [])))[:12],
+            score_breakdown={
+                **(dict(candidate.get("score_breakdown", {})) if isinstance(candidate.get("score_breakdown"), dict) else {}),
+                "candidate_dedupe_key": str(candidate.get("dedupe_key") or self._candidate_dedupe_key(candidate)),
+            },
+            audit_events=[self._hypothesis_event("candidate_promoted", candidate)],
+        )
+
+    def _hypothesis_event(self, event_type: str, candidate: Dict[str, Any], *, hypothesis_id: Optional[str] = None, summary: str = "") -> Dict[str, Any]:
+        basis = f"{event_type}|{candidate.get('candidate_id')}|{hypothesis_id}|{summary}"
+        return {
+            "event_id": f"hyp-event-{uuid.uuid5(uuid.NAMESPACE_URL, basis).hex[:10]}",
+            "event_type": event_type,
+            "hypothesis_id": hypothesis_id,
+            "candidate_id": candidate.get("candidate_id"),
+            "reason_codes": list(candidate.get("reason_codes", []) or []),
+            "trigger_observation_ids": list(candidate.get("trigger_observation_ids", []) or []),
+            "summary": summary or str(candidate.get("generation_reason") or ""),
+            "created_at": _now_iso(),
+        }
+
+    def _hypothesis_dedupe_key(self, hypothesis: Hypothesis) -> str:
+        if isinstance(hypothesis.score_breakdown, dict) and hypothesis.score_breakdown.get("candidate_dedupe_key"):
+            return str(hypothesis.score_breakdown.get("candidate_dedupe_key"))
+        basis = "|".join([
+            hypothesis.hypothesis_type,
+            ",".join(sorted(hypothesis.attack_path)),
+            ",".join(sorted(hypothesis.trigger_entity_ids))[:180],
+            ",".join(sorted(hypothesis.reason_codes)),
+        ])
+        if hypothesis.trigger_observation_ids:
+            basis += "|" + ",".join(sorted(hypothesis.trigger_observation_ids))
+        return uuid.uuid5(uuid.NAMESPACE_URL, basis).hex[:16]
+
+    def _candidate_dedupe_key(self, candidate: Dict[str, Any]) -> str:
+        basis = "|".join([
+            str(candidate.get("hypothesis_type") or candidate.get("type") or "generic_incident"),
+            ",".join(sorted(str(item) for item in candidate.get("attack_path", []) or [])),
+            ",".join(sorted(str(item) for item in candidate.get("trigger_entity_ids", []) or []))[:180],
+            ",".join(sorted(str(item) for item in candidate.get("reason_codes", []) or [])),
+        ])
+        if candidate.get("trigger_observation_ids"):
+            basis += "|" + ",".join(sorted(str(item) for item in candidate.get("trigger_observation_ids", []) or []))
+        return uuid.uuid5(uuid.NAMESPACE_URL, basis).hex[:16]
+
+    def _dedupe_evidence_refs(self, refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen = set()
+        ordered: List[Dict[str, Any]] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            key = "|".join(str(ref.get(part) or "") for part in ("observation_id", "tool_name", "step_number", "source_path", "summary"))
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(ref)
+        return ordered[-12:]
 
     def _new_hypothesis_id(self) -> str:
         return f"hyp-{uuid.uuid4().hex[:8]}"

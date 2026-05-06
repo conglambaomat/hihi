@@ -46,7 +46,7 @@ class AgentState:
     goal: str = ""
     current_tool: Optional[str] = None
     step_count: int = 0
-    max_steps: int = 50
+    max_steps: int = 1000
     findings: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     pending_approval: Optional[Dict[str, Any]] = field(default=None)
@@ -74,6 +74,10 @@ class AgentState:
     deterministic_decision: Dict[str, Any] = field(default_factory=dict)
     agentic_explanation: Dict[str, Any] = field(default_factory=dict)
     last_approval_outcome: Optional[Dict[str, Any]] = None
+    context_pack_latest: Dict[str, Any] = field(default_factory=dict)
+    context_pack_summary_latest: Dict[str, Any] = field(default_factory=dict)
+    context_ledger_latest: Dict[str, Any] = field(default_factory=dict)
+    context_budget_latest: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ------------------------------------------------------------------ #
@@ -191,6 +195,9 @@ class AgentState:
             "evidence_state": self.evidence_state,
             "deterministic_decision": self.deterministic_decision,
             "agentic_explanation": self.agentic_explanation,
+            "context_pack_summary_latest": self.context_pack_summary_latest,
+            "context_ledger_latest": self.context_ledger_latest,
+            "context_budget_latest": self.context_budget_latest,
             "collaboration_mode": "multi_agent" if len(self.specialist_team) > 1 else "single_agent",
             "created_at": self.created_at,
             "is_terminal": self.is_terminal(),

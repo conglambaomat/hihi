@@ -1,0 +1,17 @@
+{
+  "query": "search index=* host=\"HR-WIN-001\" (\"Get-WmiObject\" OR \"Win32_Bios\" OR EventCode=1002 OR event_id=1002 OR rule_name=\"*TET-101*\") | head 5",
+  "timerange": "-30m..+2h around Jan 11 2025 4:21 PM",
+  "started_at": 1777727146.2094302,
+  "safe_config": {
+    "splunk_url_configured": false,
+    "splunk_token_configured": false,
+    "timeout": 5,
+    "max_results": 200
+  },
+  "tool_result": {
+    "status": "not_configured",
+    "error": "Set SPLUNK_URL and SPLUNK_TOKEN in the MCP server environment.",
+    "backend": "splunk"
+  },
+  "elapsed_seconds": 0.583
+}

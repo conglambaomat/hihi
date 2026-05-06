@@ -1,1 +1,1 @@
-# Blue Team Assistant - Test Suite
+# AI Security Assistant - Test Suite

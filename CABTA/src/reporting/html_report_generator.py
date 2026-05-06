@@ -1,7 +1,7 @@
 """
 Author: Ugur Ates
-Comprehensive HTML Report Generator for Blue Team Assistant
-Blue Team Assistant v1.0.0
+Comprehensive HTML Report Generator for AI Security Assistant
+AI Security Assistant v1.0.0
 
 Generates:
 - File Analysis Reports: 14 Sections
@@ -331,7 +331,7 @@ function downloadJSON() {{
     <div class="report-header file-header">
         <h1>🔬 MALWARE ANALYSIS REPORT</h1>
         <h3>{e(filename)}</h3>
-        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | Blue Team Assistant.0</p>
+        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | AI Security Assistant.0</p>
     </div>
     
     <div class="container">
@@ -480,7 +480,7 @@ function downloadJSON() {{
     <div class="report-header email-header">
         <h1>📧 EMAIL FORENSIC ANALYSIS REPORT</h1>
         <h3>Subject: {e(email_data.get('subject', 'Unknown'))[:80]}</h3>
-        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | Blue Team Assistant.0</p>
+        <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | AI Security Assistant.0</p>
     </div>
     
     <div class="container">

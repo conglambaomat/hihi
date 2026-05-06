@@ -1,6 +1,6 @@
 """
 Author: Ugur Ates
-Centralized logging configuration for Blue Team Assistant.
+Centralized logging configuration for AI Security Assistant.
 
 Supports two output formats controlled by the ``LOG_FORMAT`` environment
 variable:

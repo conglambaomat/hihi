@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI wrapper for CABTA local config history."""
+"""CLI wrapper for AISA local config history."""
 
 from pathlib import Path
 import sys

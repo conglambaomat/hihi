@@ -19,11 +19,11 @@ from ..utils.runtime_paths import runtime_cache_dir
 logger = logging.getLogger(__name__)
 
 def _default_db_path() -> Path:
-    explicit = os.environ.get('CABTA_AGENT_DB')
+    explicit = os.environ.get('AISA_AGENT_DB') or os.environ.get('CABTA_AGENT_DB')
     if explicit:
         return Path(explicit)
 
-    home_override = os.environ.get('CABTA_HOME')
+    home_override = os.environ.get('AISA_HOME') or os.environ.get('CABTA_HOME')
     home_path = Path(home_override) if home_override else Path.home()
     return (runtime_cache_dir() if not home_override else home_path / 'cache') / 'agent.db'
 
@@ -43,7 +43,7 @@ class AgentStore:
         except (PermissionError, OSError, sqlite3.OperationalError) as exc:
             if db_path is not None:
                 raise
-            fallback = Path.cwd() / '.cabta-runtime' / 'agent.db'
+            fallback = Path.cwd() / '.aisa-runtime' / 'agent.db'
             logger.warning(
                 "[AGENT] Default agent DB %s unavailable (%s); falling back to %s",
                 self._db_path,

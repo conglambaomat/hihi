@@ -1,4 +1,4 @@
-"""Blue Team Assistant - External Integrations"""
+"""AI Security Assistant - External Integrations"""
 
 from .threat_intel import ThreatIntelligence
 from .llm_analyzer import LLMAnalyzer

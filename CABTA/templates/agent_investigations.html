@@ -127,6 +127,40 @@
     font-size: 0.8rem;
     color: var(--text-secondary, #aaa);
 }
+.workdir-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.12rem 0.45rem;
+    border-radius: 999px;
+    background: rgba(88,166,255,0.10);
+    border: 1px solid rgba(88,166,255,0.22);
+    color: #58a6ff;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+.workdir-artifact-list {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+}
+.workdir-artifact-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border-color, #333);
+    border-radius: 6px;
+    background: rgba(15,23,42,0.18);
+    font-size: 0.74rem;
+}
+.workdir-artifact-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary, #e0e0e0);
+}
 .inv-session-card .card-actions {
     display: flex;
     gap: 0.5rem;
@@ -1329,6 +1363,12 @@ var Investigations = (function() {
             var tdCreated = document.createElement('td');
             var small = el('small', 'text-muted', s.created_at || s.created || '-');
             tdCreated.appendChild(small);
+            if (s.investigation_workdir && s.investigation_workdir.investigation_id) {
+                var wd = el('div', 'workdir-chip mt-1');
+                wd.appendChild(icon('bi bi-folder2-open'));
+                wd.appendChild(document.createTextNode((s.investigation_workdir.artifact_count || 0) + ' artifacts'));
+                tdCreated.appendChild(wd);
+            }
             tr.appendChild(tdCreated);
 
             // Actions
@@ -1339,6 +1379,13 @@ var Investigations = (function() {
             viewBtn.title = 'Open in chat';
             viewBtn.appendChild(icon('bi bi-chat-dots'));
             tdActions.appendChild(viewBtn);
+
+            var cockpitBtn = document.createElement('a');
+            cockpitBtn.href = '/agent/investigations/' + encodeURIComponent(sid) + '/cockpit';
+            cockpitBtn.className = 'btn btn-sm btn-ghost';
+            cockpitBtn.title = 'Open SOC cockpit';
+            cockpitBtn.appendChild(icon('bi bi-radar'));
+            tdActions.appendChild(cockpitBtn);
 
             var detailBtn = document.createElement('button');
             detailBtn.className = 'btn btn-sm btn-ghost';
@@ -1410,6 +1457,13 @@ var Investigations = (function() {
             idSpan.appendChild(idCode);
             metaDiv.appendChild(idSpan);
 
+            if (s.investigation_workdir && s.investigation_workdir.investigation_id) {
+                var workdirSpan = document.createElement('span');
+                workdirSpan.appendChild(icon('bi bi-folder2-open me-1'));
+                workdirSpan.appendChild(document.createTextNode((s.investigation_workdir.artifact_count || 0) + ' artifacts'));
+                metaDiv.appendChild(workdirSpan);
+            }
+
             card.appendChild(metaDiv);
 
             appendCompactReasoning(card, s);
@@ -1423,6 +1477,13 @@ var Investigations = (function() {
             chatBtn.appendChild(icon('bi bi-chat-dots me-1'));
             chatBtn.appendChild(document.createTextNode('Open in Chat'));
             actDiv.appendChild(chatBtn);
+
+            var cockpitCardBtn = document.createElement('a');
+            cockpitCardBtn.href = '/agent/investigations/' + encodeURIComponent(sid) + '/cockpit';
+            cockpitCardBtn.className = 'btn btn-sm btn-outline-info flex-fill';
+            cockpitCardBtn.appendChild(icon('bi bi-radar me-1'));
+            cockpitCardBtn.appendChild(document.createTextNode('SOC Cockpit'));
+            actDiv.appendChild(cockpitCardBtn);
 
             var detBtn = el('button', 'btn btn-sm btn-outline-secondary flex-fill');
             detBtn.appendChild(icon('bi bi-eye me-1'));
@@ -1932,6 +1993,128 @@ var Investigations = (function() {
         return indicator;
     }
 
+    function buildWorkdirPanel(sid, data) {
+        var panel = el('div', 'info-card');
+        panel.appendChild(el('div', 'info-card-title', 'Workdir Export & Review')).prepend(icon('bi bi-folder2-open'));
+        var wd = data.investigation_workdir || ((data.metadata || {}).investigation_workdir) || null;
+        var summary = el('div', 'text-muted', wd && wd.investigation_id ? 'Workdir ' + wd.investigation_id + ' mirrors evidence, reports, review notes, deterministic decision files, validation state, non-authoritative context ledger audit metadata, and non-authoritative resume context for audit/export.' : 'No workdir is attached to this session yet.');
+        summary.style.fontSize = '0.78rem';
+        panel.appendChild(summary);
+        if (wd && wd.investigation_id) {
+            var warning = el('div', 'text-warning mt-1', 'Resume context is a non-authoritative workdir mirror. Fresh AISA tools must re-validate evidence before deterministic decisions are trusted.');
+            warning.style.fontSize = '0.76rem';
+            panel.appendChild(warning);
+        }
+        var actions = el('div', 'd-flex flex-wrap gap-2 mt-2');
+        var artifactsBtn = el('button', 'btn btn-sm btn-outline-secondary');
+        artifactsBtn.appendChild(icon('bi bi-list-ul me-1'));
+        artifactsBtn.appendChild(document.createTextNode('Artifacts'));
+        var ledgerLink = document.createElement('a');
+        ledgerLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/context-ledger';
+        ledgerLink.target = '_blank';
+        ledgerLink.rel = 'noopener';
+        ledgerLink.className = 'btn btn-sm btn-outline-secondary';
+        ledgerLink.textContent = 'Context Ledger Audit';
+        actions.appendChild(ledgerLink);
+
+        var reviewLink = document.createElement('a');
+        reviewLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/artifacts/review.md';
+        reviewLink.target = '_blank';
+        reviewLink.rel = 'noopener';
+        reviewLink.className = 'btn btn-sm btn-outline-secondary';
+        reviewLink.appendChild(icon('bi bi-journal-text me-1'));
+        reviewLink.appendChild(document.createTextNode('Review'));
+        var reviewStateLink = document.createElement('a');
+        reviewStateLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/review';
+        reviewStateLink.target = '_blank';
+        reviewStateLink.rel = 'noopener';
+        reviewStateLink.className = 'btn btn-sm btn-outline-secondary';
+        reviewStateLink.appendChild(icon('bi bi-person-check me-1'));
+        reviewStateLink.appendChild(document.createTextNode('Review State'));
+        var validationLink = document.createElement('a');
+        validationLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/validation';
+        validationLink.target = '_blank';
+        validationLink.rel = 'noopener';
+        validationLink.className = 'btn btn-sm btn-outline-secondary';
+        validationLink.appendChild(icon('bi bi-shield-check me-1'));
+        validationLink.appendChild(document.createTextNode('Validate'));
+        var resumeLink = document.createElement('a');
+        resumeLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/resume';
+        resumeLink.target = '_blank';
+        resumeLink.rel = 'noopener';
+        resumeLink.className = 'btn btn-sm btn-outline-secondary';
+        resumeLink.appendChild(icon('bi bi-arrow-clockwise me-1'));
+        resumeLink.appendChild(document.createTextNode('Resume Payload'));
+        var resumeStartBtn = document.createElement('button');
+        resumeStartBtn.type = 'button';
+        resumeStartBtn.className = 'btn btn-sm btn-outline-warning';
+        resumeStartBtn.appendChild(icon('bi bi-play-circle me-1'));
+        resumeStartBtn.appendChild(document.createTextNode('Resume Start'));
+        resumeStartBtn.addEventListener('click', function() { startResumeFromWorkdir(sid, resumeStartBtn); });
+        var archiveLink = document.createElement('a');
+        archiveLink.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/archive/download';
+        archiveLink.className = 'btn btn-sm btn-outline-primary';
+        archiveLink.appendChild(icon('bi bi-file-earmark-zip me-1'));
+        archiveLink.appendChild(document.createTextNode('Download Archive'));
+        actions.appendChild(artifactsBtn);
+        actions.appendChild(reviewLink);
+        actions.appendChild(reviewStateLink);
+        actions.appendChild(validationLink);
+        actions.appendChild(resumeLink);
+        actions.appendChild(resumeStartBtn);
+        actions.appendChild(archiveLink);
+        panel.appendChild(actions);
+        var list = el('div', 'workdir-artifact-list');
+        panel.appendChild(list);
+        artifactsBtn.addEventListener('click', function() {
+            list.textContent = 'Loading artifacts...';
+            fetch('/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/artifacts')
+                .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(function(payload) {
+                    while (list.firstChild) list.removeChild(list.firstChild);
+                    var artifacts = payload.artifacts || [];
+                    if (!artifacts.length) {
+                        list.appendChild(el('div', 'text-muted', 'No registered artifacts yet.'));
+                        return;
+                    }
+                    artifacts.slice(0, 12).forEach(function(item) {
+                        var row = el('div', 'workdir-artifact-row');
+                        var pathSpan = el('span', 'workdir-artifact-path', item.relative_path || 'artifact');
+                        pathSpan.title = item.relative_path || '';
+                        row.appendChild(pathSpan);
+                        var open = document.createElement('a');
+                        open.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/artifacts/' + String(item.relative_path || '').split('/').map(encodeURIComponent).join('/');
+                        open.target = '_blank';
+                        open.rel = 'noopener';
+                        open.className = 'btn btn-sm btn-ghost';
+                        open.appendChild(icon('bi bi-box-arrow-up-right'));
+                        row.appendChild(open);
+                        list.appendChild(row);
+                    });
+                })
+                .catch(function(err) { list.textContent = 'Workdir artifacts unavailable: ' + err.message; });
+        });
+        return panel;
+    }
+
+    function startResumeFromWorkdir(sid, btn) {
+        if (!sid) return;
+        if (btn) btn.disabled = true;
+        fetch('/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/resume/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        })
+            .then(function(r) { return r.json().then(function(payload) { return { ok: r.ok, payload: payload }; }); })
+            .then(function(result) {
+                if (!result.ok) throw new Error(result.payload.detail || 'Resume start failed');
+                var newSid = result.payload.session_id || result.payload.id;
+                if (newSid) window.location.href = '/agent/chat?session=' + encodeURIComponent(newSid);
+            })
+            .catch(function(err) { alert('Resume Start unavailable: ' + err.message); })
+            .finally(function() { if (btn) btn.disabled = false; });
+    }
+
     function viewDetail(sid) {
         _currentDetailSid = sid;
         var detailBody = document.getElementById('sessionDetailBody');
@@ -2119,6 +2302,9 @@ var Investigations = (function() {
                     });
                     tabOverview.appendChild(toolList);
                 }
+
+                // Workdir export/review mirror
+                tabOverview.appendChild(buildWorkdirPanel(sid, data));
 
                 // Correlation button
                 var corrBtnDiv = el('div', 'mt-3');
@@ -2936,6 +3122,13 @@ var Investigations = (function() {
                     URL.revokeObjectURL(url);
                 });
                 detailFooter.appendChild(exportBtn);
+
+                var archiveBtn = document.createElement('a');
+                archiveBtn.href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/archive/download';
+                archiveBtn.className = 'btn btn-sm btn-outline-primary';
+                archiveBtn.appendChild(icon('bi bi-file-earmark-zip me-1'));
+                archiveBtn.appendChild(document.createTextNode('Download Workdir'));
+                detailFooter.appendChild(archiveBtn);
 
                 var continueBtn = document.createElement('a');
                 continueBtn.href = '/agent/chat?session=' + encodeURIComponent(sid);

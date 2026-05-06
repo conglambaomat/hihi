@@ -1,7 +1,7 @@
 {
   "name": "hihi-workspace",
   "version": "2.13.0",
-  "description": "Workspace metadata for the hihi repository, with CABTA as the primary product and shared agent tooling at the root.",
+  "description": "Workspace metadata for the hihi repository, with AISA as the primary product and shared agent tooling at the root.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Warning: no test specified\" && exit 0",

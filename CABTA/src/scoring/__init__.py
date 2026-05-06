@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Scoring System"""
+"""AI Security Assistant - Scoring System"""
 
 from .tool_based_scoring import ToolBasedScoring
 from .intelligent_scoring import IntelligentScoring

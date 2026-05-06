@@ -1,5 +1,5 @@
 """
-Author: Ugur AtesExecutive Summary Generator for Blue Team Assistant Reports."""
+Author: Ugur AtesExecutive Summary Generator for AI Security Assistant Reports."""
 
 from typing import Dict
 from datetime import datetime

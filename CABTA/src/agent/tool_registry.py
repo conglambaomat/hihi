@@ -5,12 +5,15 @@ Each tool is described by a ToolDefinition (JSON-schema parameters, source, cate
 and optionally backed by a local async executor function.
 """
 
+import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
-from ..agent.demo_log_backend import execute_demo_log_hunt
-from ..utils.log_hunting_policy import evaluate_hunt_request, normalize_query_bundle
+from ..utils.log_hunting_policy import evaluate_hunt_request, normalize_query_bundle, normalize_query_text, parse_timerange
+from .log_query_coverage import evaluate_log_result_coverage
+from .log_query_planner import LogQueryPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ class ToolDefinition:
     evidence_mode: str = "tool"
     verdict_role: str = "supporting"
     recommended_profiles: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    capability_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,7 +47,22 @@ class ToolDefinition:
             "evidence_mode": self.evidence_mode,
             "verdict_role": self.verdict_role,
             "recommended_profiles": list(self.recommended_profiles),
+            "capabilities": list(self.capabilities),
+            "capability_id": self.capability_id,
         }
+
+
+@dataclass
+class ActionConnectorMapping:
+    action_type: str
+    capability: str
+    preferred_tools: List[str] = field(default_factory=list)
+    safe: bool = True
+    max_calls_per_investigation: int = 3
+    fallback_mode: str = "manual_or_demo"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class ToolRegistry:
@@ -51,6 +71,9 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolDefinition] = {}
         self._executors: Dict[str, Callable[..., Coroutine]] = {}
+        self._llm_name_to_tool_name: Dict[str, str] = {}
+        self._action_connectors: Dict[str, ActionConnectorMapping] = {}
+        self._register_default_action_connectors()
 
     # ------------------------------------------------------------------ #
     #  Registration
@@ -68,6 +91,8 @@ class ToolRegistry:
         evidence_mode: str = "tool",
         verdict_role: str = "supporting",
         recommended_profiles: Optional[List[str]] = None,
+        capabilities: Optional[List[str]] = None,
+        capability_id: Optional[str] = None,
     ) -> None:
         """Register a local async tool executor."""
         td = ToolDefinition(
@@ -81,6 +106,8 @@ class ToolRegistry:
             evidence_mode=evidence_mode,
             verdict_role=verdict_role,
             recommended_profiles=list(recommended_profiles or []),
+            capabilities=list(capabilities or ([capability_id] if capability_id else [])),
+            capability_id=capability_id,
         )
         self._tools[name] = td
         self._executors[name] = executor
@@ -90,6 +117,7 @@ class ToolRegistry:
         self, server_name: str, tools_list: List[Dict[str, Any]],
     ) -> None:
         """Bulk-register tools discovered from an MCP server's list_tools response."""
+        server_name = str(server_name or "").strip()
         for t in tools_list:
             tool_name = f"{server_name}.{t['name']}"
             category = t.get("category", "mcp")
@@ -107,6 +135,8 @@ class ToolRegistry:
                     "recommended_profiles",
                     self._recommended_profiles_for_category(category),
                 ),
+                capabilities=t.get("capabilities", [t.get("capability_id")] if t.get("capability_id") else []),
+                capability_id=t.get("capability_id"),
             )
             self._tools[tool_name] = td
 
@@ -140,14 +170,175 @@ class ToolRegistry:
             del self._tools[name]
             self._executors.pop(name, None)
         logger.info(f"[TOOLS] Unregistered {len(to_remove)} tools from {server_name}")
+        for llm_name, tool_name in list(self._llm_name_to_tool_name.items()):
+            if tool_name in to_remove:
+                del self._llm_name_to_tool_name[llm_name]
         return len(to_remove)
+
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """Return an OpenAI-compatible function name for LLM payloads."""
+        sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", str(name or "").strip())
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+        return sanitized or "tool"
+
+    def _llm_tool_name_for(self, tool_name: str) -> str:
+        """Build a stable LLM-facing tool name and preserve reverse mapping."""
+        sanitized = self._sanitize_tool_name(tool_name)
+        candidate = sanitized
+        counter = 2
+        while True:
+            existing = self._llm_name_to_tool_name.get(candidate)
+            if existing is None or existing == tool_name:
+                self._llm_name_to_tool_name[candidate] = tool_name
+                return candidate
+            counter += 1
+            candidate = f"{sanitized}_{counter}"
+
+    def _register_default_action_connectors(self) -> None:
+        specs = [
+            ("PROCESS_PARENT_LOOKUP", "log.search.process_tree", ["search_logs", "analyze_log_artifact"]),
+            ("PROCESS_CHILD_LOOKUP", "log.search.process_tree", ["search_logs", "analyze_log_artifact"]),
+            ("COMMAND_LINE_DEOBFUSCATE", "analysis.command_line", ["analyze_log_artifact", "extract_iocs"]),
+            ("NETWORK_CONNECTION_LOOKUP", "log.search.network", ["search_logs"]),
+            ("FILE_WRITE_LOOKUP", "log.search.file", ["search_logs"]),
+            ("REGISTRY_LOOKUP", "log.search.registry", ["search_logs"]),
+            ("USER_SESSION_LOOKUP", "log.search.identity", ["search_logs"]),
+            ("HOST_TIMELINE_EXPAND", "log.search.timeline", ["splunk.get_host_timeline", "splunk.search_logs", "search_logs"]),
+            ("IOC_EXTRACT_ENRICH", "intel.enrich.ioc", ["investigate_ioc", "threat-intel.threatfox_ioc_lookup", "free-osint.circl_misp_feed_check", "search_threat_intel", "extract_iocs"]),
+            ("RELATED_EVENT_SEARCH", "log.search.related", ["splunk.search_logs", "search_logs"]),
+            ("RULE_DETECTION_GENERATE", "detection.generate", ["generate_rules"]),
+            ("REPORT_FINALIZE", "report.finalize", ["correlate_findings"]),
+        ]
+        for action_type, capability, tools in specs:
+            self._action_connectors[action_type] = ActionConnectorMapping(action_type, capability, tools)
+
+    # ------------------------------------------------------------------ #
+    #  NextAction connector registry
+    # ------------------------------------------------------------------ #
+
+    def resolve_action_connector(self, action: Any) -> Dict[str, Any]:
+        """Map a NextActionSignal-like object to available runtime tools and explain gaps."""
+        getter = action.get if isinstance(action, dict) else lambda key, default=None: getattr(action, key, default)
+        action_type = str(getter("action_type", getter("type", "")) or "").strip()
+        normalized_type = action_type.upper()
+        aliases = {
+            "PIVOT_PROCESS_TREE": "PROCESS_CHILD_LOOKUP",
+            "PROCESS_TREE": "PROCESS_CHILD_LOOKUP",
+            "DECODE_COMMAND_LINE": "COMMAND_LINE_DEOBFUSCATE",
+            "PIVOT_NETWORK": "NETWORK_CONNECTION_LOOKUP",
+            "NETWORK_PIVOT": "NETWORK_CONNECTION_LOOKUP",
+            "PIVOT_FILE_REGISTRY": "FILE_WRITE_LOOKUP",
+            "PIVOT_USER_HOST_SCOPE": "USER_SESSION_LOOKUP",
+            "BUILD_TIMELINE": "HOST_TIMELINE_EXPAND",
+            "PIVOT_HASH_ENRICHMENT": "IOC_EXTRACT_ENRICH",
+            "DERIVE_ROOT_CAUSE": "REPORT_FINALIZE",
+            "WRITE_THREAT_STORY": "REPORT_FINALIZE",
+            "ASSESS_SCOPE": "RELATED_EVENT_SEARCH",
+            "ASSESS_IMPACT": "REPORT_FINALIZE",
+        }
+        normalized_type = aliases.get(normalized_type, normalized_type)
+        mapping = self._action_connectors.get(normalized_type)
+        tool_hint = str(getter("tool_hint", getter("tool", "")) or "").strip()
+        capability_hint = str(getter("capability", getter("capability_id", "")) or "").strip()
+        preferred = [tool_hint] if tool_hint else []
+        if capability_hint:
+            preferred.extend(self._tools_for_capability_hint(capability_hint))
+        if mapping:
+            preferred.extend(mapping.preferred_tools)
+            preferred.extend(self._tools_for_capability_hint(mapping.capability))
+        preferred = list(dict.fromkeys(item for item in preferred if item))
+        available = []
+        unavailable = []
+        for tool_name in preferred:
+            tool = self.get_tool(tool_name)
+            if tool is None:
+                unavailable.append({"tool": tool_name, "reason": "tool_not_registered"})
+            elif tool.requires_approval:
+                unavailable.append({"tool": tool_name, "reason": "requires_approval", "available_with_approval": True})
+            else:
+                available.append(tool.to_dict())
+        status = "available" if available else "unavailable"
+        reason = "available" if available else ("no_connector_mapping" if mapping is None else "no_available_tool")
+        return {
+            "schema_version": "next-action-connector/v1",
+            "action_type": action_type,
+            "normalized_action_type": normalized_type,
+            "status": status,
+            "reason": reason,
+            "capability": mapping.capability if mapping else "",
+            "preferred_tools": preferred,
+            "available_tools": available,
+            "unavailable_tools": unavailable,
+            "safe": True if mapping is None else mapping.safe,
+            "fallback_mode": mapping.fallback_mode if mapping else "manual_required",
+        }
+
+    def _tools_for_capability_hint(self, capability: str) -> List[str]:
+        """Return stable live/local tool candidates for ontology or action capability ids."""
+        clean = str(capability or "").strip().lower().replace("_", ".")
+        if clean.startswith("splunk."):
+            return [clean]
+        mapping = {
+            "ioc.enrich": ["investigate_ioc", "threat-intel.threatfox_ioc_lookup", "free-osint.circl_misp_feed_check"],
+            "intel.enrich.ioc": ["investigate_ioc", "threat-intel.threatfox_ioc_lookup", "free-osint.circl_misp_feed_check"],
+            "investigate.ioc": ["investigate_ioc", "threat-intel.threatfox_ioc_lookup"],
+            "correlate.findings": ["correlate_findings"],
+            "findings.correlate": ["correlate_findings"],
+            "log.search": ["splunk.search_logs", "search_logs"],
+            "log.search.related": ["splunk.search_logs", "search_logs"],
+            "log.search.timeline": ["splunk.get_host_timeline", "splunk.search_logs", "search_logs"],
+        }
+        return list(mapping.get(clean, []))
+
+    def connector_availability(self) -> Dict[str, Any]:
+        """Expose stable health for action connector bridges without requiring a live call."""
+        connectors = []
+        available_count = 0
+        for key, mapping in sorted(self._action_connectors.items()):
+            tools = list(dict.fromkeys(mapping.preferred_tools + self._tools_for_capability_hint(mapping.capability)))
+            available = []
+            for name in tools:
+                tool = self.get_tool(name)
+                if tool is not None and not tool.requires_approval:
+                    available.append(name)
+            if available:
+                available_count += 1
+            connectors.append({
+                "action_type": key,
+                "capability": mapping.capability,
+                "status": "available" if available else "unavailable",
+                "available_tools": available,
+                "preferred_tools": tools,
+                "fallback_mode": mapping.fallback_mode,
+            })
+        return {
+            "schema_version": "connector-availability/v1",
+            "status": "available" if available_count else "degraded",
+            "available_count": available_count,
+            "unavailable_count": max(0, len(connectors) - available_count),
+            "connectors": connectors,
+        }
+
+    def action_connector_catalog(self) -> Dict[str, Any]:
+        payload = self.connector_availability()
+        payload["schema_version"] = "next-action-connector-catalog/v1"
+        payload["connector_contracts"] = [mapping.to_dict() for mapping in self._action_connectors.values()]
+        return payload
 
     # ------------------------------------------------------------------ #
     #  Lookup
     # ------------------------------------------------------------------ #
 
     def get_tool(self, name: str) -> Optional[ToolDefinition]:
-        return self._tools.get(name)
+        resolved_name = self.resolve_tool_name(name)
+        return self._tools.get(resolved_name)
+
+    def resolve_tool_name(self, name: str) -> str:
+        """Resolve either canonical or LLM-sanitized tool names to canonical registry names."""
+        if name in self._tools:
+            return name
+        return self._llm_name_to_tool_name.get(name, name)
 
     def list_tools(
         self,
@@ -155,7 +346,7 @@ class ToolRegistry:
         source: Optional[str] = None,
     ) -> List[ToolDefinition]:
         """Return tools filtered by category and/or source."""
-        result = list(self._tools.values())
+        result = [t for t in self._tools.values() if t.evidence_mode != "deterministic_parser"]
         if category:
             result = [t for t in result if t.category == category]
         if source:
@@ -166,10 +357,11 @@ class ToolRegistry:
         """Return tool definitions formatted for LLM tool_use / function calling."""
         out: List[Dict[str, Any]] = []
         for td in self._tools.values():
+            llm_name = self._llm_tool_name_for(td.name)
             out.append({
                 "type": "function",
                 "function": {
-                    "name": td.name,
+                    "name": llm_name,
                     "description": td.description + (
                         " [REQUIRES APPROVAL]" if td.requires_approval else ""
                     ),
@@ -197,6 +389,8 @@ class ToolRegistry:
             import inspect
             sig = inspect.signature(executor)
             mapped_kwargs = dict(kwargs)
+            execution_context = mapped_kwargs.pop('_execution_context', {})
+            strict_binding = bool(isinstance(execution_context, dict) and execution_context.get('capability_enforced'))
 
             logger.info(
                 f"[TOOLS] execute_local_tool('{name}') called with kwargs keys: "
@@ -239,6 +433,8 @@ class ToolRegistry:
                     missing_required.append(param_name)
 
             for param_name in missing_required:
+                if strict_binding:
+                    continue
                 # Strategy 1: try alias pool
                 found = False
                 for alias in alias_pool:
@@ -283,6 +479,24 @@ class ToolRegistry:
                         found = True
                         break
 
+            if strict_binding:
+                still_missing = []
+                for param_name, param in sig.parameters.items():
+                    if param_name in ('self', '_kw') or param.kind == inspect.Parameter.VAR_KEYWORD:
+                        continue
+                    if param_name not in mapped_kwargs and param.default is inspect.Parameter.empty:
+                        still_missing.append(param_name)
+                if still_missing:
+                    return {
+                        "error": "Strict capability parameter binding failed; missing required parameters: " + ", ".join(still_missing),
+                        "error_type": "invalid_params",
+                        "missing_required": still_missing,
+                        "capability_id": execution_context.get('capability_id') if isinstance(execution_context, dict) else None,
+                    }
+
+            if '_execution_context' in sig.parameters:
+                mapped_kwargs['_execution_context'] = execution_context
+
             # Final check: log what we're calling with
             logger.info(
                 f"[TOOLS] Calling {name} with mapped_kwargs: {mapped_kwargs}"
@@ -320,7 +534,7 @@ class ToolRegistry:
         governance_store=None,
         case_store=None,
     ) -> None:
-        """Wire up the built-in Blue Team Assistant tools as agent-callable tools.
+        """Wire up the built-in AI Security Assistant tools as agent-callable tools.
 
         Each wrapper is an async function that delegates to the existing tool
         instances (IOCInvestigator, MalwareAnalyzer, EmailAnalyzer) so the agent
@@ -756,7 +970,7 @@ class ToolRegistry:
                     generic_queries["yara"] = [
                         "\n".join(
                             [
-                                "rule CABTA_Hypothesis_Hunt",
+                                "rule AISA_Hypothesis_Hunt",
                                 "{",
                                 "    meta:",
                                 f"        description = \"Generated from hypothesis: {hypothesis[:80]}\"",
@@ -777,7 +991,7 @@ class ToolRegistry:
                             [
                                 (
                                     'alert tcp any any -> any any '
-                                    f'(msg:"CABTA Hypothesis Hunt - {hypothesis[:40]}"; flow:established,to_server; sid:{_safe_snort_sid(hypothesis)}; rev:1;)'
+                                    f'(msg:"AISA Hypothesis Hunt - {hypothesis[:40]}"; flow:established,to_server; sid:{_safe_snort_sid(hypothesis)}; rev:1;)'
                                 )
                             ]
                         )
@@ -845,15 +1059,15 @@ class ToolRegistry:
             if "snort" in selected_types:
                 for ip in known_iocs["ips"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert ip any any <> {ip} any (msg:"CABTA IOC IP {ip}"; sid:{_safe_snort_sid(ip)}; rev:1;)'
+                        f'alert ip any any <> {ip} any (msg:"AISA IOC IP {ip}"; sid:{_safe_snort_sid(ip)}; rev:1;)'
                     )
                 for domain in known_iocs["domains"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert udp any any -> any 53 (msg:"CABTA IOC Domain {domain}"; content:"{domain}"; nocase; sid:{_safe_snort_sid(domain)}; rev:1;)'
+                        f'alert udp any any -> any 53 (msg:"AISA IOC Domain {domain}"; content:"{domain}"; nocase; sid:{_safe_snort_sid(domain)}; rev:1;)'
                     )
                 for url in known_iocs["urls"]:
                     query_buckets.setdefault("snort", []).append(
-                        f'alert http any any -> any any (msg:"CABTA IOC URL {url[:40]}"; http_uri; content:"{url[:200]}"; nocase; sid:{_safe_snort_sid(url)}; rev:1;)'
+                        f'alert http any any -> any any (msg:"AISA IOC URL {url[:40]}"; http_uri; content:"{url[:200]}"; nocase; sid:{_safe_snort_sid(url)}; rev:1;)'
                     )
 
             if not any(query_buckets.values()):
@@ -1168,7 +1382,39 @@ class ToolRegistry:
         )
 
         # -------------------------------------------------------------- #
-        # 5e. search_logs
+        # 5e. analyze_log_artifact
+        # -------------------------------------------------------------- #
+        async def _analyze_log_artifact(raw_log_text: str = "", compiled_input_ref: str = "", **_kw) -> Dict:
+            from .raw_log_parser import analyze_log_artifact
+            return analyze_log_artifact(raw_log_text=raw_log_text, compiled_input_ref=compiled_input_ref, **_kw)
+
+        self.register_local_tool(
+            name="analyze_log_artifact",
+            description=(
+                "Deterministically parse a pasted raw network/security log artifact and return typed fields, "
+                "coverage facets, limitations, and an inconclusive structured verdict. Does not perform IOC, email, or file fallback."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "raw_log_text": {"type": "string", "description": "Pasted raw log event text."},
+                    "compiled_input_ref": {"type": "string", "description": "CompiledInput reference ID."},
+                    "raw_event_ref": {"type": "string", "description": "Stable raw event reference if already compiled."},
+                    "parsed_fields": {"type": "object", "description": "Optional parser fields from the input compiler."},
+                },
+                "required": [],
+            },
+            category="siem",
+            executor=_analyze_log_artifact,
+            evidence_mode="deterministic_parser",
+            verdict_role="analysis_input",
+            recommended_profiles=["network_analyst", "threat_hunter", "triage"],
+            capabilities=["log.analyze.inline"],
+            capability_id="log.analyze.inline",
+        )
+
+        # -------------------------------------------------------------- #
+        # 5f. search_logs
         # -------------------------------------------------------------- #
         async def _search_logs(
             query: Any = None,
@@ -1180,28 +1426,177 @@ class ToolRegistry:
 
             execution_context = dict(_execution_context or {})
             query_planner = execution_context.get("log_query_plan", {})
+            investigation_query_plan = execution_context.get("investigation_query_plan", {})
+            if not isinstance(query_planner, dict) and isinstance(investigation_query_plan, dict):
+                query_planner = investigation_query_plan.get("log_query_plan", {})
+
+            requested_timerange = str(timerange or "").strip()
+            raw_goal = str(execution_context.get("goal") or execution_context.get("analyst_request") or query or "").strip()
+            raw_goal_lower = raw_goal.lstrip().lower()
+            raw_goal_looks_spl = raw_goal_lower.startswith(("search ", "|", "index=", "tstats ")) or "| stats" in raw_goal_lower
+            if (not isinstance(query_planner, dict) or not query_planner) and query is None and not raw_goal_looks_spl:
+                generated_plan = LogQueryPlanner().build_plan(
+                    query=None,
+                    analyst_request=raw_goal,
+                    lane=str(execution_context.get("lane") or ""),
+                    unresolved_questions=list(execution_context.get("unresolved_questions") or []),
+                    entity_state=execution_context.get("entity_state") if isinstance(execution_context.get("entity_state"), dict) else None,
+                    timerange=requested_timerange or "24h",
+                    max_results=200,
+                )
+                if generated_plan.get("query_bundle"):
+                    query_planner = generated_plan
+                    investigation_query_plan = {"log_query_plan": generated_plan, "queries": generated_plan.get("query_bundle"), "query_variants": generated_plan.get("query_variants", [])}
+
+
+            def _timerange_candidate(value: Any) -> str:
+                if isinstance(value, dict):
+                    for key in ("timerange", "range", "value", "window"):
+                        nested = _timerange_candidate(value.get(key))
+                        if nested:
+                            return nested
+                    return ""
+                if isinstance(value, str):
+                    return value.strip()
+                return ""
+
+            def _effective_timerange() -> tuple[str, str]:
+                context_plan = execution_context.get("investigation_query_plan")
+                nested_candidates = []
+                if isinstance(context_plan, dict):
+                    nested_candidates.extend([
+                        context_plan.get("effective_timerange"),
+                        context_plan.get("timerange"),
+                        (context_plan.get("log_query_plan") or {}).get("effective_timerange") if isinstance(context_plan.get("log_query_plan"), dict) else "",
+                        (context_plan.get("log_query_plan") or {}).get("timerange") if isinstance(context_plan.get("log_query_plan"), dict) else "",
+                    ])
+                if isinstance(query_planner, dict):
+                    nested_candidates.extend([query_planner.get("effective_timerange"), query_planner.get("timerange")])
+                for candidate in nested_candidates:
+                    normalized = _timerange_candidate(candidate)
+                    if normalized:
+                        return normalized, "investigation_query_plan"
+                if requested_timerange:
+                    return requested_timerange, "caller"
+                return "7d", "default"
+
+            effective_timerange, timerange_source = _effective_timerange()
+            _, _, _, effective_timerange = parse_timerange(effective_timerange)
+
+            def _query_has_source_hint(query_text: str) -> bool:
+                return bool(re.search(r"\b(?:index|sourcetype|source)\s*=", normalize_query_text(query_text), re.IGNORECASE))
+
+            def _bind_query_to_source_profile(query_text: str, profile: Dict[str, Any]) -> str:
+                normalized = normalize_query_text(query_text)
+                if _query_has_source_hint(normalized):
+                    return normalized
+                indexes = list(profile.get("indexes") or []) if isinstance(profile, dict) else []
+                sourcetypes = list(profile.get("sourcetypes") or []) if isinstance(profile, dict) else []
+                scope = " OR ".join(f"index={item}" for item in indexes[:3]) if indexes else "index=*"
+                if sourcetypes:
+                    scope = f"({scope}) (" + " OR ".join(f'sourcetype="{item}"' for item in sourcetypes[:5]) + ")"
+                base = normalized[7:].strip() if normalized.lower().startswith("search ") else normalized
+                return f"search ({scope}) ({base})"
+
+            def _is_collection_failure(payload: Dict[str, Any]) -> bool:
+                text = " ".join(str(payload.get(key) or "") for key in ("error", "message", "detail")).lower()
+                return payload.get("collection_status") == "collection_failed" or any(token in text for token in ("invalid earliest_time", "dispatch", "failed to create splunk search job"))
+
+            def _attach_timerange_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
+                result["requested_timerange"] = requested_timerange
+                result["effective_timerange"] = effective_timerange
+                result["effective_timerange_source"] = timerange_source
+                result["timerange_source"] = timerange_source
+                result["timerange"] = result.get("timerange") or effective_timerange
+                return result
+
+            def _variant_backend(variant: Dict[str, Any]) -> str:
+                backend = str(variant.get("backend") or "splunk").strip().lower()
+                return "splunk" if backend in {"spl", "splunk"} else backend or "generic"
+
+            def _ordered_variant_queries(plan: Dict[str, Any]) -> tuple[Dict[str, List[str]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+                variants = [item for item in (plan.get("query_variants") or []) if isinstance(item, dict)] if isinstance(plan, dict) else []
+                executable: Dict[str, List[str]] = {}
+                executed_meta: List[Dict[str, Any]] = []
+                unexecuted_meta: List[Dict[str, Any]] = []
+                for index, variant in enumerate(variants):
+                    query_text = str(variant.get("query") or "").strip()
+                    backend = _variant_backend(variant)
+                    meta = {
+                        "variant_id": variant.get("variant_id") or f"variant_{index}",
+                        "backend": backend,
+                        "strategy": variant.get("strategy"),
+                        "target_facets": list(variant.get("target_facets") or []),
+                        "expected_entities": list(variant.get("expected_entities") or []),
+                        "fingerprint": variant.get("fingerprint"),
+                        "reason": variant.get("reason"),
+                    }
+                    if query_text and backend in {"splunk", "spl", "generic"}:
+                        executable.setdefault("splunk" if backend == "spl" else backend, []).append(query_text)
+                        executed_meta.append(meta)
+                    else:
+                        unexecuted_meta.append({**meta, "reason": meta.get("reason") or "No executable query text for this backend."})
+                return executable, executed_meta, unexecuted_meta
+
+            investigation_queries, executable_variant_metadata, unexecuted_variant_metadata = _ordered_variant_queries(
+                investigation_query_plan if isinstance(investigation_query_plan, dict) else {}
+            )
             planner_queries = normalize_query_bundle(
                 query_planner.get("query_bundle") if isinstance(query_planner, dict) else None
             )
             normalized_queries = normalize_query_bundle(query)
-            if planner_queries and (
+            if investigation_queries:
+                normalized_queries = investigation_queries
+            elif planner_queries and (
                 not normalized_queries
                 or set(normalized_queries.keys()) == {"generic"}
             ):
                 normalized_queries = planner_queries
+                legacy_variants = [item for item in (query_planner.get("query_variants") or []) if isinstance(item, dict)] if isinstance(query_planner, dict) else []
+                if legacy_variants and not executable_variant_metadata:
+                    executable_variant_metadata = [
+                        {
+                            "variant_id": item.get("variant_id"),
+                            "backend": _variant_backend(item),
+                            "strategy": item.get("strategy"),
+                            "target_facets": list(item.get("target_facets") or []),
+                            "expected_entities": list(item.get("expected_entities") or []),
+                            "fingerprint": item.get("fingerprint"),
+                            "reason": item.get("reason"),
+                            "source": "legacy_log_query_plan",
+                        }
+                        for item in legacy_variants
+                        if item.get("query")
+                    ]
             query_count = sum(len(values) for values in normalized_queries.values())
             session_id = str(execution_context.get("session_id") or "adhoc-log-hunt")
             workflow_id = execution_context.get("workflow_id")
             case_id = execution_context.get("case_id")
-            query_origin = "generated" if planner_queries or isinstance(query, dict) else "raw"
+            query_origin = "generated" if investigation_queries or planner_queries or isinstance(query, dict) else "raw"
+            if not planner_queries and set(normalized_queries.keys()) == {"generic"}:
+                generic_text = " ".join(normalized_queries.get("generic") or [])
+                if generic_text and not generic_text.lstrip().lower().startswith(("search ", "|", "index=", "tstats ")):
+                    generated_plan = LogQueryPlanner().build_plan(
+                        query=None,
+                        analyst_request=raw_goal or generic_text,
+                        lane=str(execution_context.get("lane") or ""),
+                        unresolved_questions=[generic_text],
+                        entity_state=execution_context.get("entity_state") if isinstance(execution_context.get("entity_state"), dict) else None,
+                        timerange=requested_timerange or "24h",
+                        max_results=200,
+                    )
+                    planner_queries = normalize_query_bundle(generated_plan.get("query_bundle"))
+                    if planner_queries:
+                        normalized_queries = planner_queries
+                        query_planner = generated_plan
+                        investigation_query_plan = {"log_query_plan": generated_plan, "queries": generated_plan.get("query_bundle"), "query_variants": generated_plan.get("query_variants", [])}
+                        query_count = sum(len(values) for values in normalized_queries.values())
+                        query_origin = "generated"
 
             hunting_cfg = config.get("log_hunting", {}) if isinstance(config, dict) else {}
             max_window_hours = int(hunting_cfg.get("max_window_hours", 24 * 7) or 24 * 7)
             max_results = int(hunting_cfg.get("max_results", 200) or 200)
             max_queries = int(hunting_cfg.get("max_queries_per_hunt", 3) or 3)
-            demo_cfg = hunting_cfg.get("demo_backend", {}) if isinstance(hunting_cfg, dict) else {}
-            demo_enabled = bool(demo_cfg.get("enabled"))
-            demo_dataset = str(demo_cfg.get("dataset") or "playbook_log_hunt").strip()
             configured_backends: List[str] = []
 
             def _log_hunt_decision(decision_type: str, summary: str, metadata: Dict[str, Any]) -> None:
@@ -1221,39 +1616,14 @@ class ToolRegistry:
                     logger.debug("[TOOLS] Failed to log hunt decision", exc_info=True)
 
             if mcp_client is None or not getattr(mcp_client, "is_connected", lambda _name: False)("splunk"):
-                if demo_enabled:
-                    demo_result = execute_demo_log_hunt(
-                        demo_dataset,
-                        normalized_queries,
-                        timerange=timerange or "24h",
-                        max_results=max_results,
-                    )
-                    _log_hunt_decision(
-                        "log_search_execution",
-                        "Seeded demo log hunt executed without a live Splunk backend.",
-                        {
-                            "reason": demo_result.get("message", ""),
-                            "backend": "demo_fixture",
-                            "dataset": demo_result.get("dataset", demo_dataset),
-                            "query_count": query_count,
-                            "results_count": demo_result.get("results_count", 0),
-                            "query_origin": query_origin,
-                            "timerange": demo_result.get("timerange", timerange or "24h"),
-                            "mode": demo_result.get("mode", "demo_fixture"),
-                        },
-                    )
-                    if isinstance(query_planner, dict) and query_planner:
-                        demo_result["query_planner"] = query_planner
-                    return demo_result
-
                 message = (
                     "No Splunk log backend is connected for automated hunting. "
-                    "CABTA generated hunt queries for analyst-driven execution."
+                    "AISA generated hunt queries for analyst-driven execution."
                 )
                 result = {
                     "status": "manual_lookup_required",
                     "mode": "query_generation_only",
-                    "timerange": timerange or "7d",
+                    "timerange": effective_timerange,
                     "configured_backends": configured_backends,
                     "query_count": query_count,
                     "executed_queries": [],
@@ -1264,7 +1634,15 @@ class ToolRegistry:
                     "suspicious_executables": [],
                     "message": message,
                     "query_planner": query_planner if isinstance(query_planner, dict) else {},
+                    "investigation_query_plan": investigation_query_plan if isinstance(investigation_query_plan, dict) else {},
+                    "executed_query_variants": [],
+                    "unexecuted_query_variants": [*executable_variant_metadata, *unexecuted_variant_metadata],
                 }
+                result["coverage_matrix"] = evaluate_log_result_coverage(
+                    query_plan=query_planner if isinstance(query_planner, dict) else None,
+                    result=result,
+                    executed=False,
+                )
                 _log_hunt_decision(
                     "log_search_manual",
                     "No live Splunk backend available; hunt downgraded to manual lookup.",
@@ -1276,7 +1654,7 @@ class ToolRegistry:
                         "backend": "manual",
                     },
                 )
-                return result
+                return _attach_timerange_metadata(result)
 
             configured_backends.append("splunk")
             spl_queries = normalized_queries.get("splunk") or normalized_queries.get("spl") or normalized_queries.get("generic") or []
@@ -1285,7 +1663,7 @@ class ToolRegistry:
                 result = {
                     "status": "manual_lookup_required",
                     "mode": "query_generation_only",
-                    "timerange": timerange or "7d",
+                    "timerange": effective_timerange,
                     "configured_backends": configured_backends,
                     "query_count": query_count,
                     "executed_queries": [],
@@ -1296,7 +1674,15 @@ class ToolRegistry:
                     "suspicious_executables": [],
                     "message": message,
                     "query_planner": query_planner if isinstance(query_planner, dict) else {},
+                    "investigation_query_plan": investigation_query_plan if isinstance(investigation_query_plan, dict) else {},
+                    "executed_query_variants": [],
+                    "unexecuted_query_variants": [*executable_variant_metadata, *unexecuted_variant_metadata],
                 }
+                result["coverage_matrix"] = evaluate_log_result_coverage(
+                    query_plan=query_planner if isinstance(query_planner, dict) else None,
+                    result=result,
+                    executed=False,
+                )
                 _log_hunt_decision(
                     "log_search_manual",
                     "No Splunk-compatible hunt query was available.",
@@ -1307,7 +1693,7 @@ class ToolRegistry:
                         "backend": "splunk",
                     },
                 )
-                return result
+                return _attach_timerange_metadata(result)
 
             executed_queries: List[Dict[str, Any]] = []
             combined_rows: List[Dict[str, Any]] = []
@@ -1315,11 +1701,29 @@ class ToolRegistry:
             suspicious_files: List[str] = []
             suspicious_executables: List[str] = []
             errors: List[str] = []
+            source_profile: Dict[str, Any] = {}
+            discovery_events: List[Dict[str, Any]] = []
+            if spl_queries and not any(_query_has_source_hint(item) for item in spl_queries[:max_queries]):
+                try:
+                    discovery_payload = _unwrap_mcp_payload(await mcp_client.call_tool("splunk", "discover_sources", {"timerange": effective_timerange, "max_results": 20}))
+                    if isinstance(discovery_payload, dict):
+                        nested_discovery = discovery_payload.get("result") if isinstance(discovery_payload.get("result"), dict) else {}
+                        source_profile = discovery_payload.get("source_profile") if isinstance(discovery_payload.get("source_profile"), dict) else {}
+                        if not source_profile and isinstance(nested_discovery.get("source_profile"), dict):
+                            source_profile = nested_discovery["source_profile"]
+                        discovery_events.append({
+                            "tool": "splunk.discover_sources",
+                            "status": discovery_payload.get("status", "unknown"),
+                            "source_profile": source_profile,
+                        })
+                except Exception as exc:
+                    discovery_events.append({"tool": "splunk.discover_sources", "status": "discovery_failed", "error": str(exc)})
 
             for candidate in spl_queries[:max_queries]:
+                candidate = _bind_query_to_source_profile(candidate, source_profile) if source_profile else candidate
                 plan = evaluate_hunt_request(
                     candidate,
-                    timerange=timerange or "7d",
+                    timerange=effective_timerange,
                     query_origin=query_origin,
                     max_window_hours=max_window_hours,
                     max_results=max_results,
@@ -1363,7 +1767,15 @@ class ToolRegistry:
                         "message": plan["reason"],
                         "approval_id": approval_id,
                         "query_planner": query_planner if isinstance(query_planner, dict) else {},
+                        "investigation_query_plan": investigation_query_plan if isinstance(investigation_query_plan, dict) else {},
+                        "executed_query_variants": [],
+                        "unexecuted_query_variants": [*executable_variant_metadata, *unexecuted_variant_metadata],
                     }
+                    result["coverage_matrix"] = evaluate_log_result_coverage(
+                        query_plan=query_planner if isinstance(query_planner, dict) else None,
+                        result=result,
+                        executed=False,
+                    )
                     _log_hunt_decision(
                         "log_search_approval_required",
                         "Splunk hunt paused pending analyst approval.",
@@ -1376,7 +1788,7 @@ class ToolRegistry:
                             "approval_id": approval_id,
                         },
                     )
-                    return result
+                    return _attach_timerange_metadata(result)
 
                 if plan["status"] == "blocked":
                     result = {
@@ -1393,7 +1805,15 @@ class ToolRegistry:
                         "suspicious_executables": [],
                         "message": plan["reason"],
                         "query_planner": query_planner if isinstance(query_planner, dict) else {},
+                        "investigation_query_plan": investigation_query_plan if isinstance(investigation_query_plan, dict) else {},
+                        "executed_query_variants": [],
+                        "unexecuted_query_variants": [*executable_variant_metadata, *unexecuted_variant_metadata],
                     }
+                    result["coverage_matrix"] = evaluate_log_result_coverage(
+                        query_plan=query_planner if isinstance(query_planner, dict) else None,
+                        result=result,
+                        executed=False,
+                    )
                     _log_hunt_decision(
                         "log_search_blocked",
                         "Splunk hunt blocked by policy.",
@@ -1405,7 +1825,7 @@ class ToolRegistry:
                             "timerange": plan["timerange"],
                         },
                     )
-                    return result
+                    return _attach_timerange_metadata(result)
 
                 mcp_result = await mcp_client.call_tool(
                     "splunk",
@@ -1418,16 +1838,25 @@ class ToolRegistry:
                     },
                 )
                 payload = _unwrap_mcp_payload(mcp_result)
+                variant_meta = executable_variant_metadata[len(executed_queries)] if len(executed_queries) < len(executable_variant_metadata) else {}
                 executed_queries.append(
                     {
                         "query": plan["query"],
                         "timerange": plan["timerange"],
                         "status": payload.get("status", "error"),
                         "backend": payload.get("backend", "splunk"),
+                        "variant_id": variant_meta.get("variant_id"),
+                        "strategy": variant_meta.get("strategy"),
+                        "target_facets": variant_meta.get("target_facets", []),
                     }
                 )
-                if payload.get("error"):
-                    errors.append(str(payload["error"]))
+                payload_status = str(payload.get("status") or "").strip().lower()
+                if _is_collection_failure(payload):
+                    errors.append(str(payload.get("error") or payload.get("message") or "Splunk collection failed."))
+                    executed_queries[-1]["collection_status"] = "collection_failed"
+                    continue
+                if payload.get("error") or payload_status == "error":
+                    errors.append(str(payload.get("error") or payload.get("message") or "Splunk tool returned error status."))
                     continue
                 combined_rows.extend(payload.get("results", []))
                 suspicious_indicators.extend(payload.get("suspicious_indicators", []))
@@ -1440,13 +1869,13 @@ class ToolRegistry:
                 status = "partial"
                 message = "Splunk hunt partially succeeded; some queries failed."
             elif errors and not combined_rows:
-                status = "error_partial"
-                message = "Splunk hunt queries failed."
+                status = "collection_failed"
+                message = "Splunk hunt collection failed; no evidentiary conclusion can be drawn."
 
             result = {
                 "status": status,
                 "mode": "splunk_live",
-                "timerange": timerange or "7d",
+                "timerange": effective_timerange,
                 "configured_backends": configured_backends,
                 "query_count": query_count,
                 "executed_queries": executed_queries,
@@ -1457,8 +1886,22 @@ class ToolRegistry:
                 "suspicious_files": list(dict.fromkeys(suspicious_files))[:50],
                 "suspicious_executables": list(dict.fromkeys(suspicious_executables))[:50],
                 "message": message,
+                "collection_status": "collection_failed" if status == "collection_failed" else "collected",
+                "source_profile": source_profile,
+                "discovery": discovery_events,
                 "query_planner": query_planner if isinstance(query_planner, dict) else {},
+                "investigation_query_plan": investigation_query_plan if isinstance(investigation_query_plan, dict) else {},
+                "executed_query_variants": executable_variant_metadata[:len(executed_queries)],
+                "unexecuted_query_variants": [
+                    *executable_variant_metadata[len(executed_queries):],
+                    *unexecuted_variant_metadata,
+                ],
             }
+            result["coverage_matrix"] = evaluate_log_result_coverage(
+                query_plan=query_planner if isinstance(query_planner, dict) else None,
+                result=result,
+                executed=True,
+            )
             if errors:
                 result["errors"] = errors
 
@@ -1475,7 +1918,7 @@ class ToolRegistry:
                     "timerange": result["timerange"],
                 },
             )
-            return result
+            return _attach_timerange_metadata(result)
 
         self.register_local_tool(
             name="search_logs",

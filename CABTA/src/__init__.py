@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - Professional SOC Analysis Toolkit
+AI Security Assistant - Professional SOC Analysis Toolkit
 
 A comprehensive security operations toolkit for threat intelligence,
 malware analysis, and incident response.

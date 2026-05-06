@@ -415,7 +415,7 @@ All hooks located in `.claude/hooks/` with consistent patterns - fail-safe exit 
 
 #### 6.3 Preview dashboard (removed)
 
-The legacy `markdown-novel-viewer` skill and plan-dashboard HTTP server were removed when skills were consolidated into `.cursor/skills/`. Use `plans/` markdown, `guide/SKILLS.md`, and the CABTA web UI for progress views where applicable.
+The legacy `markdown-novel-viewer` skill and plan-dashboard HTTP server were removed when skills were consolidated into `.cursor/skills/`. Use `plans/` markdown, `guide/SKILLS.md`, and the AISA web UI for progress views where applicable.
 
 #### 6.4 External Service Integration
 

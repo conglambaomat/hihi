@@ -1,4 +1,4 @@
-# Blue Team Assistant - Dependencies
+# AI Security Assistant - Dependencies
 # Author: Ugur Ates
 
 # Core

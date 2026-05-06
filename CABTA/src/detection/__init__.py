@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Detection Rule Generator"""
+"""AI Security Assistant - Detection Rule Generator"""
 
 from .rule_generator import RuleGenerator
 

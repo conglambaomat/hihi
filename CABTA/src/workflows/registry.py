@@ -1,4 +1,4 @@
-"""Markdown-backed workflow registry for the CABTA orchestration plane."""
+"""Markdown-backed workflow registry for the AISA orchestration plane."""
 
 from __future__ import annotations
 
@@ -308,7 +308,7 @@ class WorkflowRegistry:
             "evidence_contract": evidence_contract,
             "governance_contract": {
                 "contract_version": "governance-contract/v2",
-                "deterministic_verdict_owner": "CABTA deterministic core",
+                "deterministic_verdict_owner": "AISA deterministic core",
                 "decision_logging_supported": True,
                 "feedback_logging_supported": True,
                 "approvals_required": workflow.approval_mode in {"analyst", "analyst-gated"},
@@ -329,7 +329,7 @@ class WorkflowRegistry:
         lines = [
             f"Workflow: {workflow.name}",
             f"Use case: {workflow.use_case or workflow.description}",
-            "Execution policy: gather evidence with CABTA tools, analyzers, and integrations before drawing conclusions.",
+            "Execution policy: gather evidence with AISA tools, analyzers, and integrations before drawing conclusions.",
         ]
         if workflow.default_agent_profile:
             lines.append(f"Specialist profile: {workflow.default_agent_profile}")

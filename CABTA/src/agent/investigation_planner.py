@@ -1,4 +1,4 @@
-"""Investigation planning helpers for agentic CABTA sessions."""
+"""Investigation planning helpers for agentic AISA sessions."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class InvestigationPlan:
     stopping_conditions: List[str]
     escalation_conditions: List[str]
     triage_contracts: List[Dict[str, Any]]
-    deterministic_verdict_owner: str = "CABTA deterministic core"
+    deterministic_verdict_owner: str = "AISA deterministic core"
     generated_at: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -156,8 +156,8 @@ class InvestigationPlanner:
         payload["escalation_conditions"] = [str(item) for item in payload.get("escalation_conditions", []) if str(item).strip()]
         payload["triage_contracts"] = self._normalize_triage_contracts(payload.get("triage_contracts"))
         payload["deterministic_verdict_owner"] = str(
-            payload.get("deterministic_verdict_owner") or "CABTA deterministic core"
-        ).strip() or "CABTA deterministic core"
+            payload.get("deterministic_verdict_owner") or "AISA deterministic core"
+        ).strip() or "AISA deterministic core"
         payload.setdefault("generated_at", _now_iso())
         normalized_payload = {
             "goal": payload["goal"],
@@ -180,6 +180,9 @@ class InvestigationPlanner:
         return InvestigationPlan(**normalized_payload).to_dict()
 
     def _classify_lane(self, goal: str, metadata: Dict[str, Any]) -> str:
+        explicit_lane = self._explicit_soc_lane(metadata)
+        if explicit_lane:
+            return explicit_lane
         lowered = str(goal or "").lower()
         capability_text = " ".join(
             str(item).lower()
@@ -205,6 +208,8 @@ class InvestigationPlanner:
             if str(item or "").strip()
         )
         combined_text = f"{lowered} {capability_text} {observable_hint_text}".strip()
+        if self._looks_like_soc_alert_text(combined_text):
+            return "network_log_hunt"
         if metadata.get("chat_parent_session_id"):
             if any(token in lowered for token in ("pivot", "related", "follow-up", "recap", "explain", "challenge")):
                 return "case_follow_up"
@@ -242,6 +247,27 @@ class InvestigationPlanner:
         if self._IP_RE.search(combined_text) or self._DOMAIN_RE.search(combined_text) or self._HASH_RE.search(combined_text):
             return "ioc"
         return "generic"
+
+    @staticmethod
+    def _explicit_soc_lane(metadata: Dict[str, Any]) -> str:
+        soc_task = metadata.get("soc_task_state") if isinstance(metadata, dict) else {}
+        if not isinstance(soc_task, dict):
+            return ""
+        lane = str(soc_task.get("lane") or "").strip().lower()
+        capabilities = {str(item).strip() for item in soc_task.get("required_capabilities", []) if str(item).strip()}
+        compiled = soc_task.get("compiled_input", {}) if isinstance(soc_task.get("compiled_input"), dict) else {}
+        input_kind = str(compiled.get("input_kind") or "").strip().lower()
+        if lane in {"network_log_hunt", "host_process_log_hunt"} or "log.search" in capabilities:
+            return lane if lane in {"network_log_hunt", "host_process_log_hunt"} else "network_log_hunt"
+        if input_kind == "soc_alert_text":
+            return "host_process_log_hunt" if any(str(item.get("type") or "") == "command_line" for item in soc_task.get("entities", []) if isinstance(item, dict)) else "network_log_hunt"
+        return lane
+
+    @staticmethod
+    def _looks_like_soc_alert_text(text: str) -> bool:
+        lowered = str(text or "").lower()
+        alert_markers = ("alert type", "alert time", "alert details", "rule name", "severity", "investigation start time")
+        return "alert" in lowered and sum(1 for marker in alert_markers if marker in lowered) >= 2
 
     def _metadata_capability_text(self, metadata: Dict[str, Any]) -> str:
         return " ".join(
@@ -832,13 +858,24 @@ class InvestigationPlanner:
         strongest_observable = ", ".join(observable_summary[:3])
         strongest_hypothesis = str(initial_hypotheses[0]).strip() if initial_hypotheses else ""
         signals: List[Dict[str, Any]] = []
+        tool_to_capability = {
+            "search_logs": "log.search",
+            "investigate_ioc": "ioc.enrich",
+            "analyze_email": "email.analyze",
+            "analyze_malware": "file.analyze.static",
+            "extract_iocs": "ioc.extract",
+        }
 
         def _append(tool: str, priority: int, reason: str, signal_type: str) -> None:
             if not str(tool).strip() or not str(reason).strip():
                 return
+            normalized_tool = str(tool).strip()
+            capability_id = tool_to_capability.get(normalized_tool, normalized_tool)
             signals.append(
                 {
-                    "tool": str(tool).strip(),
+                    "tool": normalized_tool,
+                    "capability": capability_id,
+                    "capability_id": capability_id,
                     "priority": int(priority),
                     "reason": str(reason).strip(),
                     "signal_type": str(signal_type).strip(),
@@ -939,7 +976,7 @@ class InvestigationPlanner:
                     "contract_version": "triage-contract/v1",
                     "lane": lane,
                     "title": title,
-                    "deterministic_verdict_owner": "CABTA deterministic core",
+                    "deterministic_verdict_owner": "AISA deterministic core",
                     "observable_scope": list(observable_summary[:3]),
                     "required_fields": required_fields,
                     "analyst_questions": analyst_questions,
@@ -1034,6 +1071,15 @@ class InvestigationPlanner:
             except (TypeError, ValueError):
                 priority = 0
             signal_type = str(item.get("signal_type") or "generic").strip() or "generic"
+            capability = str(item.get("capability") or item.get("capability_id") or "").strip()
+            if not capability:
+                capability = {
+                    "search_logs": "log.search",
+                    "investigate_ioc": "ioc.enrich",
+                    "analyze_email": "email.analyze",
+                    "analyze_malware": "file.analyze.static",
+                    "extract_iocs": "ioc.extract",
+                }.get(tool, tool)
             key = (tool.lower(), reason.lower())
             if key in seen:
                 continue
@@ -1041,6 +1087,8 @@ class InvestigationPlanner:
             normalized.append(
                 {
                     "tool": tool,
+                    "capability": capability,
+                    "capability_id": capability,
                     "priority": priority,
                     "reason": reason,
                     "signal_type": signal_type,
@@ -1069,7 +1117,7 @@ class InvestigationPlanner:
                     "contract_version": str(item.get("contract_version") or "triage-contract/v1").strip() or "triage-contract/v1",
                     "lane": str(item.get("lane") or "generic").strip() or "generic",
                     "title": title,
-                    "deterministic_verdict_owner": str(item.get("deterministic_verdict_owner") or "CABTA deterministic core").strip() or "CABTA deterministic core",
+                    "deterministic_verdict_owner": str(item.get("deterministic_verdict_owner") or "AISA deterministic core").strip() or "AISA deterministic core",
                     "observable_scope": [str(value).strip() for value in item.get("observable_scope", []) if str(value).strip()],
                     "required_fields": [str(value).strip() for value in item.get("required_fields", []) if str(value).strip()],
                     "analyst_questions": [str(value).strip() for value in item.get("analyst_questions", []) if str(value).strip()],

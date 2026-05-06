@@ -350,7 +350,7 @@ class YARARuleGenerator:
         """
         meta = {
             'description': f'Auto-generated rule for {rule_name}',
-            'author': 'Blue Team Assistant',
+            'author': 'AI Security Assistant',
             'date': '2026-01-06'
         }
         

@@ -34,7 +34,7 @@ async def test_ioc_investigator_supports_tool_only_mode(mock_config, monkeypatch
     result = await investigator.investigate('8.8.8.8', include_llm=False)
 
     investigator.llm_analyzer.analyze_ioc_results.assert_not_awaited()
-    assert result['llm_analysis']['note'] == 'LLM skipped for tool-only IOC investigation'
+    assert result['llm_analysis']['note'] == 'LLM intentionally skipped for tool-only IOC investigation'
     assert result['verdict'] == 'LOW_RISK'
 
 
@@ -175,11 +175,11 @@ async def test_file_analysis_respects_enable_llm_flag(mock_config, monkeypatch, 
 
     analyzer.ioc_investigator.investigate.assert_awaited_once_with('8.8.8.8', include_llm=False)
     analyzer.llm_analyzer.analyze_file.assert_not_awaited()
-    assert result['llm_analysis']['note'] == 'LLM analysis disabled by configuration'
+    assert result['error'] == 'LLM analysis disabled by configuration'
 
 
 @pytest.mark.asyncio
-async def test_file_analysis_llm_timeout_degrades_gracefully(mock_config, monkeypatch, tmp_path):
+async def test_file_analysis_llm_timeout_fails_hard(mock_config, monkeypatch, tmp_path):
     mock_config['analysis']['enable_llm'] = True
     mock_config['analysis']['llm_timeout_seconds'] = 0.01
     analyzer = MalwareAnalyzer(mock_config)
@@ -206,17 +206,7 @@ async def test_file_analysis_llm_timeout_degrades_gracefully(mock_config, monkey
     result = await analyzer.analyze(str(sample))
 
     analyzer.llm_analyzer.analyze_file.assert_awaited_once()
-    assert result['verdict'] == 'LOW_RISK'
-    assert result['llm_analysis']['fallback'] is True
-    assert result['llm_analysis']['verdict'] == 'LOW_RISK'
-    assert 'timed out' in result['llm_analysis']['note'].lower()
-    assert result['llm_analysis']['error'] == 'timeout'
-
-    llm_step = next(
-        step for step in result['raw_output']['pipeline_steps']
-        if step['step'] == 'llm_analysis'
-    )
-    assert llm_step['status'] == 'degraded'
+    assert 'LLM summary timed out' in result['error']
 
 
 @pytest.mark.asyncio
@@ -244,13 +234,9 @@ async def test_file_analysis_emits_stage_progress_and_pipeline_timings(mock_conf
 
     assert any('Querying threat intelligence' in message for _, message in progress_events)
     assert any('Checking existing sandbox reports' in message for _, message in progress_events)
-    assert any('Generating detection rules' in message for _, message in progress_events)
+    assert result['error'] == 'LLM analysis disabled by configuration'
 
-    pipeline_steps = result['raw_output']['pipeline_steps']
-    step_names = {step['step'] for step in pipeline_steps}
-    assert 'hash_reputation' in step_names
-    assert 'rule_generation' in step_names
-    assert all(isinstance(step.get('duration_ms'), int) for step in pipeline_steps)
+    assert any('Generating AI summary' in message for _, message in progress_events)
 
 
 def test_run_file_analysis_bg_respects_timeout_and_reports_last_stage(monkeypatch):

@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - Shared test fixtures.
+AI Security Assistant - Shared test fixtures.
 Author: Ugur Ates
 """
 

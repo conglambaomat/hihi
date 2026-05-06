@@ -1,5 +1,5 @@
 /**
- * Blue Team Assistant - Analysis Page Logic
+ * AI Security Assistant - Analysis Page Logic
  * Author: Ugur Ates
  *
  * Handles IOC form submission, file upload with drag-and-drop,

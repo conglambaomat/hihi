@@ -37,7 +37,7 @@ API_KEY_CATALOG = [
     {'key': 'triage', 'label': 'Triage', 'placeholder': 'API key'},
     {'key': 'threatzone', 'label': 'ThreatZone', 'placeholder': 'API key'},
     {'key': 'joesandbox', 'label': 'Joe Sandbox', 'placeholder': 'API key'},
-    {'key': 'openrouter', 'label': 'OpenRouter', 'placeholder': 'API key'},
+    {'key': 'router', 'label': 'LLM Router', 'placeholder': 'API key'},
     {'key': 'abusech', 'label': 'abuse.ch / ThreatFox', 'placeholder': 'Auth-Key'},
 ]
 
@@ -59,8 +59,8 @@ def _mask_secret_value(value):
 
 def _provider_label(provider: str) -> str:
     normalized = str(provider or '').strip().lower()
-    if normalized == 'openrouter':
-        return 'OpenRouter'
+    if normalized == 'router':
+        return 'LLM Router'
     if not normalized:
         return 'LLM'
     return normalized.title()
@@ -68,12 +68,18 @@ def _provider_label(provider: str) -> str:
 
 def _runtime_llm_config(request: Request):
     """Return the active LLM config from app state."""
-    from src.utils.config import enforce_openrouter_only
-
-    config = enforce_openrouter_only(dict(getattr(request.app.state, 'config', {}) or {}))
+    config = dict(getattr(request.app.state, 'config', {}) or {})
     llm_cfg = config.get('llm', {}) if isinstance(config, dict) else {}
     api_keys = config.get('api_keys', {}) if isinstance(config, dict) else {}
-    provider = 'openrouter'
+    provider = str(llm_cfg.get('provider') or 'router').strip().lower()
+    if provider in {'groq', 'gemini', 'nvidia'}:
+        provider = 'openrouter'
+        llm_cfg = {
+            **llm_cfg,
+            'provider': 'openrouter',
+            'openrouter_endpoint': llm_cfg.get('openrouter_endpoint') or 'https://openrouter.ai/api/v1',
+            'openrouter_model': llm_cfg.get('openrouter_model') or 'arcee-ai/trinity-large-preview:free',
+        }
     return llm_cfg, api_keys, provider
 
 
@@ -130,38 +136,38 @@ def _apply_runtime_llm_signal(result: dict, runtime_signal: dict | None) -> dict
     return merged
 
 
-async def _build_llm_health_result(request: Request, endpoint: str = 'http://localhost:11434'):
-    """Return provider-aware LLM health diagnostics."""
+async def _build_llm_health_result(request: Request):
+    """Return canonical router health diagnostics."""
     llm_cfg, api_keys, provider = _runtime_llm_config(request)
     runtime_signal = _latest_runtime_llm_signal(request, provider)
     result = {
         'provider': provider,
-        'status': 'degraded',
+        'status': 'error',
         'available': False,
         'configured_model': '',
         'endpoint': '',
-        'uses_local_runtime': provider == 'ollama',
         'message': None,
         'error': None,
-        # Legacy compatibility fields used by older frontend code.
-        'ollama_running': None,
         'model_available': False,
         'available_models': [],
     }
 
-    has_key = is_valid_api_key(api_keys.get('openrouter')) or is_valid_api_key(llm_cfg.get('api_key'))
+    key_name = provider if provider != 'router' else 'router'
+    has_key = is_valid_api_key(api_keys.get(key_name)) or is_valid_api_key(api_keys.get('router')) or is_valid_api_key(llm_cfg.get('api_key'))
+    configured_model = llm_cfg.get(f'{provider}_model') or llm_cfg.get('model') or ('arcee-ai/trinity-large-preview:free' if provider == 'openrouter' else 'cx/gpt-5.4')
+    endpoint = llm_cfg.get(f'{provider}_endpoint') or llm_cfg.get('base_url') or ('https://openrouter.ai/api/v1' if provider == 'openrouter' else 'http://localhost:20128/v1')
     result.update({
-        'configured_model': llm_cfg.get('openrouter_model', llm_cfg.get('model', 'arcee-ai/trinity-large-preview:free')),
-        'endpoint': str(llm_cfg.get('openrouter_endpoint', llm_cfg.get('base_url', 'https://openrouter.ai/api/v1'))).rstrip('/'),
+        'configured_model': configured_model,
+        'endpoint': str(endpoint).rstrip('/'),
         'available': has_key,
         'model_available': has_key,
         'status': 'configured' if has_key else 'degraded',
         'message': (
-            'OpenRouter is configured for CABTA agent and analyst-assist workflows.'
+            'AISA is configured to use the canonical LLM router runtime.'
             if has_key else
-            'OpenRouter is selected as the LLM provider, but the API key is missing.'
+            'AISA is configured for the canonical LLM router runtime, but the router API key is missing.'
         ),
-        'error': None if has_key else 'OpenRouter API key not configured.',
+        'error': None if has_key else 'Router API key not configured.',
     })
     return _apply_runtime_llm_signal(result, runtime_signal)
 
@@ -210,7 +216,7 @@ async def _build_health_payload(request: Request):
         issues.extend([f"Critical component missing: {name}" for name in critical_missing])
 
     if llm_enabled and not llm_health_result.get('available'):
-        issues.append(llm_health_result.get('error') or llm_health_result.get('message') or 'LLM provider is not ready.')
+        issues.append(llm_health_result.get('error') or llm_health_result.get('message') or 'LLM provider is required and not ready.')
 
     sandbox_meta = feature_status.get('sandbox', {})
     if sandbox_enabled and sandbox_meta.get('status') == 'degraded':
@@ -258,7 +264,7 @@ async def health(request: Request):
             request,
             health=payload,
             page_title='System Health',
-            page_subtitle='Runtime readiness for CABTA web, LLM, sandbox, and core services',
+            page_subtitle='Runtime readiness for AISA web, LLM, sandbox, and core services',
         )
         return templates.TemplateResponse(request, 'config_health.html', context)
 
@@ -272,25 +278,30 @@ async def info(request: Request):
     capability_catalog = getattr(request.app.state, 'capability_catalog', None)
     capability_summary = capability_catalog.build_summary(request.app) if capability_catalog else {}
     return {
-        'app': 'CABTA',
+        'app': 'AISA',
         'version': '2.0.0',
         'python': sys.version,
         'platform': platform.platform(),
         'mode': provider.app_mode(),
         'demo_enabled': provider.is_demo_mode(),
-        'verdict_authority_owner': capability_summary.get('verdict_authority_owner', 'cabta_scoring'),
+        'verdict_authority_owner': capability_summary.get('verdict_authority_owner', 'aisa_scoring'),
         'agent_profile_count': capability_summary.get('agent_profile_count', 0),
         'workflow_count': capability_summary.get('workflow_count', 0),
     }
 
 
 @router.get('/llm-health')
-async def llm_health(
-    request: Request,
-    endpoint: str = Query(default='http://localhost:11434'),
-):
-    """Provider-aware LLM health endpoint for the web UI."""
-    return await _build_llm_health_result(request, endpoint=endpoint)
+async def llm_health(request: Request):
+    """Router-only LLM health endpoint for the web UI."""
+    return await _build_llm_health_result(request)
+
+
+@router.get('/ollama-health')
+async def ollama_health(request: Request):
+    """Backward-compatible LLM health endpoint used by legacy UI/tests."""
+    result = await _build_llm_health_result(request)
+    result.setdefault('ollama_running', None)
+    return result
 
 
 @router.get('/tools')
@@ -407,7 +418,7 @@ async def save_settings(request: Request):
 
     try:
         import yaml
-        from src.utils.config import enforce_openrouter_only, merge_with_defaults
+        from src.utils.config import enforce_router_only, merge_with_defaults
         from src.utils.config_history import snapshot_config
         from src.web.runtime_refresh import (
             apply_runtime_config_bridges,
@@ -421,7 +432,7 @@ async def save_settings(request: Request):
             except Exception as history_exc:
                 logger.warning("[CONFIG] Pre-save config snapshot failed: %s", history_exc)
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        persisted = enforce_openrouter_only(existing)
+        persisted = enforce_router_only(existing)
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(persisted, f, default_flow_style=False, allow_unicode=True)
         post_save_snapshot = None
@@ -453,33 +464,3 @@ async def save_settings(request: Request):
         return {'error': str(exc)}
 
 
-@router.get('/ollama-models')
-async def list_ollama_models(
-    endpoint: str = Query(default='http://localhost:11434'),
-):
-    """Proxy endpoint to list locally available Ollama models.
-
-    Calls Ollama ``/api/tags`` and returns the model list so the frontend
-    settings page can offer a dropdown selector without CORS issues.
-    """
-    base = endpoint.rstrip('/')
-    try:
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f'{base}/api/tags') as resp:
-                if resp.status != 200:
-                    return {'models': [], 'error': f'Ollama returned HTTP {resp.status}'}
-                data = await resp.json()
-                return {'models': data.get('models', [])}
-    except Exception as exc:
-        logger.warning("[CONFIG] Failed to list Ollama models at %s: %s", base, exc)
-        return {'models': [], 'error': str(exc)}
-
-
-@router.get('/ollama-health')
-async def ollama_health(
-    request: Request,
-    endpoint: str = Query(default='http://localhost:11434'),
-):
-    """Legacy alias for provider-aware LLM health diagnostics."""
-    return await _build_llm_health_result(request, endpoint=endpoint)

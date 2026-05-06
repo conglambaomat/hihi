@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 _QUERY_COMMENT_PREFIXES = ("#", "//")
@@ -18,11 +19,44 @@ _DANGEROUS_SPL_TOKENS = (
 )
 
 
+def _canonical_iso_time(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    candidate = raw.replace("t", "T").replace("z", "Z")
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return candidate
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+    return parsed.isoformat(timespec="seconds")
+
+
 def parse_timerange(timerange: str | None, default: str = "7d") -> Tuple[str, str, int, str]:
     """Return Splunk-compatible earliest/latest plus a normalized timerange."""
-    text = str(timerange or default).strip().lower()
+    raw_text = str(timerange or default).strip()
+    text = raw_text.lower()
     if not text:
         text = default
+        raw_text = default
+
+    absolute_match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}[tT]\d{2}:\d{2}:\d{2}(?:[zZ]|[+-]\d{2}:?\d{2})?)\s*(?:\.\.|/)\s*(\d{4}-\d{2}-\d{2}[tT]\d{2}:\d{2}:\d{2}(?:[zZ]|[+-]\d{2}:?\d{2})?)",
+        raw_text,
+    )
+    if absolute_match:
+        earliest = _canonical_iso_time(absolute_match.group(1))
+        latest = _canonical_iso_time(absolute_match.group(2))
+        try:
+            start = datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+            hours = max(1, int((end - start).total_seconds() // 3600) or 1)
+        except ValueError:
+            hours = 1
+        normalized = f"{earliest}..{latest}"
+        return earliest, latest, hours, normalized
 
     match = re.fullmatch(r"-?(\d+)\s*([hdw])", text)
     if match:
@@ -81,6 +115,24 @@ def normalize_query_bundle(raw: Any) -> Dict[str, List[str]]:
     return {"generic": [query]} if query else {}
 
 
+def is_bounded_entity_specific_spl(query: str, *, max_results: int = 200) -> bool:
+    """Return True for SPL constrained by concrete entities and row limits."""
+    q = normalize_query_text(query)
+    lowered = f" {q.lower()} "
+    if not q or any(token in lowered for token in _DANGEROUS_SPL_TOKENS):
+        return False
+    limits = [int(item) for item in re.findall(r"\|\s*(?:head|limit)\s+(\d+)", lowered)]
+    if not limits or min(limits) > max_results:
+        return False
+    concrete_field = re.search(
+        r"\b(?:computer|computername|host|user|processguid|parentprocessguid|image|parentimage|sha256|sha1|md5|hashes|commandline|command_line|process_name)\s*=\s*\"?[^\"*()|]{3,}\"?",
+        lowered,
+    )
+    guid_or_hash_literal = re.search(r"\{[0-9a-f-]{20,}\}|\b[a-f0-9]{32,64}\b", lowered)
+    quoted_path_or_exe = re.search(r"\"[^\"]+\.(?:exe|dll|ps1|bat|cmd)\"", lowered)
+    return bool(concrete_field or guid_or_hash_literal or quoted_path_or_exe)
+
+
 def evaluate_hunt_request(
     query_text: str,
     *,
@@ -137,7 +189,9 @@ def evaluate_hunt_request(
         }
 
     broad_query = "index=*" in lowered or "| tstats" in lowered or " datamodel=" in lowered
-    raw_query = query_origin == "raw" or query.lower() == str(query_text or "").strip().lower()
+    raw_query = query_origin == "raw" or (query_origin not in {"generated", "llm_suggestion"} and query.lower() == str(query_text or "").strip().lower())
+    if broad_query and raw_query and is_bounded_entity_specific_spl(query, max_results=max_results):
+        raw_query = False
     if broad_query and raw_query:
         return {
             "status": "approval_required",

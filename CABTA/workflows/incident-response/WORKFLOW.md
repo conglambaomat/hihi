@@ -1,7 +1,7 @@
 ---
 id: incident-response
 name: Incident Response
-description: "Coordinate triage, investigation, containment planning, and reporting while CABTA scoring keeps verdict authority."
+description: "Coordinate triage, investigation, containment planning, and reporting while AISA scoring keeps verdict authority."
 execution-backend: playbook
 playbook-id: incident_response
 default-agent-profile: responder
@@ -42,18 +42,18 @@ trigger-examples:
 
 # Incident Response
 
-This workflow keeps CABTA as the evidence and verdict core while using an
+This workflow keeps AISA as the evidence and verdict core while using an
 orchestration layer to structure the response phases.
 
 ## Operating Model
 
 - Playbook-backed execution for deterministic evidence gathering.
 - Analyst approval remains mandatory for high-impact containment actions.
-- Final verdict stays tied to CABTA scoring and correlated findings.
+- Final verdict stays tied to AISA scoring and correlated findings.
 
 ## Phases
 
 1. Triage the incoming signal and extract the primary observables.
-2. Gather corroborating evidence with CABTA analyzers and threat-intel tools.
+2. Gather corroborating evidence with AISA analyzers and threat-intel tools.
 3. Prepare response or containment actions and pause where approval is required.
 4. Produce a case-ready summary and follow-up plan.

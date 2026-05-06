@@ -170,6 +170,10 @@ def test_think_passes_prompt_metadata_into_chat_with_tools():
         },
         "model_only_chat": False,
         "uses_native_tools": True,
+        "context_pack_summary": None,
+        "context_ledger": None,
+        "context_ledger_id": None,
+        "context_budget_summary": None,
         "planned_next_step_summary": "",
     }
 
@@ -204,6 +208,10 @@ def test_response_builder_metadata_helper_includes_planned_step_summary():
         },
         "model_only_chat": False,
         "uses_native_tools": True,
+        "context_pack_summary": None,
+        "context_ledger": None,
+        "context_ledger_id": None,
+        "context_budget_summary": None,
         "planned_next_step_summary": "Next planned step: search_logs. Source: telemetry_gap_log_pivot.",
     }
 

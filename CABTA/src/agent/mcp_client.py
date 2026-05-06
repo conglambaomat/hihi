@@ -325,7 +325,7 @@ class MCPClientManager:
 
     @staticmethod
     def _resolve_stdio_command(command: str) -> str:
-        """Resolve stdio commands relative to the CABTA project root when needed."""
+        """Resolve stdio commands relative to the AISA project root when needed."""
         raw = str(command or "").strip()
         if not raw:
             return raw
@@ -334,7 +334,7 @@ class MCPClientManager:
         normalized = expanded
 
         # Windows-style relative interpreter paths frequently appear in config
-        # files even when CABTA is running on Linux/WSL. Normalize those so the
+        # files even when AISA is running on Linux/WSL. Normalize those so the
         # same config can boot local MCP servers in both environments.
         if os.sep == "/" and "\\" in normalized:
             normalized = normalized.replace("\\", "/")
@@ -352,7 +352,7 @@ class MCPClientManager:
             project_candidate = (PROJECT_ROOT / candidate).resolve()
             if project_candidate.parts[: len((PROJECT_ROOT / ".venv").parts)] == (PROJECT_ROOT / ".venv").parts:
                 # Prefer the currently running interpreter for project-local venv
-                # commands so MCP servers inherit the same dependencies as CABTA.
+                # commands so MCP servers inherit the same dependencies as AISA.
                 return sys.executable
             if project_candidate.exists():
                 return str(project_candidate)

@@ -4,14 +4,14 @@ This file gives agent-facing guidance for working on CABTA.
 
 ## Project Identity
 
-- Canonical project name: `CABTA`
-- Expanded name: `Cyan Agent Blue Team Assistant`
-- Treat `Blue Team Assistant` and `mcp-for-soc` as legacy names still present in code/docs.
+- Canonical project name: `AISA`
+- Expanded name: `AI Security Assistant`
+- Treat `AI Security Assistant` and `mcp-for-soc` as legacy names still present in code/docs.
 - Do not introduce new product names.
 
 ## Project Summary
 
-CABTA is a local-first SOC platform for:
+AISA is a local-first SOC platform for:
 
 - IOC investigation
 - malware and file analysis
@@ -28,7 +28,7 @@ The system combines deterministic scoring, analyst-facing evidence, optional loc
 
 Minimum invariants (also in `docs/ONBOARDING.md`):
 
-- **Verdicts and scores:** deterministic CABTA scoring and evidence paths are authoritative; LLMs do not replace them as the source of truth for final verdict output.
+- **Verdicts and scores:** deterministic AISA scoring and evidence paths are authoritative; LLMs do not replace them as the source of truth for final verdict output.
 - **Sensitive / integration work:** read [`docs/feature-truth-matrix.md`](docs/feature-truth-matrix.md) before claiming runtime or wiring behavior.
 
 Architecture detail lives in [`docs/system-design.md`](docs/system-design.md) — do not duplicate it in chat; link it.
@@ -38,7 +38,7 @@ Treat screenshots as visual reference material, not architectural truth.
 
 ## Core Development Rules
 
-### 1. Preserve CABTA's Security Model
+### 1. Preserve AISA's Security Model
 
 - Keep CABTA local-first by default.
 - Do not make cloud access mandatory for core workflows.
@@ -53,7 +53,7 @@ Treat screenshots as visual reference material, not architectural truth.
 
 ### 3. Keep Names Consistent
 
-- New docs and user-facing text should prefer `CABTA`.
+- New docs and user-facing text should prefer `AISA`.
 - If old names are preserved for backward compatibility, note them explicitly.
 - Avoid mixing multiple product names in the same new feature unless compatibility requires it.
 
@@ -86,7 +86,7 @@ Treat screenshots as visual reference material, not architectural truth.
 4. Run focused tests per phase
 5. Sync docs before closing the task
 
-## CABTA Architecture Map
+## AISA Architecture Map
 
 High-signal entrypoints:
 

@@ -1,4 +1,4 @@
-"""CABTA web job normalization helpers."""
+"""AISA web job normalization helpers."""
 
 from __future__ import annotations
 

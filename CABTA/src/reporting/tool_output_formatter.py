@@ -43,7 +43,7 @@ class ToolOutputFormatter:
         
         # Header
         lines.append("=" * 80)
-        lines.append("FILE ANALYSIS REPORT - Blue Team Assistant")
+        lines.append("FILE ANALYSIS REPORT - AI Security Assistant")
         lines.append("=" * 80)
         lines.append(f"File: {result.get('file_path', 'Unknown')}")
         lines.append(f"Type: {result.get('file_type', 'Unknown')}")
@@ -306,7 +306,7 @@ class ToolOutputFormatter:
         lines = []
         
         lines.append("=" * 80)
-        lines.append("EMAIL ANALYSIS REPORT - Blue Team Assistant")
+        lines.append("EMAIL ANALYSIS REPORT - AI Security Assistant")
         lines.append("=" * 80)
         
         email_data = result.get('email_data', {})

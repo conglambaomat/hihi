@@ -37,14 +37,14 @@ For those tasks, read:
 
 ## Naming Rules
 
-- `CABTA` is the canonical product name.
-- `Blue Team Assistant`, `mcp-for-soc`, `Claude Code Boilerplate`, and `claudekit-engineer` are legacy references and should not be reintroduced into new CABTA-facing work.
+- `AISA` is the canonical product name.
+- `AI Security Assistant`, `mcp-for-soc`, `Claude Code Boilerplate`, and `claudekit-engineer` are legacy references and should not be reintroduced into new CABTA-facing work.
 - Prefer the nearest local instructions when a deeper `AGENTS.md` or project doc exists.
 
 ## Root Notes
 
-- The root `README.md` is a workspace index. It does not define CABTA's architecture.
-- Root `docs/` mainly describe shared agent tooling and historical scaffolding. They are not CABTA's source of truth.
+- The root `README.md` is a workspace index. It does not define AISA's architecture.
+- Root `docs/` mainly describe shared agent tooling and historical scaffolding. They are not AISA's source of truth.
 - When touching root tooling, follow `./.claude/rules/development-rules.md`.
 
 ## GitNexus (optional)

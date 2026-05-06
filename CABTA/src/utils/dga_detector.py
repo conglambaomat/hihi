@@ -1,5 +1,5 @@
 """
-Blue Team Assistant - DGA (Domain Generation Algorithm) Detector
+AI Security Assistant - DGA (Domain Generation Algorithm) Detector
 
 Detects algorithmically generated domain names using multiple statistical
 heuristics: Shannon entropy, consonant-to-vowel ratio, bigram frequency,

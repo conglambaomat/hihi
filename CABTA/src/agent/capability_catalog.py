@@ -1,4 +1,4 @@
-"""Capability catalog for the CABTA orchestration and analysis surface."""
+"""Capability catalog for the AISA orchestration and analysis surface."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from typing import Any, Dict, List
 
 
 VERDICT_AUTHORITY = {
-    "owner": "cabta_scoring",
-    "display_name": "CABTA Scoring and Evidence Path",
+    "owner": "aisa_scoring",
+    "display_name": "AISA Scoring and Evidence Path",
     "description": (
         "Deterministic scoring, evidence correlation, and analyst-visible findings "
         "own the final verdict. Agent roles, workflows, MCP integrations, and LLMs "

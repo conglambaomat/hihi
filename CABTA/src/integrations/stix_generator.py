@@ -10,7 +10,7 @@ Features:
 - TLP marking definitions (RED, AMBER, GREEN, CLEAR)
 - Create STIX bundles from full analysis results
 - JSON export for sharing with STIX-compatible platforms (TAXII, OpenCTI, MISP)
-- Identity object for CABTA attribution
+- Identity object for AISA attribution
 
 Reference: https://docs.oasis-open.org/cti/stix/v2.1/os/stix-v2.1-os.html
 """
@@ -31,7 +31,7 @@ class STIXGenerator:
 
     Usage::
 
-        gen = STIXGenerator(organization_name="CABTA")
+        gen = STIXGenerator(organization_name="AISA")
         indicator = gen.ioc_to_indicator('ipv4-addr', '192.168.1.1',
                                          name='Suspicious IP', tlp='AMBER')
         bundle = gen.analysis_to_bundle(analysis_result)
@@ -84,7 +84,7 @@ class STIXGenerator:
         'domain-name': re.compile(r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'),
     }
 
-    def __init__(self, organization_name: str = "CABTA"):
+    def __init__(self, organization_name: str = "AISA"):
         self.organization_name = organization_name
         self._identity_id = f'identity--{uuid.uuid4()}'
 
@@ -102,7 +102,7 @@ class STIXGenerator:
             'created': now,
             'modified': now,
             'name': self.organization_name,
-            'description': f'{self.organization_name} - Cyber Blue Team Assistant',
+            'description': f'{self.organization_name} - Cyber AI Security Assistant',
             'identity_class': 'organization',
         }
 

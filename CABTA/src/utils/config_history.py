@@ -1,5 +1,5 @@
 """
-Local git-backed history for sensitive CABTA configuration.
+Local git-backed history for sensitive AISA configuration.
 
 This keeps ``config.yaml`` restorable without pushing secrets into the main
 repository or remote origins.
@@ -46,13 +46,13 @@ def ensure_history_repo(config_file: str | Path) -> Path:
 
     if not (repo_dir / ".git").exists():
         _run_git(repo_dir, "init", "-q")
-        _run_git(repo_dir, "config", "user.name", "CABTA Local Config History")
-        _run_git(repo_dir, "config", "user.email", "local@cabta.invalid")
+        _run_git(repo_dir, "config", "user.name", "AISA Local Config History")
+        _run_git(repo_dir, "config", "user.email", "local@aisa.invalid")
 
         readme = repo_dir / "README.md"
         if not readme.exists():
             readme.write_text(
-                "# CABTA Local Config History\n\n"
+                "# AISA Local Config History\n\n"
                 "This nested git repository stores local-only snapshots of `config.yaml`.\n"
                 "Do not publish or push it to public remotes.\n",
                 encoding="utf-8",
@@ -166,7 +166,7 @@ def _default_config_path() -> Path:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI entrypoint for local config history operations."""
-    parser = argparse.ArgumentParser(description="Manage local git-backed history for CABTA config.yaml")
+    parser = argparse.ArgumentParser(description="Manage local git-backed history for AISA config.yaml")
     parser.add_argument(
         "--config",
         default=str(_default_config_path()),

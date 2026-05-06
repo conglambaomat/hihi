@@ -1,7 +1,7 @@
 """
 Investigation Memory - Persistent memory for past IOC results and investigation patterns.
 
-Uses a dedicated SQLite database at ``~/.cabta-runtime/cache/agent_memory.db``
+Uses a dedicated SQLite database at ``~/.aisa-runtime/cache/agent_memory.db``
 with threading.Lock for safe concurrent access (follows the AgentStore pattern).
 
 Tables:

@@ -68,6 +68,7 @@ class EntityResolver:
 
     _IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
     _DOMAIN_RE = re.compile(r"\b[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}\b")
+    _EXECUTABLE_EXTENSIONS = {"exe", "dll", "sys", "ps1", "bat", "cmd", "vbs", "js", "msi", "scr"}
     _EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[A-Za-z]{2,}\b")
     _HASH_RE = re.compile(r"\b[a-fA-F0-9]{32,64}\b")
     _CANONICAL_ENTITY_TYPES = (
@@ -339,7 +340,7 @@ class EntityResolver:
             return [{"type": "asset", "value": text, "label": text, "source_path": source_path, "confidence": 0.8, "attributes": {"domain_role": "managed_asset"}}]
         if any(token in lowered for token in ("session", "logon_id", "login_id", "sid")):
             return [{"type": "session", "value": text, "label": text, "source_path": source_path, "confidence": 0.88, "attributes": {"domain_role": "auth_session"}}]
-        if any(token in lowered for token in ("process", "image", "cmdline", "command_line")):
+        if any(token in lowered for token in ("process", "image", "cmdline", "command_line", "commandline", "parentimage")):
             return [{"type": "process", "value": text, "label": text, "source_path": source_path, "confidence": 0.72, "attributes": {"domain_role": "host_process"}}]
         if any(token in lowered for token in ("file", "file_name", "filename", "attachment", "path")) and not self._is_ip(text):
             return [{"type": "file", "value": text, "label": text, "source_path": source_path, "confidence": 0.74}]
@@ -351,15 +352,27 @@ class EntityResolver:
             return [{"type": "email", "value": text.lower(), "label": text.lower(), "source_path": source_path, "confidence": 0.88}]
         if self._is_ip(text):
             return [{"type": "ip", "value": text, "label": text, "source_path": source_path, "confidence": 0.9}]
-        if self._DOMAIN_RE.fullmatch(text.lower()):
+        if self._looks_like_executable_name(text):
+            return [{"type": "process", "value": text, "label": text, "source_path": source_path, "confidence": 0.76, "attributes": {"domain_role": "host_process"}}]
+        if self._DOMAIN_RE.fullmatch(text.lower()) and not self._looks_like_executable_name(text):
             return [{"type": "domain", "value": text.lower(), "label": text.lower(), "source_path": source_path, "confidence": 0.8}]
         if self._HASH_RE.fullmatch(text):
             return [{"type": "hash", "value": text.lower(), "label": text.lower(), "source_path": source_path, "confidence": 0.85}]
 
         found.extend({"type": "ip", "value": item, "label": item, "source_path": source_path, "confidence": 0.74} for item in self._IP_RE.findall(text) if self._is_ip(item))
-        found.extend({"type": "domain", "value": item.lower(), "label": item.lower(), "source_path": source_path, "confidence": 0.7} for item in self._DOMAIN_RE.findall(text))
+        found.extend({"type": "domain", "value": item.lower(), "label": item.lower(), "source_path": source_path, "confidence": 0.7} for item in self._DOMAIN_RE.findall(text) if not self._looks_like_executable_name(item))
         found.extend({"type": "email", "value": item.lower(), "label": item.lower(), "source_path": source_path, "confidence": 0.72} for item in self._EMAIL_RE.findall(text))
         return found
+
+    @classmethod
+    def _looks_like_executable_name(cls, value: str) -> bool:
+        text = str(value or "").strip().lower().strip('"\'')
+        if text.startswith("fields."):
+            return True
+        if not text or "." not in text:
+            return False
+        suffix = text.rsplit(".", 1)[-1]
+        return suffix in cls._EXECUTABLE_EXTENSIONS
 
     def _canonicalize(self, entity_type: str, raw_value: str, attributes: Any) -> tuple[str, Dict[str, Any]]:
         attrs = dict(attributes or {})

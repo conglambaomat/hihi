@@ -2,7 +2,7 @@ Subject: Payroll verification follow-up
 Source: account-securecheck.com
 
 This staged artifact is intentionally non-executable demo content used to
-exercise CABTA forensic and YARA-backed playbooks.
+exercise AISA forensic and YARA-backed playbooks.
 
 Observed strings:
 - https://account-securecheck.com/review

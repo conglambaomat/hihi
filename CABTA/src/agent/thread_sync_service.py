@@ -211,6 +211,8 @@ class ThreadSyncService:
             else {}
         )
         evidence_quality_summary = getattr(state, "evidence_quality_summary", {}) or {}
+        context_pack_summary = getattr(state, "context_pack_summary_latest", {}) or {}
+        context_ledger_latest = getattr(state, "context_ledger_latest", {}) or {}
         thread_context = {
             "session_id": getattr(state, "session_id", None),
             "thread_id": getattr(state, "thread_id", None),
@@ -239,6 +241,14 @@ class ThreadSyncService:
             "unresolved_questions": unresolved_questions,
             "evidence_quality_summary": evidence_quality_summary,
             "fact_family_schemas": fact_family_schemas,
+            "context_pack_summary_latest": context_pack_summary,
+            "context_ledger_summary_latest": {
+                "ledger_id": context_ledger_latest.get("ledger_id") if isinstance(context_ledger_latest, dict) else None,
+                "objective": context_ledger_latest.get("objective") if isinstance(context_ledger_latest, dict) else None,
+                "included_count": len(context_ledger_latest.get("included", []) or []) if isinstance(context_ledger_latest, dict) else 0,
+                "excluded_count": len(context_ledger_latest.get("excluded", []) or []) if isinstance(context_ledger_latest, dict) else 0,
+                "authoritative_for_verdict": False,
+            },
             "snapshot_metrics": {
                 "active_observation_count": len(active_observations),
                 "accepted_fact_count": len(accepted_facts),
@@ -287,6 +297,7 @@ class ThreadSyncService:
                 "reasoning_state": reasoning_state,
                 "entity_state": entity_state,
                 "evidence_state": evidence_state,
+                "context_pack_summary_latest": context_pack_summary,
             },
             "accepted_memory": {
                 "accepted_facts": accepted_facts,

@@ -1,5 +1,5 @@
 """
-Runtime refresh helpers for CABTA web settings and MCP-aware tooling.
+Runtime refresh helpers for AISA web settings and MCP-aware tooling.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ def apply_runtime_config_bridges(config: Dict[str, Any], *, normalize_llm: bool 
     This keeps user-facing configuration simple while ensuring built-in MCP
     servers receive the credentials they need from the main API key store.
     """
-    from src.utils.config import enforce_openrouter_only
+    from src.utils.config import enforce_router_only
 
     raw_config = deepcopy(config or {})
-    bridged = enforce_openrouter_only(raw_config) if normalize_llm else raw_config
+    bridged = enforce_router_only(raw_config) if normalize_llm else raw_config
     api_keys = bridged.setdefault("api_keys", {})
     mcp_servers = bridged.get("mcp_servers", [])
 

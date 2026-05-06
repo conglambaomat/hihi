@@ -175,7 +175,7 @@ class MITRENavigatorExporter:
         if not layer_name:
             file_name = analysis_result.get('file_info', {}).get('file_name', 'Unknown')
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            layer_name = f"Blue Team Assistant Analysis: {file_name} ({timestamp})"
+            layer_name = f"AI Security Assistant Analysis: {file_name} ({timestamp})"
         
         # Create description
         if not description:
@@ -189,7 +189,7 @@ class MITRENavigatorExporter:
             description=description,
             techniques=[asdict(t) for t in techniques],
             metadata=[
-                {"name": "generated_by", "value": "Blue Team Assistant"},
+                {"name": "generated_by", "value": "AI Security Assistant"},
                 {"name": "analysis_date", "value": datetime.now().isoformat()},
                 {"name": "verdict", "value": analysis_result.get('verdict', 'Unknown')},
                 {"name": "score", "value": str(analysis_result.get('composite_score', 0))}

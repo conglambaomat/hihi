@@ -6,7 +6,7 @@ Generates intelligent, context-aware detection rules using the configured LLM pr
 
 import json
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ class LLMRuleGenerator:
     - YARA (File signatures)
     
     Uses the shared LLM analyzer provider abstraction so rule generation
-    follows the same provider config as the rest of CABTA.
+    follows the same provider config as the rest of AISA.
     """
     
     def __init__(self, llm_analyzer):
@@ -34,11 +34,14 @@ class LLMRuleGenerator:
         self.llm = llm_analyzer
 
     async def _call_llm(self, prompt: str):
-        """Call the configured LLM provider, preserving older fallback wiring."""
+        """Call the configured canonical router-backed LLM transport."""
         provider_call = getattr(self.llm, '_call_provider_api', None)
         if callable(provider_call):
             return await provider_call(prompt)
-        return await self.llm._call_ollama_api(prompt)
+        router_call = getattr(self.llm, '_call_router_api', None)
+        if callable(router_call):
+            return await router_call(prompt)
+        raise AttributeError('LLM analyzer does not expose a router-backed call method')
     
     async def generate_rules_for_ioc(self, ioc: str, ioc_type: str, analysis_result: Dict) -> Dict[str, str]:
         """
@@ -370,7 +373,7 @@ DeviceFileEvents
         return f"""rule BTA_Detection_{hash(sha256) % 10000:04d} {{
     meta:
         description = "Detects {family_name} malware"
-        author = "Blue Team Assistant"
+        author = "AI Security Assistant"
         date = "{datetime.now().strftime('%Y-%m-%d')}"
         hash = "{sha256}"
     

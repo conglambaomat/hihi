@@ -1,4 +1,4 @@
-# CABTA — agent onboarding (single read order)
+# AISA — agent onboarding (single read order)
 
 Paths below are relative to the `CABTA/` directory unless noted.
 
@@ -34,11 +34,11 @@ Paths below are relative to the `CABTA/` directory unless noted.
 
 - Relevant files under [`plans/`](../plans/)  
 - Repo root [`docs/vibe-coding-operating-model.md`](../../docs/vibe-coding-operating-model.md) — workspace discipline (plan / cook / fix / gates)  
-- [`docs/vibe-coding-operating-model.md`](vibe-coding-operating-model.md) — **CABTA-only** product lanes (analysis core vs workflow vs governance)  
+- [`docs/vibe-coding-operating-model.md`](vibe-coding-operating-model.md) — **AISA-only** product lanes (analysis core vs workflow vs governance)  
 
 ## Product invariants (non-negotiable)
 
-- **Final verdicts and numeric scoring** are owned by deterministic CABTA analyzers and scoring — not by LLM text as the source of truth.  
+- **Final verdicts and numeric scoring** are owned by deterministic AISA analyzers and scoring — not by LLM text as the source of truth.  
 - **LLMs** may interpret, summarize, route tools, and assist investigations; they do not replace scoring engines for authoritative verdict output.  
 
 ## Deeper reference (load on demand)

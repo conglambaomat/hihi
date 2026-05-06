@@ -24,7 +24,7 @@ Important files:
 - `AGENTS.md`
 - `CLAUDE.md`
 - `.claude/rules/development-rules.md`
-- `.cursor/rules/cabta-workspace.mdc` — Cursor project rules (routing + CABTA scoring invariants)
+- `.cursor/rules/cabta-workspace.mdc` — Cursor project rules (routing + AISA scoring invariants)
 - `.cursor/skills/` — curated agent skills (plan, cook, fix, test, GitNexus, MCP, …); see `guide/SKILLS.md`
 - `CABTA/docs/ONBOARDING.md` — short read order for product work
 - `docs/gitnexus-workflow.md` — optional GitNexus MCP workflow (when connected)
@@ -42,7 +42,7 @@ The root README is a workspace landing page. It is not the runtime or architectu
 
 If you are developing the security product, do not anchor on root boilerplate text. Go straight to `CABTA/`.
 
-## CABTA Quick Start
+## AISA Quick Start
 
 ```bash
 git clone https://github.com/conglambaomat/hihi.git

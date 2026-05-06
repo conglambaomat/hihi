@@ -121,7 +121,7 @@ class RansomwareAnalyzer:
         if len(sample) > self._text_scan_limit_bytes:
             head = sample[: self._text_scan_limit_bytes // 2]
             tail = sample[-(self._text_scan_limit_bytes // 2):]
-            sample = head + b"\n[... CABTA RANSOMWARE ANALYZER TRUNCATED MIDDLE CONTENT ...]\n" + tail
+            sample = head + b"\n[... AISA RANSOMWARE ANALYZER TRUNCATED MIDDLE CONTENT ...]\n" + tail
 
         try:
             text = sample.decode('utf-8', errors='ignore')

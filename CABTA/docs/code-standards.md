@@ -1,8 +1,8 @@
-# CABTA Code Standards
+# AISA Code Standards
 
 ## Purpose
 
-These standards exist to make CABTA safer to evolve with AI-assisted development.
+These standards exist to make AISA safer to evolve with AI-assisted development.
 
 The goals are:
 
@@ -27,7 +27,7 @@ The goals are:
 
 ### Keep user-facing naming consistent
 
-- prefer `CABTA` in new docs and UI copy
+- prefer `AISA` in new docs and UI copy
 - preserve legacy names only where compatibility matters
 - avoid adding fresh naming drift
 

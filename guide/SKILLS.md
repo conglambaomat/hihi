@@ -29,7 +29,7 @@ The repository no longer ships the full ClaudeKit skill tree under `.claude/skil
 
 Shared helpers: [`.cursor/skills/common/`](../.cursor/skills/common/)
 
-## CABTA product work
+## AISA product work
 
 Use **`CABTA/docs/ONBOARDING.md`** first; skills above supplement workflow — they are not a substitute for CABTA architecture docs.
 

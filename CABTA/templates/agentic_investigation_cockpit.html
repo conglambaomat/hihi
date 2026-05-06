@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Investigation Cockpit - AISA{% endblock %}
+{% block page_title %}Agentic SOC Cockpit{% endblock %}
+{% block page_subtitle %}<span class="page-subtitle">Session {{ session_id }}</span>{% endblock %}
+
+{% block header_actions %}
+<a class="btn btn-sm btn-outline-secondary" href="/agent/chat?session={{ session_id | urlencode }}"><i class="bi bi-chat-dots me-1"></i>Chat</a>
+<a class="btn btn-sm btn-outline-secondary" href="/agent/investigations"><i class="bi bi-list-ul me-1"></i>Investigations</a>
+{% endblock %}
+
+{% block content %}
+<section class="soc-cockpit" id="agenticCockpit" data-session-id="{{ session_id | e }}" aria-live="polite">
+    <div class="soc-hero">
+        <div>
+            <p class="soc-kicker">Agentic SOC investigation</p>
+            <h2 id="cockpitGoal">{{ session.goal if session else 'Investigation session' }}</h2>
+            <div class="soc-hero-meta">
+                <span id="cockpitSessionId">{{ session_id }}</span>
+                <span id="cockpitStatus">{{ session.status if session else 'unknown' }}</span>
+                <span id="cockpitUpdated">Awaiting telemetry</span>
+            </div>
+        </div>
+        <div class="soc-readiness" role="status" aria-label="Report readiness">
+            <span class="soc-readiness-label">Report readiness</span>
+            <strong id="reportReadinessScore">0%</strong>
+            <div class="soc-readiness-bar"><span id="reportReadinessBar"></span></div>
+        </div>
+    </div>
+
+    <div class="soc-grid soc-grid-top">
+        <article class="soc-panel soc-panel-wide">
+            <div class="soc-panel-head"><h3>Milestone Map</h3><span id="milestoneSummary">Loading</span></div>
+            <div class="milestone-map" id="milestoneMap"></div>
+        </article>
+        <article class="soc-panel">
+            <div class="soc-panel-head"><h3>Connector Status</h3><span id="connectorSummary">Loading</span></div>
+            <div class="connector-list" id="connectorStatus"></div>
+        </article>
+    </div>
+
+    <div class="soc-grid">
+        <article class="soc-panel">
+            <div class="soc-panel-head"><h3>Action Queue</h3><span id="actionQueueCount">0 pending</span></div>
+            <div class="action-queue" id="actionQueue"></div>
+        </article>
+        <article class="soc-panel">
+            <div class="soc-panel-head"><h3>Reviewer Panel</h3><span id="reviewerVerdict">Pending</span></div>
+            <dl class="reviewer-panel" id="reviewerPanel"></dl>
+        </article>
+        <article class="soc-panel">
+            <div class="soc-panel-head"><h3>Evidence, Hypotheses, Gaps</h3><span id="gapCount">0 gaps</span></div>
+            <div class="evidence-board" id="evidenceBoard"></div>
+        </article>
+    </div>
+
+    <article class="soc-panel soc-panel-wide">
+        <div class="soc-panel-head"><h3>Timeline / Progress Events</h3><span id="timelineCount">0 events</span></div>
+        <ol class="soc-timeline" id="progressTimeline"></ol>
+    </article>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/agentic_cockpit.js?v=1"></script>
+{% endblock %}

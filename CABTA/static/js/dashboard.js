@@ -1,5 +1,5 @@
 /**
- * Blue Team Assistant - Dashboard Page Logic
+ * AI Security Assistant - Dashboard Page Logic
  * Author: Ugur Ates
  *
  * Handles dashboard statistics, recent analyses table,

@@ -10,6 +10,9 @@
 <button class="btn btn-sm btn-accent" onclick="AgentChat.newSession()">
     <i class="bi bi-plus-lg me-1"></i>New Chat
 </button>
+<a class="btn btn-sm btn-outline-info" id="cockpitBtn" href="#" style="display:none;" title="Open SOC cockpit">
+    <i class="bi bi-radar me-1"></i>Cockpit
+</a>
 <button class="btn btn-sm btn-outline-secondary" id="exportBtn" onclick="AgentChat.exportSession()" style="display:none;" title="Export investigation">
     <i class="bi bi-download me-1"></i>Export
 </button>
@@ -220,6 +223,11 @@
     .verdict-suspicious { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
     .verdict-clean { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
     .verdict-info { background: rgba(56,189,248,0.15); color: #38bdf8; border: 1px solid rgba(56,189,248,0.3); }
+
+    .evidence-chip-panel { margin-top:0.65rem; padding:0.55rem; border:1px solid var(--border-color); border-radius:8px; background:rgba(20,184,166,0.06); }
+    .evidence-chip { display:inline-flex; gap:0.25rem; align-items:center; margin:0.15rem; padding:0.22rem 0.45rem; border-radius:999px; font-size:0.72rem; border:1px solid rgba(20,184,166,0.35); }
+    .evidence-chip.unsupported, .evidence-chip.contradicted, .evidence-chip.insufficient { border-color:rgba(239,68,68,0.45); background:rgba(239,68,68,0.08); }
+    .compile-preview-panel { margin:0.4rem 0; padding:0.55rem; border:1px dashed var(--border-color); border-radius:8px; font-size:0.78rem; color:var(--text-secondary); }
 
     /* ===== Input Area ===== */
     .chat-input-area {
@@ -793,6 +801,19 @@
         line-height: 1.45;
     }
 
+    /* ===== Workdir Card ===== */
+    .workdir-action-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.35rem;
+    }
+    .workdir-meta-line {
+        font-size: 0.72rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.45rem;
+        word-break: break-word;
+    }
+
     /* ===== Approval Overlay ===== */
     .approval-overlay {
         display: none;
@@ -877,6 +898,7 @@
                     <div id="stepProgressBar" class="progress-bar bg-accent" style="width:0%"></div>
                 </div>
                 <span id="currentPhaseBadge"></span>
+                <span id="agenticProgressBadge" class="badge bg-secondary d-none"></span>
                 <div class="progress-right">
                     <span class="current-tool" id="currentToolName"></span>
                     <span class="elapsed" id="progressElapsed"></span>
@@ -978,7 +1000,47 @@
             </div>
             <div class="card-body reasoning-card-body">
                 <div id="missingEvidencePanel" class="reasoning-empty">
-                    When evidence is incomplete, CABTA will surface what is still missing and which pivots or next actions are worth asking the agent to investigate.
+                    When evidence is incomplete, AISA will surface what is still missing and which pivots or next actions are worth asking the agent to investigate.
+                </div>
+            </div>
+        </div>
+
+        <!-- Investigation Workdir -->
+        <div class="card mt-2" id="workdirCard" style="display:none;">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0" style="font-size:0.85rem;"><i class="bi bi-folder2-open me-2 text-accent"></i>Workdir Export</h6>
+                <span class="badge bg-secondary" id="workdirArtifactBadge" style="font-size:0.65rem;">0</span>
+            </div>
+            <div class="card-body p-2">
+                <div class="workdir-meta-line" id="workdirSummaryText">No workdir attached.</div>
+                <div class="workdir-meta-line text-warning" id="workdirResumeWarning">
+                    Resume context is a non-authoritative workdir mirror. Fresh AISA tools must re-validate evidence before any deterministic decision is trusted.
+                </div>
+                <div class="workdir-action-grid">
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="contextLedgerLink" target="_blank" rel="noopener">
+                        <i class="bi bi-clock-history me-2 text-info"></i>Context Ledger Audit
+                    </a>
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="workdirArtifactsLink" target="_blank" rel="noopener">
+                        <i class="bi bi-list-ul me-2 text-info"></i>Artifacts API
+                    </a>
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="workdirReviewLink" target="_blank" rel="noopener">
+                        <i class="bi bi-journal-text me-2 text-warning"></i>Review Notes
+                    </a>
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="workdirReviewStateLink" target="_blank" rel="noopener">
+                        <i class="bi bi-person-check me-2 text-success"></i>Review State API
+                    </a>
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="workdirValidationLink" target="_blank" rel="noopener">
+                        <i class="bi bi-shield-check me-2 text-info"></i>Validate Integrity
+                    </a>
+                    <a class="btn btn-outline-secondary btn-sm text-start" id="workdirResumeLink" target="_blank" rel="noopener">
+                        <i class="bi bi-arrow-clockwise me-2 text-accent"></i>Resume Payload
+                    </a>
+                    <button type="button" class="btn btn-outline-warning btn-sm text-start" id="workdirResumeStartBtn" onclick="AgentChat.resumeFromWorkdir()">
+                        <i class="bi bi-play-circle me-2"></i>Resume Start
+                    </button>
+                    <a class="btn btn-outline-primary btn-sm text-start" id="workdirArchiveLink">
+                        <i class="bi bi-file-earmark-zip me-2"></i>Download Archive
+                    </a>
                 </div>
             </div>
         </div>
@@ -1676,8 +1738,8 @@ var AgentChat = (function() {
         if (decisionPanel) decisionPanel.innerHTML = renderEmptyPanel('Start or load an investigation session to see the deterministic decision.');
         if (explanationPanel) explanationPanel.innerHTML = renderEmptyPanel('Root cause and causal reasoning will appear here as the lead investigator builds an explanation.');
         if (hypothesesPanel) hypothesesPanel.innerHTML = renderEmptyPanel('Structured hypotheses will appear here once the session begins.');
-        if (entityPanel) entityPanel.innerHTML = renderEmptyPanel('Entity pivots show up once CABTA normalizes users, hosts, IPs, processes, and sessions from evidence.');
-        if (missingPanel) missingPanel.innerHTML = renderEmptyPanel('Missing evidence and suggested next pivots will appear here when CABTA finds unresolved questions.');
+        if (entityPanel) entityPanel.innerHTML = renderEmptyPanel('Entity pivots show up once AISA normalizes users, hosts, IPs, processes, and sessions from evidence.');
+        if (missingPanel) missingPanel.innerHTML = renderEmptyPanel('Missing evidence and suggested next pivots will appear here when AISA finds unresolved questions.');
     }
 
     function renderReasoningPanels(data) {
@@ -1687,6 +1749,32 @@ var AgentChat = (function() {
         renderHypothesesPanel(ctx.reasoning);
         renderEntityPivotsPanel(ctx.entity);
         renderMissingEvidencePanel(ctx.agentic, ctx.reasoning, ctx.rootCause);
+        renderWorkdirCard(data);
+    }
+
+    function renderWorkdirCard(data) {
+        var card = document.getElementById('workdirCard');
+        if (!card) return;
+        var sid = (data || {}).session_id || (data || {}).id || sessionId;
+        var meta = ((data || {}).metadata && typeof (data || {}).metadata === 'object') ? (data || {}).metadata : {};
+        var wd = (data || {}).investigation_workdir || meta.investigation_workdir || null;
+        if (!sid || !wd || !wd.investigation_id) {
+            card.style.display = 'none';
+            return;
+        }
+        card.style.display = '';
+        var count = wd.artifact_count || 0;
+        document.getElementById('workdirArtifactBadge').textContent = String(count);
+        document.getElementById('workdirSummaryText').textContent = 'Investigation ' + wd.investigation_id + ' mirrors evidence, deterministic decisions, review notes, export artifacts, and non-authoritative context ledger audit metadata. Workdir resume is non-authoritative until fresh AISA tools re-validate.';
+        var startBtn = document.getElementById('workdirResumeStartBtn');
+        if (startBtn) startBtn.setAttribute('data-session-id', sid);
+        document.getElementById('contextLedgerLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/context-ledger';
+        document.getElementById('workdirArtifactsLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/artifacts';
+        document.getElementById('workdirReviewLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/artifacts/review.md';
+        document.getElementById('workdirReviewStateLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/review';
+        document.getElementById('workdirValidationLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/validation';
+        document.getElementById('workdirResumeLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/resume';
+        document.getElementById('workdirArchiveLink').href = '/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/archive/download';
     }
 
     function renderDeterministicDecisionPanel(decision) {
@@ -1844,7 +1932,7 @@ var AgentChat = (function() {
         var relationships = Array.isArray(entityState && entityState.relationships) ? entityState.relationships : [];
         setHeaderBadge('entityCountBadge', String(entities.length), entities.length ? 'bg-info text-dark' : 'bg-secondary');
         if (!entities.length && !relationships.length) {
-            panel.innerHTML = renderEmptyPanel('Entity pivots appear after CABTA links observed users, hosts, IPs, processes, or sessions from tool output.');
+            panel.innerHTML = renderEmptyPanel('Entity pivots appear after AISA links observed users, hosts, IPs, processes, or sessions from tool output.');
             return;
         }
 
@@ -1910,7 +1998,7 @@ var AgentChat = (function() {
         var total = missing.length + nextPivots.length + nextActions.length;
         setHeaderBadge('nextPivotCountBadge', String(total), total ? 'bg-warning text-dark' : 'bg-secondary');
         if (!total) {
-            panel.innerHTML = renderEmptyPanel('CABTA will surface unresolved evidence gaps and next pivots here when the investigation needs more data.');
+            panel.innerHTML = renderEmptyPanel('AISA will surface unresolved evidence gaps and next pivots here when the investigation needs more data.');
             return;
         }
 
@@ -2008,6 +2096,21 @@ var AgentChat = (function() {
         input.value = text;
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
+    }
+
+    function renderWorkdirExportReadyBubble(sid) {
+        if (!sid) return '';
+        var encodedSid = encodeURIComponent(sid);
+        return '<div class="text-start" style="display:inline-block;max-width:100%;">' +
+            '<div><i class="bi bi-folder2-open me-1 text-info"></i><strong>Workdir export ready:</strong> download archive, open review notes, or resume from the exported workdir.</div>' +
+            '<div class="mt-2 d-flex flex-wrap gap-2 justify-content-center">' +
+            '<a class="btn btn-outline-primary btn-sm" href="/api/agent/sessions/' + encodedSid + '/workdir/archive/download"><i class="bi bi-file-earmark-zip me-1"></i>Download Archive</a>' +
+            '<a class="btn btn-outline-secondary btn-sm" href="/api/agent/sessions/' + encodedSid + '/workdir/artifacts/review.md" target="_blank" rel="noopener"><i class="bi bi-journal-text me-1"></i>Review Notes</a>' +
+            '<a class="btn btn-outline-secondary btn-sm" href="/api/agent/sessions/' + encodedSid + '/workdir/resume" target="_blank" rel="noopener"><i class="bi bi-arrow-clockwise me-1"></i>Resume Payload</a>' +
+            '<button type="button" class="btn btn-outline-warning btn-sm" data-session-id="' + esc(sid) + '" onclick="AgentChat.resumeFromWorkdir(this.getAttribute(\'data-session-id\'))"><i class="bi bi-play-circle me-1"></i>Resume Start</button>' +
+            '</div>' +
+            '<div class="mt-2 text-warning" style="font-size:0.72rem;"><i class="bi bi-exclamation-triangle me-1"></i>Resume context is a non-authoritative workdir mirror. Fresh AISA tools must re-validate evidence before any deterministic decision is trusted.</div>' +
+            '</div>';
     }
 
     function refreshReasoningPanels(sessionKey) {
@@ -2163,6 +2266,7 @@ var AgentChat = (function() {
         msgs.appendChild(welcome);
         updateProgress(0, 0);
         resetReasoningPanels();
+        renderWorkdirCard({});
         selectedPlaybook = null;
         document.querySelectorAll('.playbook-item').forEach(function(el) { el.classList.remove('selected'); });
         document.getElementById('chatInput').placeholder = 'e.g. Investigate IP 45.33.32.156 for C2 activity...';
@@ -2180,6 +2284,11 @@ var AgentChat = (function() {
         updateSessionUrl(id);
         connectWebSocket(id);
         loadHistory(id);
+        var cockpitBtn = document.getElementById('cockpitBtn');
+        if (cockpitBtn) {
+            cockpitBtn.href = '/agent/investigations/' + encodeURIComponent(id) + '/cockpit';
+            cockpitBtn.style.display = 'inline-flex';
+        }
         document.getElementById('exportBtn').style.display = 'inline-flex';
     }
 
@@ -2327,11 +2436,14 @@ var AgentChat = (function() {
                 sessionTerminal = true;
                 stopTimer();
                 hideLiveToolIndicator();
-                addBubble(msg.summary || 'Investigation completed.', 'agent');
+                addBubble(msg.summary || 'Investigation completed.', 'agent', msg);
                 addInvestigationSummary(msg);
                 updateProgress(msg.step || maxSteps, msg.max_steps || maxSteps);
                 if (sessionId) refreshReasoningPanels(sessionId);
                 document.getElementById('exportBtn').style.display = 'inline-flex';
+                if (sessionId) {
+                    addBubble(renderWorkdirExportReadyBubble(sessionId), 'system');
+                }
                 loadSessions();
                 break;
             case 'failed':
@@ -2357,6 +2469,27 @@ var AgentChat = (function() {
         scrollToBottom();
     }
 
+    function renderCompilePreview(data) {
+        var contract = data && (data.soc_task_contract || data);
+        if (!contract) return '';
+        var plan = contract.capability_plan || data.capability_plan || {};
+        var dag = contract.investigation_dag || data.investigation_dag || {};
+        var caps = plan.capabilities || plan.required_capabilities || [];
+        var nodeCount = (dag.nodes || []).length || dag.node_count || 0;
+        return '<div class="compile-preview-panel" data-compile-preview-panel="true"><strong>Plan preview</strong>: capabilities ' + esc((caps || []).slice(0, 5).join(', ') || 'none') + '; DAG nodes ' + esc(String(nodeCount)) + '; side effects none.</div>';
+    }
+
+    function previewBeforeSend(text) {
+        if (!text || selectedPlaybook) return Promise.resolve();
+        return fetch('/api/chat/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: text, session_id: sessionId })
+        }).then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
+            if (data) addBubble(renderCompilePreview(data), 'system');
+        }).catch(function() {});
+    }
+
     function send() {
         var input = document.getElementById('chatInput');
         var text = input.value.trim();
@@ -2367,6 +2500,8 @@ var AgentChat = (function() {
 
         var btn = document.getElementById('sendBtn');
         btn.disabled = true;
+
+        previewBeforeSend(text);
 
         if (!sessionId) {
             resetSessionMetrics();
@@ -2412,7 +2547,7 @@ var AgentChat = (function() {
                     sessionId = data.session_id;
                     sessionTerminal = false;
                     hydratedSessionId = null;
-                    maxSteps = data.max_steps || 50;
+                    maxSteps = data.max_steps || 1000;
                     updateProgress(0, maxSteps);
                     addBubble('<i class="bi bi-gear-wide-connected me-1"></i>Investigation started. The agent is working autonomously...', 'system');
                     updateSessionUrl(sessionId);
@@ -2439,7 +2574,7 @@ var AgentChat = (function() {
             .then(function(data) {
                 btn.disabled = false;
                 if (data.session_id && data.session_id !== sessionId) {
-                    maxSteps = data.max_steps || 50;
+                    maxSteps = data.max_steps || 1000;
                     switchSession(data.session_id);
                     startTimer();
                     return;
@@ -2456,7 +2591,23 @@ var AgentChat = (function() {
     }
 
     // ===== Bubble Rendering =====
+    function renderEvidenceChips(meta) {
+        var chips = meta && (meta.evidence_chips || (meta.final_answer_gate || {}).evidence_chips) || [];
+        var unsupported = meta && (meta.unsupported_claims || (meta.final_answer_gate || {}).downgraded_claims) || [];
+        if ((!chips || !chips.length) && (!unsupported || !unsupported.length)) return '';
+        var html = '<div class="evidence-chip-panel" data-evidence-chip-panel="true"><strong>Evidence chips</strong><div>';
+        (chips || []).slice(0, 12).forEach(function(chip) {
+            var status = String(chip.status || '').toLowerCase();
+            html += '<span class="evidence-chip ' + esc(status) + '" data-claim-status="' + esc(status) + '">' + esc(status || 'claim') + ': ' + esc(chip.sentence || chip.claim || '') + '</span>';
+        });
+        (unsupported || []).slice(0, 6).forEach(function(item) {
+            html += '<span class="evidence-chip unsupported" data-unsupported-claim="true">unsupported: ' + esc(item.claim || item.sentence || '') + '</span>';
+        });
+        return html + '</div></div>';
+    }
+
     function addBubble(text, type) {
+        var meta = arguments.length > 2 ? arguments[2] : null;
         var msgs = document.getElementById('chatMessages');
         var div = document.createElement('div');
         if (type === 'user') {
@@ -2464,13 +2615,8 @@ var AgentChat = (function() {
             div.innerHTML = '<div class="bubble-label">You</div>' + esc(text);
         } else if (type === 'agent') {
             div.className = 'chat-bubble chat-bubble-agent';
-            var verdict = detectVerdict(text);
-            var verdictHtml = '';
-            if (verdict) {
-                var vIcon = verdict === 'malicious' ? 'bi-exclamation-triangle-fill' : verdict === 'suspicious' ? 'bi-exclamation-circle-fill' : 'bi-check-circle-fill';
-                verdictHtml = '<div style="margin-bottom:0.4rem;"><span class="verdict-badge verdict-' + verdict + '"><i class="bi ' + vIcon + '"></i> ' + verdict.toUpperCase() + '</span></div>';
-            }
-            div.innerHTML = '<div class="bubble-label">Agent</div>' + verdictHtml + '<div class="agent-content">' + renderMarkdown(text) + '</div>';
+            // Final-answer text is explanatory only; verdict badges are rendered from structured deterministic decisions.
+            div.innerHTML = '<div class="bubble-label">Agent</div><div class="agent-content">' + renderMarkdown(text) + renderEvidenceChips(meta) + '</div>';
         } else {
             div.className = 'chat-bubble chat-bubble-system';
             div.innerHTML = text || '';
@@ -2658,6 +2804,26 @@ var AgentChat = (function() {
         }
     }
 
+    function applyAgenticProgressTelemetry(progress) {
+        var badge = document.getElementById('agenticProgressBadge');
+        if (!badge || !progress) return;
+        var status = progress.completion_status || 'unknown';
+        var gaps = Array.isArray(progress.open_gaps) ? progress.open_gaps.length : 0;
+        var ms = Array.isArray(progress.milestone_statuses) ? progress.milestone_statuses : [];
+        var done = ms.filter(function(m) { return ['satisfied', 'completed', 'done'].indexOf(String(m.status || '').toLowerCase()) !== -1; }).length;
+        var total = ms.length || (Array.isArray(progress.milestones) ? progress.milestones.length : 0);
+        var reportShape = progress.final_report_shape || {};
+        var parts = [status];
+        if (total) parts.push('milestones: ' + done + '/' + total);
+        if (gaps) parts.push('gaps: ' + gaps);
+        if (reportShape.schema_version || reportShape.sections) parts.push('report ready');
+        badge.textContent = parts.join(' / ');
+        badge.classList.remove('d-none');
+        if (progress.final_reviewer && progress.final_reviewer.approved === false) {
+            badge.textContent += ' / reviewer blocked';
+        }
+    }
+
     function setCurrentTool(name) {
         var el = document.getElementById('currentToolName');
         if (el) {
@@ -2678,6 +2844,30 @@ var AgentChat = (function() {
     function scrollToBottom() {
         var msgs = document.getElementById('chatMessages');
         setTimeout(function() { msgs.scrollTop = msgs.scrollHeight; }, 50);
+    }
+
+    function resumeFromWorkdir(explicitSessionId) {
+        var btn = document.getElementById('workdirResumeStartBtn');
+        var sid = explicitSessionId || (btn && btn.getAttribute('data-session-id')) || sessionId;
+        if (!sid) return;
+        if (btn) btn.disabled = true;
+        fetch('/api/agent/sessions/' + encodeURIComponent(sid) + '/workdir/resume/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        })
+            .then(function(r) { return r.json().then(function(payload) { return { ok: r.ok, payload: payload }; }); })
+            .then(function(result) {
+                if (!result.ok) throw new Error(result.payload.detail || 'Resume start failed');
+                var newSid = result.payload.session_id || result.payload.id;
+                addBubble('<i class="bi bi-play-circle text-warning me-1"></i><strong>Resume Start created.</strong> Context came from a non-authoritative workdir mirror; fresh AISA tools must re-validate evidence before deterministic decisions are trusted.' + (newSid ? '<br><a href="/agent/chat?session=' + encodeURIComponent(newSid) + '">Open resumed session</a>' : ''), 'system');
+                scrollToBottom();
+            })
+            .catch(function(err) {
+                addBubble('<i class="bi bi-exclamation-triangle text-warning me-1"></i>Resume Start unavailable: ' + esc(err.message), 'system');
+                scrollToBottom();
+            })
+            .finally(function() { if (btn) btn.disabled = false; });
     }
 
     function exportSession() {
@@ -2783,6 +2973,7 @@ var AgentChat = (function() {
         switchSession: switchSession,
         respondApproval: respondApproval,
         quickAction: quickAction,
+        resumeFromWorkdir: resumeFromWorkdir,
         exportSession: exportSession,
         copyIOC: copyIOC,
         refreshMCPStatus: refreshMCPStatus

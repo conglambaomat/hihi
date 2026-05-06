@@ -1,4 +1,4 @@
-"""Provider runtime status and health policy helpers for CABTA."""
+"""Router runtime status and health policy helpers for AISA."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 
 class ProviderHealthService:
-    """Own provider normalization, runtime status tracking, and failover policy."""
+    """Own canonical router normalization and runtime status tracking."""
 
     def __init__(
         self,
@@ -20,15 +20,8 @@ class ProviderHealthService:
         model_name_resolver: Callable[[str], str],
         provider_configured_resolver: Callable[[str], bool],
     ):
-        self.primary_provider = str(primary_provider or "openrouter").strip().lower() or "openrouter"
-        self.auto_failover = bool(auto_failover)
-        self.fallback_providers = [
-            str(provider).strip().lower()
-            for provider in (fallback_providers or [])
-            if str(provider).strip()
-        ]
+        self.primary_provider = "router"
         self.llm_unavailable_cooldown_seconds = float(llm_unavailable_cooldown_seconds or 0.0)
-        self.openrouter_force_json_decision_mode = bool(openrouter_force_json_decision_mode)
         self.model_name_resolver = model_name_resolver
         self.provider_configured_resolver = provider_configured_resolver
         self.provider_runtime_status: Dict[str, Any] = {
@@ -45,7 +38,7 @@ class ProviderHealthService:
         self.provider_runtime_statuses: Dict[str, Dict[str, Any]] = {}
 
     def normalize_provider(self, provider: Optional[str] = None) -> str:
-        return str(provider or self.primary_provider or "openrouter").strip().lower() or "openrouter"
+        return "router"
 
     def record_runtime_status(
         self,
@@ -88,6 +81,9 @@ class ProviderHealthService:
             "cooldown_until": None if available else cooldown_until,
         }
         self.provider_runtime_statuses[provider_name] = status
+        original_provider = str(provider or "").strip().lower()
+        if original_provider and original_provider != provider_name:
+            self.provider_runtime_statuses[original_provider] = {**status, "provider": original_provider, "normalized_provider": provider_name}
         if provider_name == self.primary_provider:
             self.provider_runtime_status = status
 
@@ -130,9 +126,7 @@ class ProviderHealthService:
         return age_seconds <= cooldown_seconds
 
     def provider_prefers_json_decision_mode(self, provider: Optional[str] = None) -> bool:
-        normalized = self.normalize_provider(provider)
-        if normalized == "openrouter":
-            return self.openrouter_force_json_decision_mode
+        """Router uses native tool calling; JSON decision fallback is disabled."""
         return False
 
     def provider_cooldown_until(self, provider: Optional[str] = None) -> Optional[str]:
@@ -159,17 +153,6 @@ class ProviderHealthService:
 
     def candidate_providers(self) -> List[str]:
         configured_candidates = [self.primary_provider]
-        if self.normalize_provider(self.primary_provider) == "nvidia":
-            return configured_candidates
-        if self.auto_failover:
-            for provider in self.fallback_providers:
-                normalized = self.normalize_provider(provider)
-                if normalized in configured_candidates:
-                    continue
-                if not self.provider_configured_resolver(normalized):
-                    continue
-                configured_candidates.append(normalized)
-
         healthy_candidates = [
             provider
             for provider in configured_candidates
@@ -211,8 +194,4 @@ class ProviderHealthService:
 
     def provider_inventory_statuses(self) -> List[Dict[str, Any]]:
         inventory: List[str] = [self.primary_provider]
-        for provider in self.fallback_providers:
-            normalized = self.normalize_provider(provider)
-            if normalized not in inventory:
-                inventory.append(normalized)
         return [self.provider_operational_status(provider) for provider in inventory]

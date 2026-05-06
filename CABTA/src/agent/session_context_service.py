@@ -1,4 +1,4 @@
-"""Session context restore and thread message helpers for CABTA agent sessions."""
+"""Session context restore and thread message helpers for AISA agent sessions."""
 
 from __future__ import annotations
 
@@ -176,6 +176,11 @@ class SessionContextService:
         state.unresolved_questions = list(payload.get("unresolved_questions") or [])
         state.evidence_quality_summary = copy.deepcopy(payload.get("evidence_quality_summary") or {})
         state.fact_family_schemas = copy.deepcopy(payload.get("fact_family_schemas") or {})
+        context_summary = copy.deepcopy(payload.get("context_pack_summary_latest") or snapshot.get("context_pack_summary_latest") or {})
+        if isinstance(context_summary, dict) and context_summary:
+            context_summary["restored_as_non_authoritative_hint"] = True
+            context_summary["authoritative_for_verdict"] = False
+            setattr(state, "context_pack_summary_latest", context_summary)
         resolved_scope = ThreadSyncService.normalize_lifecycle(memory_scope)
         authoritative_memory_scope = ThreadSyncService.authoritative_memory_scope(resolved_scope)
         publication_scope = ThreadSyncService.publication_scope(resolved_scope)

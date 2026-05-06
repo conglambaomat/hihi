@@ -1,6 +1,6 @@
 """
 Author: Ugur Ates
-Raw Output Collector for Blue Team Assistant
+Raw Output Collector for AI Security Assistant
 Captures ALL analysis outputs in raw format for comprehensive reporting.
 """
 

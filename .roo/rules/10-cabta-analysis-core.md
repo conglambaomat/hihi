@@ -1,4 +1,4 @@
-# CABTA Analysis Core
+# AISA Analysis Core
 
 Use this rule for verdict-bearing CABTA work.
 

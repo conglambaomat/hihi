@@ -8,7 +8,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.agent.provider_chat_gateway import ProviderChatGateway
 
 
-def test_build_chat_request_for_tool_decision_mode():
+def test_build_chat_request_for_tool_decision_mode_is_router_only():
     gateway = ProviderChatGateway()
 
     request = gateway.build_chat_request(
@@ -22,8 +22,8 @@ def test_build_chat_request_for_tool_decision_mode():
         },
     )
 
-    assert request["provider"] == "openrouter"
-    assert request["provider_family"] == "openrouter"
+    assert request["provider"] == "router"
+    assert request["provider_family"] == "router"
     assert request["mode"] == "tool_decision"
     assert request["intent"] == "tool_decision"
     assert request["tool_choice_allowed"] is True
@@ -33,7 +33,7 @@ def test_build_chat_request_for_tool_decision_mode():
     assert request["prompt_mode"] == "native_tooling"
     assert request["structured_intent"] == "native_tooling"
     assert request["tool_prompting_strategy"] == "native_tools"
-    assert request["tool_prompting_family"] == "openrouter"
+    assert request["tool_prompting_family"] == "router"
     assert request["tool_decision_format"] == "native_tool_call"
     assert request["should_include_tool_schema_in_prompt"] is False
     assert request["prompt_envelope"]["user_intent"]["mode"] == "native_tooling"
@@ -41,7 +41,7 @@ def test_build_chat_request_for_tool_decision_mode():
     assert gateway.extract_chat_tools(request) == [{"function": {"name": "investigate_ioc"}}]
 
 
-def test_build_chat_request_for_direct_answer_mode_drops_tools():
+def test_build_chat_request_for_direct_answer_mode_drops_tools_and_stays_router_only():
     gateway = ProviderChatGateway()
 
     request = gateway.build_chat_request(
@@ -55,8 +55,8 @@ def test_build_chat_request_for_direct_answer_mode_drops_tools():
         },
     )
 
-    assert request["provider"] == "groq"
-    assert request["provider_family"] == "groq"
+    assert request["provider"] == "router"
+    assert request["provider_family"] == "router"
     assert request["mode"] == "direct_answer"
     assert request["intent"] == "direct_answer"
     assert request["tool_choice_allowed"] is False
@@ -65,6 +65,7 @@ def test_build_chat_request_for_direct_answer_mode_drops_tools():
     assert request["prompt_mode"] == "direct_answer"
     assert request["structured_intent"] == "direct_answer"
     assert request["tool_prompting_strategy"] == "disabled"
+    assert request["tool_prompting_family"] == "router"
     assert request["tool_decision_format"] == "none"
     assert request["should_include_tool_schema_in_prompt"] is False
     assert gateway.extract_chat_tools(request) == []
@@ -84,8 +85,8 @@ def test_build_chat_request_without_tools_uses_text_generation_mode():
         },
     )
 
-    assert request["provider"] == "gemini"
-    assert request["provider_family"] == "gemini"
+    assert request["provider"] == "router"
+    assert request["provider_family"] == "router"
     assert request["mode"] == "text_generation"
     assert request["intent"] == "text_generation"
     assert request["tool_choice_allowed"] is False
@@ -94,34 +95,34 @@ def test_build_chat_request_without_tools_uses_text_generation_mode():
     assert request["prompt_mode"] == "json_tool_decision"
     assert request["structured_intent"] == "json_tool_decision"
     assert request["tool_prompting_strategy"] == "disabled"
+    assert request["tool_prompting_family"] == "router"
     assert request["tool_decision_format"] == "none"
     assert request["should_include_tool_schema_in_prompt"] is False
 
 
-def test_build_chat_request_aligns_non_openrouter_tool_prompting_to_json_contract():
+def test_build_interpretation_request_is_json_only_without_tools():
     gateway = ProviderChatGateway()
 
-    request = gateway.build_chat_request(
-        provider_name="gemini",
-        messages=[{"role": "user", "content": "Investigate suspicious IP"}],
-        tools_json=[{"function": {"name": "investigate_ioc"}}],
-        model_only_chat=False,
-        prompt_envelope={
-            "investigation_context": {"prompt_mode": "json_tool_decision"},
-            "user_intent": {"mode": "json_tool_decision"},
-        },
+    request = gateway.build_interpretation_request(
+        provider_name="openrouter",
+        messages=[{"role": "user", "content": "interpret"}],
+        prompt_envelope={"schema_name": "SOCInterpretation"},
     )
 
-    assert request["provider_family"] == "gemini"
-    assert request["mode"] == "tool_decision"
-    assert request["tool_choice_allowed"] is True
-    assert request["tool_prompting_strategy"] == "aligned_tool_contract"
-    assert request["tool_prompting_family"] == "gemini"
-    assert request["tool_decision_format"] == "json_tool_decision"
-    assert request["should_include_tool_schema_in_prompt"] is True
+    assert request["provider"] == "router"
+    assert request["mode"] == "schema_interpretation"
+    assert request["intent"] == "soc_request_interpretation"
+    assert request["tools"] == []
+    assert request["tool_choice_allowed"] is False
+    assert request["native_tooling"] is False
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["prompt_envelope"]["schema_name"] == "SOCInterpretation"
+    assert request["tool_count"] == 0
+    assert request["should_include_tool_schema_in_prompt"] is False
 
 
-def test_build_text_request_normalizes_provider_and_prompt():
+
+def test_build_text_request_normalizes_to_router_and_prompt():
     gateway = ProviderChatGateway()
 
     request = gateway.build_text_request(
@@ -130,14 +131,14 @@ def test_build_text_request_normalizes_provider_and_prompt():
     )
 
     assert request == {
-        "provider": "nvidia",
-        "provider_family": "nvidia",
+        "provider": "router",
+        "provider_family": "router",
         "prompt": "Summarize findings",
         "mode": "text_generation",
         "intent": "text_generation",
         "native_tooling": False,
         "tool_prompting_strategy": "disabled",
-        "tool_prompting_family": "nvidia",
+        "tool_prompting_family": "router",
         "tool_decision_format": "none",
         "should_include_tool_schema_in_prompt": False,
     }

@@ -70,10 +70,6 @@ async def _run_demo(dataset: str, config_path: str | None) -> Dict[str, Any]:
     expected = dict(fixture.get("expected") or {})
 
     config = load_config(config_path)
-    log_hunting_cfg = config.setdefault("log_hunting", {})
-    demo_cfg = log_hunting_cfg.setdefault("demo_backend", {})
-    demo_cfg["enabled"] = True
-    demo_cfg["dataset"] = dataset
 
     with tempfile.TemporaryDirectory(prefix="cabta-playbook-demo-") as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -139,7 +135,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         default=None,
-        help="Optional path to CABTA config.yaml",
+        help="Optional path to AISA config.yaml",
     )
     args = parser.parse_args()
 

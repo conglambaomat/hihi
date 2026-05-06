@@ -7,7 +7,7 @@ This file routes agents to the correct project context in this repository.
 - Repository name: `hihi`
 - Primary product: `CABTA/`
 - Root `.claude/`, `plans/`, and root `docs/` contain shared agent tooling plus historical ClaudeKit-era material.
-- Do not assume the root of this repo describes CABTA's runtime architecture unless the task explicitly targets root tooling.
+- Do not assume the root of this repo describes AISA's runtime architecture unless the task explicitly targets root tooling.
 
 ## First Routing Decision
 
@@ -54,8 +54,8 @@ For those tasks, read:
 
 ## Hard Rules
 
-- `CABTA` is the canonical product name for the security platform in this repo.
-- Treat `Blue Team Assistant`, `mcp-for-soc`, `Claude Code Boilerplate`, and `claudekit-engineer` as legacy or historical references unless the task is explicitly about preserving that history.
+- `AISA` is the canonical product name for the security platform in this repo.
+- Treat `AI Security Assistant`, `mcp-for-soc`, `Claude Code Boilerplate`, and `claudekit-engineer` as legacy or historical references unless the task is explicitly about preserving that history.
 - Do not copy root boilerplate identity into CABTA docs, UI, reports, or code comments.
 - Prefer the nearest project-local instructions over root instructions.
 - Keep reports concise and list unresolved questions at the end.
@@ -63,7 +63,7 @@ For those tasks, read:
 ## Root Context Limits
 
 - Root `README.md` is a workspace landing page, not the product README for CABTA.
-- Root `docs/` are not the source of truth for CABTA runtime behavior.
+- Root `docs/` are not the source of truth for AISA runtime behavior.
 - When working inside `CABTA/`, follow `CABTA/AGENTS.md` over this file.
 
 ## GitNexus (optional)

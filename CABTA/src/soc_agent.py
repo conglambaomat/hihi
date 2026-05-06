@@ -1,4 +1,4 @@
-"""Blue Team Assistant - Main CLI Interface.
+"""AI Security Assistant - Main CLI Interface.
 
 Author: Ugur Ates
 Version: 1.0.0
@@ -1273,7 +1273,7 @@ def print_file_results(result: dict, file_path: str):
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Blue Team Assistant - SOC-Grade Threat Analysis Toolkit'
+        description='AI Security Assistant - SOC-Grade Threat Analysis Toolkit'
     )
     
     subparsers = parser.add_subparsers(dest='command', help='Analysis type')
