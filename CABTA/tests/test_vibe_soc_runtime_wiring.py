@@ -92,26 +92,27 @@ def test_production_forces_strict_dag_and_blocks_legacy_flags(monkeypatch):
     assert loop.capability_resolver.allow_static_fallback is False
 
 
-def test_dev_can_enable_legacy_runtime_fallback_explicitly(monkeypatch):
-    monkeypatch.delenv("AISA_ALLOW_LEGACY_RUNTIME_IN_PRODUCTION", raising=False)
+def test_dev_config_cannot_enable_legacy_runtime_fallback(monkeypatch):
+    monkeypatch.setenv("AISA_ALLOW_LEGACY_RUNTIME_IN_PRODUCTION", "true")
+    monkeypatch.setenv("AISA_STRICT_DAG_MODE", "false")
     loop = _loop({
-        "runtime": {"mode": "development"},
+        "runtime": {"mode": "development", "supervisor": {"enabled": True}},
         "agent": {
             "execution": {"strict_dag_mode": False, "allow_legacy_direct_tool_fallback": True},
             "capability_plugins": {"allow_static_catalog_fallback": True},
         },
     })
 
-    assert loop.strict_only_production is False
-    assert loop.strict_dag_mode is False
-    assert loop.allow_legacy_direct_tool_fallback is True
-    assert loop.runtime_supervisor_enabled is True
-    assert loop.capability_resolver.allow_static_fallback is True
+    assert loop.strict_only_production is True
+    assert loop.strict_dag_mode is True
+    assert loop.allow_legacy_direct_tool_fallback is False
+    assert loop.runtime_supervisor_enabled is False
+    assert loop.capability_resolver.allow_static_fallback is False
 
 
-def test_production_legacy_escape_hatch_is_explicit(monkeypatch):
-    monkeypatch.delenv("AISA_ALLOW_LEGACY_RUNTIME_IN_PRODUCTION", raising=False)
+def test_legacy_escape_hatch_is_removed(monkeypatch):
+    monkeypatch.setenv("AISA_ALLOW_LEGACY_RUNTIME_IN_PRODUCTION", "true")
     config = {"runtime": {"mode": "production"}, "agent": {"execution": {"allow_legacy_runtime_in_production": True}}}
 
-    assert legacy_runtime_allowed(config) is True
-    assert strict_only_production(config) is False
+    assert legacy_runtime_allowed(config) is False
+    assert strict_only_production(config) is True

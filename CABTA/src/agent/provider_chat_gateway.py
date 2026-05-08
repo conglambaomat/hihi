@@ -107,6 +107,39 @@ class ProviderChatGateway:
             "tool_count": 0,
         }
 
+    def build_model_planning_request(
+        self,
+        *,
+        provider_name: str,
+        messages: List[Dict[str, Any]],
+        prompt_envelope: Optional[Dict[str, Any]] = None,
+        schema: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self._normalize_provider_name(provider_name)
+        normalized_messages = [dict(message) for message in (messages or [])]
+        return {
+            "provider": "router",
+            "provider_family": "router",
+            "messages": normalized_messages,
+            "tools": [],
+            "mode": "model_led_planning",
+            "intent": "model_led_planning",
+            "tool_choice_allowed": False,
+            "native_tooling": False,
+            "response_format": {"type": "json_object"},
+            "temperature": 0.45,
+            "schema": dict(schema or {}),
+            "prompt_envelope": dict(prompt_envelope or {}),
+            "prompt_mode": "model_led_planning",
+            "structured_intent": "model_led_planning",
+            "tool_prompting_strategy": "disabled",
+            "tool_prompting_family": "router",
+            "tool_decision_format": "none",
+            "should_include_tool_schema_in_prompt": False,
+            "message_count": len(normalized_messages),
+            "tool_count": 0,
+        }
+
     def build_reviewer_request(
         self,
         *,

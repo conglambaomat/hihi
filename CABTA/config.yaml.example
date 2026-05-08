@@ -25,7 +25,6 @@ agent:
     max_repair_attempts: 1
     min_accept_confidence: 0.75
     min_clarify_confidence: 0.5
-    fallback_to_heuristic: true
     audit_deterministic_diff: true
     safety_gates_enforced:
       schema_validation: true
@@ -57,13 +56,7 @@ agent:
       workflow: 0.04
   runtime_mode: production
   execution:
-    strict_dag_mode: true
-    require_capability_boundary: true
-    allow_legacy_direct_tool_fallback: false
-    allow_legacy_runtime_in_production: false
     strict_dag_max_retries: 0
-  capability_plugins:
-    allow_static_catalog_fallback: false
   tool_policy:
     allowed_scopes:
     - data:logs

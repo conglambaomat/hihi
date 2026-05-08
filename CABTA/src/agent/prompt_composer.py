@@ -726,6 +726,41 @@ class PromptComposer:
             "context_budget_summary": rendered_context_pack.get("budget_report") if rendered_context_pack else None,
         }
 
+    def build_model_planner_prompt(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Build compact model-led planner prompt without chain-of-thought."""
+        ctx = dict(context or {})
+        allowed = {
+            "objective": ctx.get("objective"),
+            "alert": ctx.get("alert"),
+            "raw_input": self._truncate(str(ctx.get("raw_input") or ""), 1200),
+            "current_dag": ctx.get("current_dag"),
+            "adaptive_mutations": ctx.get("adaptive_mutations", [])[-8:] if isinstance(ctx.get("adaptive_mutations"), list) else [],
+            "evidence_graph": ctx.get("evidence_graph"),
+            "evidence_briefs": ctx.get("evidence_briefs", [])[-12:] if isinstance(ctx.get("evidence_briefs"), list) else [],
+            "hypotheses": ctx.get("hypotheses", [])[:8] if isinstance(ctx.get("hypotheses"), list) else [],
+            "coverage_gaps": ctx.get("coverage_gaps", [])[:10] if isinstance(ctx.get("coverage_gaps"), list) else [],
+            "failed_queries": ctx.get("failed_queries", [])[-8:] if isinstance(ctx.get("failed_queries"), list) else [],
+            "tool_failures": ctx.get("tool_failures", [])[-8:] if isinstance(ctx.get("tool_failures"), list) else [],
+            "analyst_follow_up": ctx.get("analyst_follow_up"),
+            "available_capabilities": ctx.get("available_capabilities", [])[:20] if isinstance(ctx.get("available_capabilities"), list) else [],
+            "available_tools": ctx.get("available_tools", [])[:30] if isinstance(ctx.get("available_tools"), list) else [],
+            "policy_boundaries": ctx.get("policy_boundaries", []),
+        }
+        system_prompt = "You are the model-led SOC investigation planner. You choose the next investigation step, but deterministic code will verify policy, scope, evidence references, approvals, and final-answer gates. Do not reveal chain-of-thought. Return only compact JSON matching the requested schema."
+        user_prompt = "Use this investigation board to propose the next SOC plan. Include planning_intent, soc_lane, lane_transition_reason, hypotheses_to_test, evidence_gaps, proposed_steps, expected_evidence, stop_conditions, risk_notes, and approval_notes. Proposed steps must use available capabilities/tools only, respect descriptor aliases/risk_profile/approval_required metadata, and params must be JSON objects.\n\nINVESTIGATION_BOARD_JSON:\n" + json.dumps(allowed, ensure_ascii=True, default=str)
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        return {
+            "messages": messages,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "prompt_mode": "model_led_planning",
+            "prompt_envelope": {
+                "system_instructions": system_prompt,
+                "investigation_context": {"prompt_mode": "model_led_planning", "investigation_board": allowed},
+                "user_intent": {"mode": "model_led_planning", "prompt": "propose_next_investigation_plan"},
+            },
+        }
+
     def build_summary_payload(
         self,
         *,

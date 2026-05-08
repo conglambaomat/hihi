@@ -293,7 +293,8 @@ async def send_message(request: Request, body: ChatMessage):
             )
             store.update_session_metadata(body.session_id, {"thread_id": thread_id}, merge=True)
         intent_payload = _intent_router.classify(body.message)
-        execution_mode = str(intent_payload.get("execution_mode") or ChatIntentRouter.DIRECT_RESPONSE_MODE)
+        execution_mode = ChatIntentRouter.INVESTIGATION_MODE
+        intent_payload["execution_mode"] = execution_mode
         latest_snapshot = thread_store.get_latest_snapshot(thread_id) if thread_store and thread_id else {}
         thread_payload = thread_store.get_thread(thread_id) if thread_store and thread_id else {}
         snapshot = latest_snapshot.get("snapshot", {}) if isinstance(latest_snapshot, dict) else {}
@@ -410,8 +411,9 @@ async def send_message(request: Request, body: ChatMessage):
             "soc_progress": _soc_progress_metadata(agent_loop, session_id),
         }
     else:
-        # New chat turn - authoritative router decides direct vs investigation mode before runtime bootstrap
+        # New chat turn - runtime SOC always starts an agentic investigation path.
         intent_payload = _intent_router.classify(body.message)
+        intent_payload["execution_mode"] = ChatIntentRouter.INVESTIGATION_MODE
         session_id = await agent_loop.investigate(
             body.message,
             metadata={

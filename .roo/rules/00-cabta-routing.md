@@ -65,3 +65,12 @@ Before implementation, state:
 3. whether GitNexus was checked or unavailable for a serious code task
 4. whether a plan is required
 5. which tests and docs are likely affected
+
+## Completion hygiene
+
+When ending a task, report the result only once.
+
+- Do not send a long normal assistant message (`Roo said`) and then call `attempt_completion` or `Task Completed` with the same content.
+- If `attempt_completion` is required, put the final result in that tool call and keep the preceding normal message absent, tool-only, or extremely short.
+- Keep completions concise, non-duplicative, and focused on what changed, where it changed, and any verification performed.
+- Prefer referencing created or modified artifacts by path instead of repeating long generated content.

@@ -6,7 +6,7 @@ import inspect
 import hashlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 
 NON_TOOL_CAPABILITIES = {"config.capability.explain"}
@@ -35,6 +35,7 @@ class InvestigationDAGNode:
     params: Dict[str, Any] = field(default_factory=dict)
     blocking_coverage: bool = False
     observations: List[Dict[str, Any]] = field(default_factory=list)
+    adaptive_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -42,7 +43,7 @@ class InvestigationDAGNode:
 
 @dataclass
 class InvestigationDAG:
-    schema_version: str = "investigation-dag/v1"
+    schema_version: str = "investigation-dag/v2"
     dag_id: str = ""
     task_ref: str = ""
     objective_ref: str = ""
@@ -50,6 +51,8 @@ class InvestigationDAG:
     nodes: List[Dict[str, Any]] = field(default_factory=list)
     edges: List[Dict[str, Any]] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
+    mutation_ledger: List[Dict[str, Any]] = field(default_factory=list)
+    adaptive_policy: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -74,6 +77,10 @@ class InvestigationDAG:
             "ready_node_ids": ready_node_ids,
             "completed_node_ids": [node.get("node_id") for node in self.nodes if node.get("status") == "completed"],
             "pending_node_ids": [node.get("node_id") for node in self.nodes if node.get("status") == "pending"],
+            "schema_version": self.schema_version,
+            "mutation_count": len(self.mutation_ledger),
+            "latest_mutation_id": (self.mutation_ledger[-1].get("mutation_id") if self.mutation_ledger else None),
+            "adaptive": self.schema_version.endswith("/v2"),
         }
 
     def to_dict(self) -> Dict[str, Any]:
@@ -84,6 +91,9 @@ class InvestigationDAG:
     def from_dict(cls, payload: Optional[Dict[str, Any]]) -> "InvestigationDAG":
         data = dict(payload or {})
         valid = set(cls.__dataclass_fields__.keys())
+        if data.get("schema_version") == "investigation-dag/v1":
+            data.setdefault("mutation_ledger", [])
+            data.setdefault("adaptive_policy", {"upgraded_from": "investigation-dag/v1"})
         return cls(**{key: value for key, value in data.items() if key in valid})
 
     def update_with_observations(self, observations: List[Dict[str, Any]]) -> "InvestigationDAG":
@@ -99,6 +109,39 @@ class InvestigationDAG:
         self.updated_at = _now_iso()
         self._refresh_summary()
         return self
+
+    def append_mutation(self, mutation: Dict[str, Any]) -> "InvestigationDAG":
+        payload = dict(mutation or {})
+        payload.setdefault("mutation_id", _stable_id("mut", self.dag_id, len(self.mutation_ledger), payload))
+        payload.setdefault("created_at", _now_iso())
+        payload.setdefault("status", "applied")
+        self.mutation_ledger.append(payload)
+        self.updated_at = _now_iso()
+        self._refresh_summary()
+        return self
+
+    def apply_mutation(self, mutation: Dict[str, Any]) -> "InvestigationDAG":
+        payload = dict(mutation or {})
+        operation = str(payload.get("operation") or "append_node").strip()
+        node = dict(payload.get("node") or {})
+        if operation in {"append_node", "insert_node"} and node:
+            node.setdefault("node_id", _stable_id("node", self.dag_id, payload.get("trigger"), len(self.nodes)))
+            node.setdefault("node_type", "capability")
+            node.setdefault("status", "ready" if operation == "append_node" else "pending")
+            node.setdefault("observations", [])
+            node.setdefault("adaptive_metadata", {"source_mutation": payload.get("mutation_id")})
+            if not any(existing.get("node_id") == node.get("node_id") for existing in self.nodes):
+                self.nodes.append(node)
+            for edge in payload.get("edges") or []:
+                if isinstance(edge, dict) and edge not in self.edges:
+                    self.edges.append(dict(edge))
+        elif operation == "supersede_node":
+            target = str(payload.get("target_node_id") or "")
+            for existing in self.nodes:
+                if existing.get("node_id") == target:
+                    existing["status"] = "superseded"
+                    existing.setdefault("adaptive_metadata", {})["superseded_by"] = payload.get("mutation_id")
+        return self.append_mutation(payload)
 
     def _unlock_ready_nodes(self) -> None:
         completed = {node.get("node_id") for node in self.nodes if node.get("status") == "completed"}
@@ -306,6 +349,9 @@ class StrictDAGExecutor:
                 "capability_enforced": True,
                 "capability_id": capability_id,
                 "strict_dag_node_id": (node or {}).get("node_id"),
+                "dag_node_id": (node or {}).get("node_id"),
+                "dag_mutation_id": ((node or {}).get("adaptive_metadata") or {}).get("source_mutation"),
+                "adaptive_dag": bool((node or {}).get("adaptive_metadata")),
                 "capability_envelope": dict(envelope or {}),
             }
         )

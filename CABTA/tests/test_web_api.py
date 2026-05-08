@@ -676,7 +676,7 @@ class TestFastAPIEndpoints:
         assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
         assert kwargs['metadata']['chat_user_message'] == 'Please investigate suspicious outbound callbacks'
 
-    def test_chat_new_identity_question_routes_to_direct_response_mode(self):
+    def test_chat_new_identity_question_routes_to_investigation_mode(self):
         self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
 
         r = self.client.post('/api/chat', json={
@@ -687,7 +687,7 @@ class TestFastAPIEndpoints:
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert args[0] == 'bạn có phải là nền tảng vibesoc thật sự chưa'
-        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
         assert kwargs['metadata']['chat_intent'] == 'capability_question'
         assert kwargs['metadata']['chat_has_observable'] is False
         assert kwargs['metadata']['chat_looks_like_artifact'] is False
@@ -697,59 +697,17 @@ class TestFastAPIEndpoints:
         "hello bạn có thể làm được gì",
         "hi what can you do?",
     ])
-    def test_chat_live_capability_help_returns_direct_help_without_investigation_gap(self, message):
+    def test_chat_live_capability_help_uses_agentic_investigation(self, message):
+        self.app.state.agent_loop.investigate = AsyncMock(return_value='chat-session')
+
         r = self.client.post('/api/chat', json={'message': message})
 
         assert r.status_code == 200
-        payload = r.json()
-        session_id = payload['session_id']
-        soc_progress = payload.get('soc_progress') or {}
-        assert soc_progress.get('objective_summary') == message
-
-        session_payload = None
-        for _ in range(30):
-            session_response = self.client.get(f'/api/chat/sessions/{session_id}')
-            assert session_response.status_code == 200
-            session_payload = session_response.json()
-            if session_payload.get('status') in {'completed', 'failed'}:
-                break
-            time.sleep(0.05)
-
-        assert session_payload is not None
-        assert session_payload.get('status') == 'completed'
-        metadata = session_payload.get('metadata') or {}
-        assert metadata.get('chat_execution_mode') == 'direct_response'
-        assert metadata.get('chat_intent') in {'capability_question', 'greeting'}
-        assert metadata.get('chat_has_observable') is False
-        assert metadata.get('chat_looks_like_artifact') is False
-
-        reasoning_state = session_payload.get('reasoning_state') or {}
-        soc_task = reasoning_state.get('soc_task_state') or {}
-        assert soc_task.get('answer_mode') == 'direct_help'
-        assert soc_task.get('lane') == 'config'
-        assert soc_task.get('intent') == 'config_capability_question'
-        assert soc_task.get('required_capabilities') == ['config.capability.explain']
-        assert any(
-            event.get('event') == 'direct_help_short_circuit'
-            and event.get('capability_id') == 'config.capability.explain'
-            for event in soc_task.get('progress_events', [])
-            if isinstance(event, dict)
-        )
-
-        steps = session_payload.get('steps') or []
-        assert not any(step.get('step_type') == 'tool_call' for step in steps)
-        final_steps = [step for step in steps if step.get('step_type') == 'final_answer']
-        assert final_steps
-        final_payload = json.loads(final_steps[-1]['content'])
-        answer = final_payload.get('answer', '')
-        assert 'AISA' in answer
-        assert 'IOC triage' in answer
-        assert 'log/Splunk-style hunts' in answer
-        assert 'insufficient' not in answer.lower()
-        assert 'UNKNOWN' not in answer
-        assert final_payload.get('answer_mode') == 'direct_help'
-        assert final_payload.get('capability_id') == 'config.capability.explain'
-        assert final_payload.get('skip_final_answer_gate') is True
+        kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
+        assert kwargs['metadata']['chat_intent'] in {'capability_question', 'greeting'}
+        assert kwargs['metadata']['chat_has_observable'] is False
+        assert kwargs['metadata']['chat_looks_like_artifact'] is False
 
     def test_chat_follow_up_uses_structured_context_and_preserves_profile(self):
         original_session = self.app.state.agent_store.create_session(
@@ -818,7 +776,7 @@ class TestFastAPIEndpoints:
         args = self.app.state.agent_loop.investigate.await_args.args
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Only use tools if the current evidence is insufficient.' in args[0]
-        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
         assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
 
     def test_chat_follow_up_builder_handles_legacy_context_without_snapshot(self):
@@ -853,7 +811,7 @@ class TestFastAPIEndpoints:
         assert 'Previous investigation goal:\nInvestigate suspicious sign-in activity)' in args[0]
         assert 'Previous evidence snapshot:' in args[0]
         assert 'Only use tools if the current evidence is insufficient.' in args[0]
-        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
         assert kwargs['metadata']['chat_follow_up_requires_fresh_evidence'] is False
 
     def test_chat_follow_up_while_active_queues_thread_command(self):
@@ -945,10 +903,10 @@ class TestFastAPIEndpoints:
         kwargs = self.app.state.agent_loop.investigate.await_args.kwargs
         assert 'Latest root-cause state:' in args[0]
         assert 'Published case memory facts:' in args[0]
-        assert 'Execution mode: direct_response.' in args[0]
-        assert 'Treat this as a direct conversational follow-up.' in args[0]
+        assert 'Execution mode: direct_response.' not in args[0]
+        assert 'Treat this as a direct conversational follow-up.' not in args[0]
         assert 'Do not present published case truth as more authoritative than this lifecycle allows.' in args[0]
-        assert kwargs['metadata']['chat_execution_mode'] == 'direct_response'
+        assert kwargs['metadata']['chat_execution_mode'] == 'investigation'
         assert 'Restored memory contract: memory_scope=published, memory_kind=authoritative_case_truth, publication_scope=published, memory_is_authoritative=true' in args[0]
         assert "memory_boundary={'case_id': 'CASE-42', 'thread_id': 'case-thread-1', 'session_id': 'sess-case-memory', 'publication_scope': 'published'}" in args[0]
         assert kwargs['metadata']['thread_id'] == 'case-thread-1'

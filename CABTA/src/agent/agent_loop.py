@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from .agent_state import AgentPhase, AgentState
+from .adaptive_dag import AdaptiveDAGController, AdaptiveDAGTrigger
 from .agent_store import AgentStore
 from .case_memory_service import CaseMemoryService
 from .capability_plan import CapabilityPlanBuilder
@@ -49,6 +50,7 @@ from .preflight_validator import PreflightValidator
 from .llm_request_interpreter import LLMRequestInterpreter
 from .request_understanding import RequestUnderstandingExtractor, SOCRequestInterpreter
 from .log_query_planner import LogQueryPlanner
+from .model_led_planner import ModelLedPlanner, ModelLedPlanVerifier, ModelPlannerContext
 from .coverage import CoverageEvaluator
 from .reflection_engine import PlanRepair, ReflectionEngine
 from .query_planning import InvestigationQueryPlanner, LLMQueryAssistant, QueryResultEvaluator
@@ -293,21 +295,18 @@ class AgentLoop:
         execution_cfg = dict((config.get("agent", {}) or {}).get("execution", {}) or {})
         plugin_cfg = dict((config.get("agent", {}) or {}).get("capability_plugins", {}) or {})
         self.production_mode = is_production_mode(config)
-        self.allow_legacy_runtime_in_production = legacy_runtime_allowed(config, execution_cfg)
-        self.strict_only_production = strict_only_production(config, execution_cfg)
-        self.strict_dag_mode = self._resolve_strict_dag_mode(config, execution_cfg)
-        if self.strict_only_production:
-            self.strict_dag_mode = True
-            execution_cfg["allow_legacy_direct_tool_fallback"] = False
-            plugin_cfg["allow_static_catalog_fallback"] = False
+        self.strict_only_production = True
+        self.strict_dag_mode = True
+        execution_cfg["allow_legacy_direct_tool_fallback"] = False
+        plugin_cfg["allow_static_catalog_fallback"] = False
         self.capability_plugin_registry = CapabilityPluginRegistry.bootstrap_builtin()
         self.capability_resolver = CapabilityResolver(
             get_tool=self.tools.get_tool,
             plugin_registry=self.capability_plugin_registry,
-            allow_static_fallback=bool(plugin_cfg.get("allow_static_catalog_fallback", False)),
+            allow_static_fallback=False,
         )
-        self.require_capability_boundary = True if self.strict_only_production else bool(execution_cfg.get("require_capability_boundary", True))
-        self.allow_legacy_direct_tool_fallback = False if self.strict_only_production else bool(execution_cfg.get("allow_legacy_direct_tool_fallback", not self.strict_dag_mode))
+        self.require_capability_boundary = True
+        self.allow_legacy_direct_tool_fallback = False
         self.tool_policy_engine = ToolPolicyEngine(config)
         self.capability_action_executor = CapabilityActionExecutor(
             binder=self.parameter_binder,
@@ -322,8 +321,9 @@ class AgentLoop:
             max_retries=int(execution_cfg.get("strict_dag_max_retries", 0) or 0),
         )
         self.strict_dag_timeout_seconds = float(execution_cfg.get("strict_dag_timeout_seconds", 55) or 55)
+        self.adaptive_dag_controller = AdaptiveDAGController(execution_cfg.get("adaptive_dag_policy", {}))
         runtime_cfg = dict((config.get("runtime", {}) or {}).get("supervisor", {}) or execution_cfg.get("runtime_supervisor", {}) or {})
-        self.runtime_supervisor_enabled = False if self.strict_only_production else bool(runtime_cfg.get("enabled", True))
+        self.runtime_supervisor_enabled = False
         self.runtime_supervisor = AgentRuntimeSupervisor(
             max_queue_size=int(runtime_cfg.get("max_queue_size", 100) or 100),
             worker_count=int(runtime_cfg.get("worker_count", 1) or 1),
@@ -353,6 +353,7 @@ class AgentLoop:
         self.root_cause_engine = RootCauseEngine()
         self.chat_intent_router = ChatIntentRouter()
         self.prompt_composer = PromptComposer()
+        self.model_led_planner = ModelLedPlanner(ModelLedPlanVerifier(get_tool=self.tools.get_tool, capability_exists=self._capability_exists))
         self.context_orchestrator = ContextOrchestrator(
             config=config,
             model_resolver=lambda: self._active_model_name(self.provider),
@@ -500,6 +501,13 @@ class AgentLoop:
         soc_task_state.capability_plan = capability_plan.to_dict()
         soc_task_state.actions = list(capability_plan.actions)
         investigation_dag = self.investigation_dag_builder.build(soc_task_state, objective_contract_dict, capability_plan.to_dict())
+        if metadata.get("chat_parent_session_id") or metadata.get("chat_follow_up_requires_fresh_evidence"):
+            investigation_dag = self._apply_adaptive_dag_trigger(
+                investigation_dag,
+                "analyst_follow_up",
+                "Analyst follow-up must be represented as an auditable DAG pivot.",
+                {"capability_id": "config.capability.explain", "label": "Adaptive analyst follow-up", "params": {"question": goal}},
+            )
         soc_task_state.investigation_dag = investigation_dag.to_dict()
         objective_contract_dict["capability_plan_ref"] = capability_plan.plan_id
         objective_contract_dict["investigation_dag_ref"] = investigation_dag.dag_id
@@ -563,11 +571,11 @@ class AgentLoop:
             session_id,
             {
                 "thread_id": thread_id,
-                "executor_path": "strict_dag" if self.strict_dag_mode else "legacy_react",
+                "executor_path": "strict_dag",
                 "strict_dag_mode": self.strict_dag_mode,
                 "capability_registry_status": self.capability_plugin_registry.status(),
                 "strict_only_production": self.strict_only_production,
-                "legacy_fallback_allowed": not self.strict_only_production and self.allow_legacy_direct_tool_fallback,
+                "legacy_fallback_allowed": False,
                 "investigation_plan": investigation_plan,
                 "investigation_dag": investigation_dag.to_dict(),
                 **workdir_metadata,
@@ -611,35 +619,6 @@ class AgentLoop:
         self._refresh_reasoning_outputs(session_id, state)
         self._active_sessions[session_id] = state
         self._approval_events[session_id] = asyncio.Event()
-
-        direct_help_decision = self._build_direct_help_decision(state)
-        if direct_help_decision is not None:
-            summary = str(direct_help_decision.get("answer") or "")
-            gate_payload = {
-                "status": "skipped_direct_help",
-                "allowed": True,
-                "reason": "Capability/help chat answer does not make investigation claims.",
-                "answer_mode": "direct_help",
-            }
-            state.add_finding({
-                "type": "final_answer",
-                "answer": summary,
-                "verdict": direct_help_decision.get("verdict", "UNKNOWN"),
-                "final_answer_gate": gate_payload,
-                "reasoning": direct_help_decision.get("reasoning", ""),
-            })
-            state.phase = AgentPhase.COMPLETED
-            self.store.add_step(session_id, state.step_count, 'thinking', json.dumps(direct_help_decision, default=str))
-            self.store.add_step(session_id, state.step_count, 'final_answer', json.dumps(direct_help_decision, default=str))
-            self._record_thread_assistant_message(state, summary)
-            self._refresh_reasoning_outputs(session_id, state)
-            self._persist_reasoning_metadata(session_id, state)
-            self.store.update_session_status(session_id, 'completed', summary)
-            self.store.update_session_findings(session_id, state.findings)
-            self._notify(session_id, {"type": "completed", "status": "completed", "summary": summary, "steps": state.step_count})
-            self._emit_agent_event(session_id, "direct_help.completed", state=state, payload={"capability_id": "config.capability.explain"}, refs=[])
-            logger.info(f"[AGENT] Direct capability/help answer completed: {session_id} - {goal[:80]}")
-            return session_id
 
         # Capture the main event loop so _notify() can safely push
         # messages to subscriber queues from background threads.
@@ -1035,6 +1014,140 @@ class AgentLoop:
         state.reasoning_state = merge_metadata["reasoning_state"]
         return {"child_context": child_context, "child_result": child_result, "parent_merge_metadata": merge_metadata["merge_metadata"]}
 
+
+    def _capability_exists(self, capability_id: str) -> bool:
+        capability_id = str(capability_id or "").strip()
+        if not capability_id:
+            return False
+        if capability_id == "config.capability.explain":
+            return True
+        try:
+            return self.capability_resolver.resolve(capability_id) is not None
+        except Exception:
+            return capability_id in {"log.search", "ioc.enrich", "file.analyze", "email.analyze", "threat_intel.lookup"}
+
+    def _apply_adaptive_dag_trigger(self, dag: InvestigationDAG | Dict[str, Any], trigger_type: str, reason: str, evidence: Optional[Dict[str, Any]] = None) -> InvestigationDAG:
+        dag_obj = dag if isinstance(dag, InvestigationDAG) else InvestigationDAG.from_dict(dag)
+        result = self.adaptive_dag_controller.handle_trigger(
+            dag_obj,
+            AdaptiveDAGTrigger(trigger_type=trigger_type, reason=reason, evidence=dict(evidence or {})),
+        )
+        return InvestigationDAG.from_dict(result.get("dag") or dag_obj.to_dict())
+
+    def _record_adaptive_dag_trigger_on_state(self, state: AgentState, trigger_type: str, reason: str, evidence: Optional[Dict[str, Any]] = None) -> None:
+        if not isinstance(state.reasoning_state, dict):
+            return
+        dag_payload = state.reasoning_state.get("investigation_dag") if isinstance(state.reasoning_state.get("investigation_dag"), dict) else {}
+        dag_obj = self._apply_adaptive_dag_trigger(dag_payload, trigger_type, reason, evidence)
+        state.reasoning_state["investigation_dag"] = dag_obj.to_dict()
+        state.reasoning_state["adaptive_dag"] = {
+            "schema_version": dag_obj.schema_version,
+            "mutation_ledger": list(dag_obj.mutation_ledger),
+            "summary": dict(dag_obj.summary),
+        }
+
+    def _bridge_adaptive_dag_from_reasoning(self, session_id: str, state: AgentState, dag_payload: Dict[str, Any]) -> Dict[str, Any]:
+        dag_obj = InvestigationDAG.from_dict(dag_payload)
+        reasoning = state.reasoning_state if isinstance(state.reasoning_state, dict) else {}
+        retry_state = reasoning.get("retry_state") if isinstance(reasoning.get("retry_state"), dict) else {}
+        latest_delta = reasoning.get("latest_coverage_delta") if isinstance(reasoning.get("latest_coverage_delta"), dict) else {}
+        if latest_delta.get("still_missing_facets") or retry_state.get("still_missing_facets"):
+            dag_obj = self._apply_adaptive_dag_trigger(dag_obj, "coverage_gap", "Coverage gaps remain after query evaluation.", {"missing_facets": latest_delta.get("still_missing_facets") or retry_state.get("still_missing_facets"), "capability_id": "log.search"})
+        if retry_state.get("last_classification") in {"empty", "partial"}:
+            dag_obj = self._apply_adaptive_dag_trigger(dag_obj, f"query_{retry_state.get('last_classification')}", "Query retry bridge requested by result classifier.", {"capability_id": "log.search", "params": retry_state.get("next_params") or {}})
+        if reasoning.get("hypotheses") and not dag_obj.mutation_ledger:
+            dag_obj = self._apply_adaptive_dag_trigger(dag_obj, "hypothesis_new", "Hypothesis bridge requested an evidence pivot.", {"capability_id": "ioc.enrich"})
+        payload = dag_obj.to_dict()
+        if isinstance(state.reasoning_state, dict):
+            state.reasoning_state["investigation_dag"] = payload
+            state.reasoning_state["adaptive_dag"] = {"schema_version": dag_obj.schema_version, "mutation_ledger": list(dag_obj.mutation_ledger), "summary": dict(dag_obj.summary)}
+        return payload
+
+    def _build_model_planner_context(self, state: AgentState, *, trigger_reason: str = "") -> ModelPlannerContext:
+        reasoning = state.reasoning_state if isinstance(state.reasoning_state, dict) else {}
+        dag = reasoning.get("investigation_dag") if isinstance(reasoning.get("investigation_dag"), dict) else {}
+        coverage = reasoning.get("coverage_matrix") if isinstance(reasoning.get("coverage_matrix"), dict) else {}
+        gaps = list(coverage.get("blocking_gaps") or coverage.get("gaps") or reasoning.get("missing_evidence") or [])
+        failures = [finding for finding in list(state.findings or [])[-12:] if isinstance(finding, dict) and isinstance(finding.get("result"), dict) and finding.get("result", {}).get("error")]
+        tools = []
+        for tool in self.tools.get_tools_for_llm()[:40]:
+            fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+            tools.append({"name": fn.get("name"), "description": fn.get("description"), "parameters": fn.get("parameters", {})})
+        capabilities = []
+        ontology = getattr(getattr(self, "capability_resolver", None), "ontology", None)
+        if ontology and hasattr(ontology, "all"):
+            for descriptor in ontology.all():
+                item = descriptor.to_dict() if hasattr(descriptor, "to_dict") else {}
+                capabilities.append({
+                    "capability_id": item.get("capability_id"),
+                    "description": item.get("description"),
+                    "aliases": item.get("all_aliases", []),
+                    "risk_profile": item.get("risk_profile", {}),
+                    "compatible_tools": [tool.get("tool_name") for tool in item.get("compatible_tools", []) if isinstance(tool, dict)],
+                    "required_inputs": item.get("required_inputs", []),
+                    "optional_inputs": item.get("optional_inputs", []),
+                })
+        for action in ((reasoning.get("capability_plan") or {}).get("actions") or []) if isinstance(reasoning.get("capability_plan"), dict) else []:
+            if isinstance(action, dict) and not any(cap.get("capability_id") == action.get("capability_id") for cap in capabilities):
+                capabilities.append({"capability_id": action.get("capability_id"), "allowed_tools": action.get("allowed_tools", []), "params": action.get("params") or action.get("bound_params") or {}})
+        return ModelPlannerContext(
+            objective=str((reasoning.get("objective_contract") or {}).get("analyst_objective") or state.goal),
+            alert=reasoning.get("compiled_input", {}) if isinstance(reasoning.get("compiled_input"), dict) else {},
+            raw_input=state.goal,
+            current_dag=dag,
+            adaptive_mutations=list(dag.get("mutation_ledger") or []) if isinstance(dag, dict) else [],
+            evidence_graph=state.evidence_state if isinstance(state.evidence_state, dict) else {},
+            evidence_briefs=list(reasoning.get("evidence_chips") or state.active_observations[-12:] or []),
+            hypotheses=list(reasoning.get("hypotheses") or reasoning.get("candidate_hypotheses") or []),
+            coverage_gaps=gaps,
+            failed_queries=list(reasoning.get("query_attempts") or [])[-8:],
+            tool_failures=failures,
+            analyst_follow_up=self._latest_analyst_message(state) or trigger_reason,
+            available_capabilities=capabilities,
+            available_tools=tools,
+            policy_boundaries=["capability aliases/risk/approval come from capability descriptor metadata", "deterministic verifier validates only", "all production tool calls require DAG node and capability boundary", "final answer requires evidence gate"],
+            metadata={"session_id": state.session_id, "trigger_reason": trigger_reason},
+        )
+
+    async def _request_model_led_plan(self, state: AgentState, *, trigger_reason: str = "") -> Optional[Dict[str, Any]]:
+        if self._provider_is_currently_unavailable(self.provider) or not self._provider_is_configured(self.provider):
+            return None
+        context = self._build_model_planner_context(state, trigger_reason=trigger_reason)
+        prompt_payload = self.prompt_composer.build_model_planner_prompt(context.to_dict())
+        raw = await self._model_led_planning_provider(prompt_payload["messages"], prompt_payload.get("prompt_envelope", {}))
+        plan = self.model_led_planner.parse(raw)
+        if plan is None:
+            verification = self.model_led_planner.verify(raw, context)
+            return {"plan": None, "verification": verification.to_dict(), "context": context.to_dict()}
+        verification = self.model_led_planner.verify(plan, context)
+        return {"plan": plan.to_dict(), "verification": verification.to_dict(), "context": context.to_dict()}
+
+    def _apply_model_led_plan_to_dag(self, state: AgentState, plan_payload: Dict[str, Any], verification_payload: Dict[str, Any]) -> Dict[str, Any]:
+        dag = (state.reasoning_state or {}).get("investigation_dag", {}) if isinstance(state.reasoning_state, dict) else {}
+        dag_obj = InvestigationDAG.from_dict(dag)
+        plan_id = str((plan_payload or {}).get("plan_id") or "")
+        for step in verification_payload.get("allowed_steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            evidence = {
+                "capability_id": step.get("capability_id") or ("log.search" if step.get("tool_name") == "search_logs" else "config.capability.explain"),
+                "allowed_tools": [step.get("tool_name")] if step.get("tool_name") else [],
+                "params": step.get("params") or {},
+                "label": step.get("title") or "Model-led planner pivot",
+                "action_id": step.get("action_id") or step.get("step_id"),
+                "proposal_source": "model_led_planner",
+                "model_led_plan_id": plan_id,
+                "model_led_step_id": step.get("step_id"),
+                "model_led_dedupe_key": step.get("dedupe_key"),
+                "expected_evidence": step.get("expected_evidence", []),
+            }
+            dag_obj = self._apply_adaptive_dag_trigger(dag_obj, "model_led_planner", step.get("rationale") or "Model-led planner proposed next evidence pivot.", evidence)
+        payload = dag_obj.to_dict()
+        if isinstance(state.reasoning_state, dict):
+            state.reasoning_state["investigation_dag"] = payload
+            state.reasoning_state["adaptive_dag"] = {"schema_version": dag_obj.schema_version, "mutation_ledger": list(dag_obj.mutation_ledger), "summary": dict(dag_obj.summary)}
+        return payload
+
     def _resolve_specialist_team(self, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
         return self.specialist_router.resolve_specialist_team(metadata)
 
@@ -1414,6 +1527,8 @@ class AgentLoop:
                 structured.setdefault("coverage", {"lane": coverage.get("lane"), "status": coverage.get("overall_status")})
                 state.reasoning_state["structured_verdict"] = structured
             state.reasoning_state["final_answer_gate"] = gate_payload
+            if gate_payload.get("allowed") is False or str(gate_payload.get("status") or "").lower() in {"blocked", "needs_more_evidence", "insufficient_evidence"}:
+                self._record_adaptive_dag_trigger_on_state(state, "final_gate_blocked", str(gate_payload.get("reason") or "Final gate blocked."), {"gate": gate_payload})
             state.reasoning_state["evidence_chips"] = list(gate_payload.get("evidence_chips") or [])
             state.reasoning_state["verified_claims"] = list(gate_payload.get("verified_claims") or [])
             state.reasoning_state["unsupported_claims"] = list(gate_payload.get("downgraded_claims") or [])
@@ -1567,6 +1682,9 @@ class AgentLoop:
                 "context_pack_summary_latest": getattr(state, "context_pack_summary_latest", None),
                 "context_ledger_latest": getattr(state, "context_ledger_latest", None),
                 "context_budget_latest": getattr(state, "context_budget_latest", None),
+                "model_led_plan": (state.reasoning_state or {}).get("model_led_plan", {}),
+                "model_led_plan_verification": (state.reasoning_state or {}).get("model_led_plan_verification", {}),
+                "proposal_source": "model_led_planner" if (state.reasoning_state or {}).get("model_led_plan") else (self._session_metadata(session_id) or {}).get("proposal_source"),
                 "context_ledgers": append_capped_ledger(
                     (self._session_metadata(session_id) or {}).get("context_ledgers", []),
                     getattr(state, "context_ledger_latest", {}) if isinstance(getattr(state, "context_ledger_latest", {}), dict) else {},
@@ -2641,14 +2759,25 @@ class AgentLoop:
             task_state = SOCTaskState.from_legacy_reasoning_state(reasoning, session_id=session_id, raw_request=state.goal)
             task_state.session_id = session_id
             dag_payload = reasoning.get("investigation_dag", {}) if isinstance(reasoning.get("investigation_dag"), dict) else {}
-            self.store.update_session_metadata(session_id, {"executor_path": "strict_dag", "legacy_fallback_allowed": False}, merge=True)
+            model_led_result = await self._request_model_led_plan(state, trigger_reason="strict_dag_pre_execution")
+            if isinstance(model_led_result, dict):
+                plan_payload = model_led_result.get("plan") or {}
+                verification_payload = model_led_result.get("verification") or {}
+                if plan_payload and verification_payload.get("allowed_steps"):
+                    dag_payload = self._apply_model_led_plan_to_dag(state, plan_payload, verification_payload)
+                if isinstance(state.reasoning_state, dict):
+                    state.reasoning_state["model_led_plan"] = plan_payload
+                    state.reasoning_state["model_led_plan_verification"] = verification_payload
+                self.store.update_session_metadata(session_id, {"model_led_plan": plan_payload, "model_led_plan_verification": verification_payload, "proposal_source": "model_led_planner"}, merge=True)
+            dag_payload = self._bridge_adaptive_dag_from_reasoning(session_id, state, dag_payload)
+            self.store.update_session_metadata(session_id, {"executor_path": "strict_dag", "legacy_fallback_allowed": False, "adaptive_dag": dag_payload.get("summary", {})}, merge=True)
             self._emit_agent_event(session_id, "executor.path", state=state, payload={"executor_path": "strict_dag", "strict_dag_mode": True, "legacy_fallback_allowed": False}, refs=[])
             result = await asyncio.wait_for(
                 self.strict_dag_executor.execute(
                     dag_payload,
                     task_state=task_state,
                     objective_contract=objective,
-                    context={"session_id": session_id, "executor_path": "strict_dag"},
+                    context={"session_id": session_id, "executor_path": "strict_dag", "adaptive_dag": True},
                 ),
                 timeout=max(1.0, self.strict_dag_timeout_seconds),
             )
@@ -2670,6 +2799,7 @@ class AgentLoop:
             if isinstance(state.reasoning_state, dict):
                 state.reasoning_state["strict_dag_execution"] = payload
                 state.reasoning_state["investigation_dag"] = payload.get("dag", {})
+                state.reasoning_state["adaptive_dag"] = {"schema_version": (payload.get("dag") or {}).get("schema_version"), "mutation_ledger": (payload.get("dag") or {}).get("mutation_ledger", []), "summary": (payload.get("dag") or {}).get("summary", {})}
             self._refresh_reasoning_outputs(session_id, state)
             if not result.allowed:
                 state.errors.extend(payload.get("blocking_reasons") or ["Strict DAG execution blocked."])
@@ -2730,27 +2860,22 @@ class AgentLoop:
             timeout_message = f"Strict DAG execution timed out after {self.strict_dag_timeout_seconds:.0f}s before producing evidence; AISA safe-stopped the session instead of leaving it active."
             logger.error("[AGENT] Strict DAG loop timeout for %s: %s", session_id, timeout_message)
             state.errors.append(timeout_message)
-            state.phase = AgentPhase.COMPLETED
-            degraded_finding = {
-                "type": "capability_degraded",
-                "capability": "strict_dag_runtime",
-                "reasoning": timeout_message,
-                "decision": {"action": "safe_stop", "executor_path": "strict_dag"},
+            state.phase = AgentPhase.FAILED
+            failure_payload = {
+                "type": "agentic_runtime_error",
+                "error_code": "strict_dag_timeout",
+                "message": timeout_message,
+                "executor_path": "strict_dag",
             }
-            state.add_finding(degraded_finding)
-            state.add_finding({
-                "type": "final_answer",
-                "answer": timeout_message,
-                "verdict": "inconclusive",
-            })
-            self.store.add_step(session_id, state.step_count, "runtime_safe_stop", json.dumps(degraded_finding, default=str))
+            state.add_finding(failure_payload)
+            self.store.add_step(session_id, state.step_count, "runtime_error", json.dumps(failure_payload, default=str))
             state.step_count += 1
             self._refresh_reasoning_outputs(session_id, state)
             self._persist_reasoning_metadata(session_id, state)
-            self.store.update_session_status(session_id, "completed", timeout_message)
+            self.store.update_session_status(session_id, "failed", timeout_message)
             self.store.update_session_findings(session_id, state.findings)
-            self.store.update_session_metadata(session_id, {"executor_path": "strict_dag", "strict_dag_timeout": True, "strict_dag_error": timeout_message}, merge=True)
-            self._notify(session_id, {"type": "completed", "status": "completed", "summary": timeout_message, "steps": state.step_count, "executor_path": "strict_dag", "degraded": True})
+            self.store.update_session_metadata(session_id, {"executor_path": "strict_dag", "strict_dag_timeout": True, "strict_dag_error": failure_payload}, merge=True)
+            self._notify(session_id, {"type": "failed", "error": failure_payload, "executor_path": "strict_dag"})
         except Exception as exc:
             logger.error("[AGENT] Strict DAG loop error for %s: %s", session_id, exc, exc_info=True)
             state.errors.append(str(exc))
@@ -4288,8 +4413,6 @@ class AgentLoop:
             return normalized
         except Exception as exc:
             logger.debug("[AGENT] Capability boundary normalization failed", exc_info=True)
-            if self.allow_legacy_direct_tool_fallback:
-                return {**decision, "execution_boundary_warning": str(exc)}
             return {"action": "degraded_capability", "tool": decision.get("tool"), "params": decision.get("params", {}), "reasoning": str(exc)}
 
     def _soc_alert_file_analysis_blocker(self, state: AgentState, capability: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -4813,6 +4936,24 @@ class AgentLoop:
             looks_like_artifact_submission=self._looks_like_artifact_submission,
             build_next_action_from_context=self._build_next_action_from_context,
             state=state,
+        )
+
+    async def _model_led_planning_provider(self, messages: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Optional[Any]:
+        provider_name = self._normalize_provider(self.provider)
+        request = self.provider_chat_gateway.build_model_planning_request(
+            provider_name=provider_name,
+            messages=messages,
+            prompt_envelope=metadata,
+            schema={"schema_version": "model-led-investigation-plan/v1"},
+        )
+        return await self.provider_gateway.dispatch_chat_provider(
+            provider_name=request.get("provider", provider_name),
+            request=request,
+            extract_chat_messages=self.provider_chat_gateway.extract_chat_messages,
+            extract_chat_tools=self.provider_chat_gateway.extract_chat_tools,
+            invoke_router=self._router_chat,
+            logger=logger,
+            normalize_provider=self._normalize_provider,
         )
 
     async def _llm_schema_interpretation_provider(self, messages: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Optional[Any]:

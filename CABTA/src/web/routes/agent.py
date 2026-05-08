@@ -126,6 +126,9 @@ def _decorate_session_payload(session: Dict) -> Dict:
         'agentic_explanation_output',
         'root_cause_assessment',
         'investigation_workdir',
+        'investigation_dag',
+        'adaptive_dag',
+        'mutation_ledger',
     ):
         if payload.get(field) is None:
             if metadata.get(field) is not None:
